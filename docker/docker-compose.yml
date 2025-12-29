@@ -1,0 +1,105 @@
+# NewsFlow Bot - Docker Compose Configuration
+#
+# Usage:
+#   1. Copy ../.env.example to ../.env and configure your tokens
+#   2. Run: docker-compose up -d
+#   3. View logs: docker-compose logs -f newsflow
+#   4. Stop: docker-compose down
+#
+# For production with Redis:
+#   docker-compose --profile with-redis up -d
+
+version: "3.8"
+
+services:
+  # ============================================
+  # Main Application
+  # ============================================
+  newsflow:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: newsflow-bot:latest
+    container_name: newsflow-bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/newsflow.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - API_ENABLED=${API_ENABLED:-false}
+      - API_PORT=8000
+    volumes:
+      - newsflow-data:/app/data
+    ports:
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - newsflow-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ============================================
+  # Redis Cache (Optional)
+  # ============================================
+  # Enable with: docker-compose --profile with-redis up -d
+  redis:
+    image: redis:7-alpine
+    container_name: newsflow-redis
+    profiles:
+      - with-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    networks:
+      - newsflow-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ============================================
+  # PostgreSQL Database (Optional)
+  # ============================================
+  # Enable with: docker-compose --profile with-postgres up -d
+  postgres:
+    image: postgres:15-alpine
+    container_name: newsflow-postgres
+    profiles:
+      - with-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-newsflow}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-newsflow}
+      - POSTGRES_DB=${POSTGRES_DB:-newsflow}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - newsflow-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-newsflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  newsflow-network:
+    driver: bridge
+
+volumes:
+  newsflow-data:
+    driver: local
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local

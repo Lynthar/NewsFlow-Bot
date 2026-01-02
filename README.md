@@ -389,17 +389,6 @@ newsflow-bot/
 
 ---
 
-## 🗺️ 开发路线
-
-- [x] **Phase 1**: 核心基础架构
-- [x] **Phase 2**: Repository、Service、命令处理
-- [x] **Phase 3**: 翻译服务集成
-- [x] **Phase 4**: REST API
-- [ ] **Phase 5**: Docker 生产就绪化
-- [ ] **Phase 6**: Web 管理界面（可选）
-
----
-
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！

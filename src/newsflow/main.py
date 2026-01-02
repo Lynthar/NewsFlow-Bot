@@ -15,6 +15,7 @@ import structlog
 from newsflow.config import get_settings, Settings
 from newsflow.core import close_fetcher, get_scheduler, shutdown_scheduler
 from newsflow.models import close_db, init_db
+from newsflow.services.dispatcher import get_dispatcher
 
 
 def setup_logging(settings: Settings) -> None:
@@ -123,6 +124,13 @@ async def start_api_server(settings: Settings) -> None:
         )
 
 
+async def start_dispatch_loop(settings: Settings) -> None:
+    """Start the unified dispatch loop for all platforms."""
+    dispatcher = get_dispatcher()
+    logging.info("Starting unified dispatch loop...")
+    await dispatcher.run_dispatch_loop(settings.fetch_interval_minutes)
+
+
 async def main() -> None:
     """Main entry point."""
     settings = get_settings()
@@ -188,6 +196,9 @@ async def main() -> None:
         if not tasks:
             logger.error("No services to start!")
             return
+
+        # Add the unified dispatch loop (runs for all platforms)
+        tasks.append(start_dispatch_loop(settings))
 
         logger.info("All services starting...")
 

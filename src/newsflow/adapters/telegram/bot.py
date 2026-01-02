@@ -290,7 +290,6 @@ class TelegramAdapter(BaseAdapter):
     def __init__(self, token: str) -> None:
         self.token = token
         self.app: Application | None = None
-        self._dispatch_task: asyncio.Task | None = None
 
     @property
     def platform_name(self) -> str:
@@ -319,29 +318,16 @@ class TelegramAdapter(BaseAdapter):
         await self.app.start()
         await self.app.updater.start_polling()
 
-        # Register adapter with dispatcher
+        # Register adapter with dispatcher (dispatch loop is managed by main.py)
         dispatcher = get_dispatcher()
         dispatcher.register_adapter("telegram", self)
-
-        # Start dispatch loop
-        if self._dispatch_task is None or self._dispatch_task.done():
-            self._dispatch_task = asyncio.create_task(
-                dispatcher.run_dispatch_loop()
-            )
-            logger.info("Started dispatch loop")
+        logger.info("Telegram adapter registered with dispatcher")
 
         logger.info("Telegram bot started successfully")
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         global _adapter
-
-        if self._dispatch_task and not self._dispatch_task.done():
-            self._dispatch_task.cancel()
-            try:
-                await self._dispatch_task
-            except asyncio.CancelledError:
-                pass
 
         if self.app:
             await self.app.updater.stop()

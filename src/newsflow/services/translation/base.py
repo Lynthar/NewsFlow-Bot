@@ -4,6 +4,7 @@ Translation service abstraction.
 Provides a common interface for translation providers.
 """
 
+import asyncio
 import hashlib
 import logging
 from abc import ABC, abstractmethod
@@ -140,23 +141,33 @@ class TranslationService:
         texts: list[str],
         target_lang: str,
         source_lang: str | None = None,
+        max_concurrent: int = 3,
     ) -> list[TranslationResult]:
         """
-        Translate multiple texts.
+        Translate multiple texts concurrently.
 
         Args:
             texts: List of texts to translate.
             target_lang: Target language code.
             source_lang: Optional source language code.
+            max_concurrent: Maximum concurrent translations (default: 3).
 
         Returns:
-            List of TranslationResult objects.
+            List of TranslationResult objects in the same order as input.
         """
-        results = []
-        for text in texts:
-            result = await self.translate(text, target_lang, source_lang)
-            results.append(result)
-        return results
+        if not texts:
+            return []
+
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def translate_with_limit(text: str) -> TranslationResult:
+            async with semaphore:
+                return await self.translate(text, target_lang, source_lang)
+
+        results = await asyncio.gather(
+            *[translate_with_limit(text) for text in texts]
+        )
+        return list(results)
 
     def supports_language(self, lang_code: str) -> bool:
         """Check if the provider supports a language code."""

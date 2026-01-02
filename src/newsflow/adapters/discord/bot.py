@@ -37,7 +37,6 @@ class NewsFlowBot(commands.Bot):
         )
 
         self.settings = get_settings()
-        self._dispatch_task: asyncio.Task | None = None
 
     async def setup_hook(self) -> None:
         """Called when the bot is ready to setup."""
@@ -63,17 +62,11 @@ class NewsFlowBot(commands.Bot):
             )
         )
 
-        # Register adapter with dispatcher
+        # Register adapter with dispatcher (dispatch loop is managed by main.py)
         dispatcher = get_dispatcher()
         adapter = DiscordAdapter(self)
         dispatcher.register_adapter("discord", adapter)
-
-        # Start dispatch loop
-        if self._dispatch_task is None or self._dispatch_task.done():
-            self._dispatch_task = asyncio.create_task(
-                dispatcher.run_dispatch_loop()
-            )
-            logger.info("Started dispatch loop")
+        logger.info("Discord adapter registered with dispatcher")
 
     async def on_error(self, event: str, *args, **kwargs) -> None:
         """Handle errors."""

@@ -105,17 +105,21 @@ docker-down-full:
 # Database
 # ============================================
 
-# Initialize database
-db-init:
-	poetry run python -c "import asyncio; from newsflow.models import init_db; asyncio.run(init_db())"
+# Apply pending migrations (the bot also runs this automatically on startup)
+db-upgrade:
+	poetry run alembic upgrade head
 
-# Create migration
+# Create a new migration from model changes. Usage: make db-migrate msg="your message"
 db-migrate:
 	poetry run alembic revision --autogenerate -m "$(msg)"
 
-# Apply migrations
-db-upgrade:
-	poetry run alembic upgrade head
+# Roll back the last applied migration
+db-downgrade:
+	poetry run alembic downgrade -1
+
+# Baseline an existing pre-alembic DB by stamping the current head
+db-stamp:
+	poetry run alembic stamp head
 
 # ============================================
 # Cleanup

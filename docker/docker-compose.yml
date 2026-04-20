@@ -40,12 +40,7 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    healthcheck:
-      test: ["CMD", "python", "-c", "print('healthy')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    # Healthcheck is defined in the Dockerfile (heartbeat file mtime).
 
   # ============================================
   # Redis Cache (Optional)

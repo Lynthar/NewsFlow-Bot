@@ -8,6 +8,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +77,22 @@ class Dispatcher:
             self._ready_event.set()
         logger.info(f"Registered adapter for platform: {platform}")
 
+    @property
+    def heartbeat_path(self) -> Path:
+        """Liveness heartbeat file, touched after every dispatch cycle."""
+        return self.settings.data_dir / ".heartbeat"
+
+    def _write_heartbeat(self) -> None:
+        """Touch the heartbeat file so external probes can tell a stuck
+        dispatch loop apart from a crashed process. Failures are swallowed —
+        a heartbeat write must never break dispatch.
+        """
+        try:
+            self.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+            self.heartbeat_path.touch()
+        except OSError as e:
+            logger.debug(f"Heartbeat write failed: {e}")
+
     async def wait_for_adapters(self, timeout: float = 60.0) -> bool:
         """Wait until all expected adapters have registered.
 
@@ -117,27 +134,26 @@ class Dispatcher:
 
                 result.new_entries = len(new_entries)
 
-                if not new_entries:
+                if new_entries:
+                    sub_repo = SubscriptionRepository(session)
+                    subscriptions = await sub_repo.get_all_active_subscriptions()
+                    for sub in subscriptions:
+                        sent = await self._dispatch_to_subscription(
+                            session, sub, sub_repo
+                        )
+                        result.messages_sent += sent
+                    await session.commit()
+                else:
                     logger.debug("No new entries to dispatch")
-                    return result
-
-                # Dispatch to subscribers
-                sub_repo = SubscriptionRepository(session)
-                subscriptions = await sub_repo.get_all_active_subscriptions()
-
-                for sub in subscriptions:
-                    sent = await self._dispatch_to_subscription(
-                        session, sub, sub_repo
-                    )
-                    result.messages_sent += sent
-
-                await session.commit()
 
             except Exception as e:
                 logger.exception(f"Dispatch error: {e}")
                 result.errors += 1
                 await session.rollback()
 
+        # Heartbeat reflects "dispatch loop iterated", not "dispatch succeeded".
+        # A handled error still counts — the loop is alive and trying.
+        self._write_heartbeat()
         return result
 
     async def _dispatch_to_subscription(
@@ -190,8 +206,11 @@ class Dispatcher:
                         f"Failed to send entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
                     )
 
-                # Small delay between messages
-                await asyncio.sleep(0.5)
+                # Small smoothing pause between sends. Platform-level rate
+                # limiting is enforced by the libraries (discord.py internal
+                # buckets; Telegram AIORateLimiter); this is just a nudge to
+                # avoid bursty spikes when many entries are due at once.
+                await asyncio.sleep(0.1)
 
             except Exception as e:
                 logger.exception(f"Error sending entry {entry.id}: {e}")

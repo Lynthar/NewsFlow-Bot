@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from newsflow.config import get_settings
 from newsflow.core.content_processor import process_content
 from newsflow.core.feed_fetcher import FeedFetcher, FetchResult, get_fetcher
 from newsflow.models.feed import Feed, FeedEntry
@@ -47,6 +48,13 @@ class FeedService:
         self.session = session
         self.repo = FeedRepository(session)
         self.fetcher = get_fetcher()
+        self.settings = get_settings()
+
+    @property
+    def _backoff_base_seconds(self) -> int:
+        """Base unit for exponential backoff on fetch errors: one full
+        fetch interval. Doubles each error (capped in Feed.mark_error)."""
+        return self.settings.fetch_interval_minutes * 60
 
     async def add_feed(self, url: str) -> AddFeedResult:
         """
@@ -126,15 +134,55 @@ class FeedService:
         """
         return await self.fetcher.fetch_feed(url)
 
+    async def _apply_fetch_result(
+        self, feed: Feed, result: FetchResult
+    ) -> FetchFeedResult:
+        """Write a FetchResult to the DB. No network I/O — safe to call
+        sequentially over a batch of already-fetched results."""
+        if not result.success:
+            await self.repo.mark_feed_error(
+                feed.id, result.error, base_delay_seconds=self._backoff_base_seconds
+            )
+            return FetchFeedResult(
+                success=False,
+                feed=feed,
+                message=f"Fetch error: {result.error}",
+            )
+
+        if result.not_modified:
+            await self.repo.update_feed_metadata(feed.id)
+            return FetchFeedResult(
+                success=True, feed=feed, message="Not modified"
+            )
+
+        await self.repo.update_feed_metadata(
+            feed_id=feed.id,
+            title=result.feed_title,
+            description=result.feed_description,
+            etag=result.etag,
+            last_modified=result.last_modified,
+        )
+
+        if result.entries:
+            new_entries = await self.repo.create_entries_bulk(
+                feed.id, result.entries
+            )
+            logger.info(f"Feed {feed.url}: {len(new_entries)} new entries")
+            return FetchFeedResult(
+                success=True,
+                feed=feed,
+                new_entries=new_entries,
+                message=f"{len(new_entries)} new entries",
+            )
+
+        return FetchFeedResult(
+            success=True, feed=feed, message="No new entries"
+        )
+
     async def fetch_and_store(self, feed: Feed) -> FetchFeedResult:
         """
-        Fetch a feed and store new entries.
-
-        Args:
-            feed: The Feed object to fetch
-
-        Returns:
-            FetchFeedResult with new entries
+        Fetch a single feed and store new entries. Used by single-feed
+        callers (e.g. the API `/refresh` endpoint).
         """
         try:
             result = await self.fetcher.fetch_feed(
@@ -142,74 +190,57 @@ class FeedService:
                 etag=feed.etag,
                 last_modified=feed.last_modified,
             )
-
-            if not result.success:
-                await self.repo.mark_feed_error(feed.id, result.error)
-                return FetchFeedResult(
-                    success=False,
-                    feed=feed,
-                    message=f"Fetch error: {result.error}",
-                )
-
-            # Handle 304 Not Modified
-            if result.not_modified:
-                await self.repo.update_feed_metadata(feed.id)
-                return FetchFeedResult(
-                    success=True,
-                    feed=feed,
-                    message="Not modified",
-                )
-
-            # Update feed metadata
-            await self.repo.update_feed_metadata(
-                feed_id=feed.id,
-                title=result.feed_title,
-                description=result.feed_description,
-                etag=result.etag,
-                last_modified=result.last_modified,
-            )
-
-            # Store new entries
-            if result.entries:
-                new_entries = await self.repo.create_entries_bulk(
-                    feed.id, result.entries
-                )
-                logger.info(f"Feed {feed.url}: {len(new_entries)} new entries")
-                return FetchFeedResult(
-                    success=True,
-                    feed=feed,
-                    new_entries=new_entries,
-                    message=f"{len(new_entries)} new entries",
-                )
-
-            return FetchFeedResult(
-                success=True,
-                feed=feed,
-                message="No new entries",
-            )
-
+            return await self._apply_fetch_result(feed, result)
         except Exception as e:
             logger.exception(f"Error fetching feed {feed.url}: {e}")
-            await self.repo.mark_feed_error(feed.id, str(e))
+            await self.repo.mark_feed_error(
+                feed.id, str(e), base_delay_seconds=self._backoff_base_seconds
+            )
             return FetchFeedResult(
-                success=False,
-                feed=feed,
-                message=f"Error: {str(e)}",
+                success=False, feed=feed, message=f"Error: {str(e)}"
             )
 
     async def fetch_all_feeds(self) -> list[FetchFeedResult]:
         """
-        Fetch all active feeds and store new entries.
+        Fetch all active feeds concurrently, then apply DB updates serially.
 
-        Returns:
-            List of FetchFeedResult for each feed
+        Concurrency is bounded by FeedFetcher's internal semaphore
+        (max_concurrent=10). DB writes stay serial because a single
+        AsyncSession is not safe to share across concurrent awaits.
         """
-        feeds = await self.repo.get_all_active_feeds()
-        results = []
+        feeds = await self.repo.get_feeds_due_for_fetch()
+        if not feeds:
+            return []
 
-        for feed in feeds:
-            result = await self.fetch_and_store(feed)
-            results.append(result)
+        fetch_results = await self.fetcher.fetch_multiple(
+            [
+                {
+                    "url": f.url,
+                    "etag": f.etag,
+                    "last_modified": f.last_modified,
+                }
+                for f in feeds
+            ]
+        )
+
+        results: list[FetchFeedResult] = []
+        for feed, fr in zip(feeds, fetch_results):
+            try:
+                results.append(await self._apply_fetch_result(feed, fr))
+            except Exception as e:
+                logger.exception(
+                    f"Error applying fetch result for {feed.url}: {e}"
+                )
+                await self.repo.mark_feed_error(
+                feed.id, str(e), base_delay_seconds=self._backoff_base_seconds
+            )
+                results.append(
+                    FetchFeedResult(
+                        success=False,
+                        feed=feed,
+                        message=f"Error: {str(e)}",
+                    )
+                )
 
         return results
 

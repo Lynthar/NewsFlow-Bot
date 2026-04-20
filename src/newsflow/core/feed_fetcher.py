@@ -18,17 +18,24 @@ import feedparser
 from dateutil import parser as date_parser
 
 from newsflow.config import get_settings
+from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
 
 logger = logging.getLogger(__name__)
 
 # Default headers for RSS requests
 DEFAULT_HEADERS = {
-    "User-Agent": "NewsFlow-Bot/1.0 (+https://github.com/newsflow-bot)",
+    "User-Agent": "NewsFlow-Bot/1.0 (+https://github.com/Lynthar/NewsFlow-Bot)",
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    "Accept-Encoding": "gzip, deflate",
 }
 
 # Request timeout
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
+
+# Cap the raw body we'll accept from a feed. Normal RSS is well under 1 MiB;
+# anything much larger is either a misconfiguration or an attempt to make us
+# read (and feedparser parse) an unbounded amount of memory.
+MAX_FEED_SIZE_BYTES = 5 * 1024 * 1024
 
 
 @dataclass
@@ -113,6 +120,14 @@ class FeedFetcher:
         Returns:
             FetchResult with entries and metadata
         """
+        try:
+            validate_feed_url(url)
+        except InvalidFeedURLError as e:
+            logger.warning(f"Rejected feed URL {url!r}: {e}")
+            return FetchResult(
+                url=url, success=False, entries=[], error=str(e)
+            )
+
         async with self._semaphore:
             return await self._do_fetch(url, etag, last_modified)
 
@@ -157,8 +172,42 @@ class FeedFetcher:
                         error=error_msg,
                     )
 
-                # Read and parse content
-                content = await response.text()
+                # Refuse the response up-front if Content-Length is too large.
+                if (
+                    response.content_length is not None
+                    and response.content_length > MAX_FEED_SIZE_BYTES
+                ):
+                    logger.warning(
+                        f"Feed {url} too large: "
+                        f"{response.content_length} > {MAX_FEED_SIZE_BYTES}"
+                    )
+                    return FetchResult(
+                        url=url,
+                        success=False,
+                        entries=[],
+                        error=(
+                            f"Feed exceeds size limit "
+                            f"({response.content_length} bytes)"
+                        ),
+                    )
+
+                # Read streaming, capped. A server that lies about
+                # Content-Length (or omits it) can't drain our memory.
+                raw = await response.content.read(MAX_FEED_SIZE_BYTES + 1)
+                if len(raw) > MAX_FEED_SIZE_BYTES:
+                    logger.warning(
+                        f"Feed {url} exceeded size limit mid-stream"
+                    )
+                    return FetchResult(
+                        url=url,
+                        success=False,
+                        entries=[],
+                        error="Feed exceeds size limit",
+                    )
+
+                content = raw.decode(
+                    response.charset or "utf-8", errors="replace"
+                )
                 feed = feedparser.parse(content)
 
                 # Check for parse errors

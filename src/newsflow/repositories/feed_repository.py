@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.models.feed import Feed, FeedEntry
@@ -45,16 +45,13 @@ class FeedRepository:
         )
         return result.scalars().all()
 
-    async def get_feeds_needing_fetch(
-        self,
-        interval_minutes: int = 60,
-    ) -> Sequence[Feed]:
-        """Get feeds that need to be fetched."""
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=interval_minutes)
+    async def get_feeds_due_for_fetch(self) -> Sequence[Feed]:
+        """Active feeds that aren't currently inside a backoff window."""
+        now = datetime.now(timezone.utc)
         result = await self.session.execute(
             select(Feed).where(
                 Feed.is_active == True,
-                (Feed.last_fetched_at == None) | (Feed.last_fetched_at < cutoff),
+                or_(Feed.next_retry_at == None, Feed.next_retry_at <= now),
             )
         )
         return result.scalars().all()
@@ -105,12 +102,14 @@ class FeedRepository:
         etag: str | None = None,
         last_modified: str | None = None,
     ) -> None:
-        """Update feed metadata after successful fetch."""
+        """Update feed metadata after successful fetch. Clears any pending
+        backoff — a success means we're back in good standing."""
         update_data = {
             "last_fetched_at": datetime.now(timezone.utc),
             "last_successful_fetch_at": datetime.now(timezone.utc),
             "error_count": 0,
             "last_error": None,
+            "next_retry_at": None,
         }
         if title:
             update_data["title"] = title
@@ -125,11 +124,13 @@ class FeedRepository:
             update(Feed).where(Feed.id == feed_id).values(**update_data)
         )
 
-    async def mark_feed_error(self, feed_id: int, error: str) -> None:
-        """Mark a feed fetch error."""
+    async def mark_feed_error(
+        self, feed_id: int, error: str, base_delay_seconds: int = 3600
+    ) -> None:
+        """Mark a feed fetch error, scheduling exponential backoff."""
         feed = await self.get_feed_by_id(feed_id)
         if feed:
-            feed.mark_error(error)
+            feed.mark_error(error, base_delay_seconds=base_delay_seconds)
 
     async def delete_feed(self, feed_id: int) -> bool:
         """Delete a feed and all its entries."""

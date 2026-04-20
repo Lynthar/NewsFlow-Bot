@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.ext import (
+    AIORateLimiter,
     Application,
     CommandHandler,
     ContextTypes,
@@ -300,7 +301,15 @@ class TelegramAdapter(BaseAdapter):
         global _adapter
         _adapter = self
 
-        self.app = Application.builder().token(self.token).build()
+        # AIORateLimiter transparently queues send_message calls to stay
+        # inside Telegram's 30/s global, 1/s per-chat, and 20/min per-group
+        # broadcast limits. Needs python-telegram-bot[rate-limiter].
+        self.app = (
+            Application.builder()
+            .token(self.token)
+            .rate_limiter(AIORateLimiter())
+            .build()
+        )
 
         # Register handlers
         self.app.add_handler(CommandHandler("start", start_command))

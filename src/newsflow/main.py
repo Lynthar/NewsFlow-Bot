@@ -14,7 +14,8 @@ import structlog
 
 from newsflow.config import get_settings, Settings
 from newsflow.core import close_fetcher
-from newsflow.models import close_db, init_db
+from newsflow.models import close_db
+from newsflow.models.migrate import upgrade_to_head
 from newsflow.services.dispatcher import get_dispatcher
 
 
@@ -160,9 +161,9 @@ async def main() -> None:
     # Ensure data directory exists
     ensure_data_dir(settings)
 
-    # Initialize database
-    logger.info("Initializing database...")
-    await init_db()
+    # Apply database migrations (creates schema on a fresh DB, evolves it
+    # on an upgraded deploy).
+    await upgrade_to_head()
 
     # Initialize cache if configured
     if settings.cache_backend == "redis" and settings.redis_url:

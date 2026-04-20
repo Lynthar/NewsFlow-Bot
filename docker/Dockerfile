@@ -52,8 +52,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy application code
+# Copy application code + alembic migrations
 COPY --chown=newsflow:newsflow src/ ./src/
+COPY --chown=newsflow:newsflow alembic/ ./alembic/
+COPY --chown=newsflow:newsflow alembic.ini ./alembic.ini
 
 # Create data directory with correct permissions
 RUN mkdir -p /app/data && chown newsflow:newsflow /app/data
@@ -76,9 +78,14 @@ USER newsflow
 EXPOSE 8000
 
 # Health check
-# Uses Python script for more reliable health checking
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${API_PORT:-8000}/live')" 2>/dev/null || exit 0
+# The dispatch loop touches /app/data/.heartbeat after every cycle. We fail
+# health if the file hasn't been touched in 120 minutes. This catches the
+# "process alive but loop stuck" case; crashed processes are handled by the
+# container's restart policy. The 120-min threshold comfortably covers the
+# default FETCH_INTERVAL_MINUTES=60. If you run with a longer interval
+# (>~100 min), override HEALTHCHECK or this check will false-positive.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=5m --retries=2 \
+    CMD find /app/data/.heartbeat -mmin -120 -type f 2>/dev/null | grep -q . || exit 1
 
 # Run the bot
 CMD ["python", "-m", "newsflow.main"]

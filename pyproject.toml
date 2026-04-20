@@ -13,7 +13,7 @@ python = "^3.11"
 # === Core Dependencies ===
 # Messaging platforms
 "discord.py" = "^2.3.0"
-python-telegram-bot = { extras = ["job-queue"], version = "^20.7" }
+python-telegram-bot = { extras = ["job-queue", "rate-limiter"], version = "^20.7" }
 
 # RSS parsing
 feedparser = "^6.0.0"

@@ -2,7 +2,7 @@
 Feed and FeedEntry models for RSS sources.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
@@ -45,6 +45,10 @@ class Feed(Base):
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_successful_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Exponential backoff: while set and in the future, the dispatcher skips
+    # this feed. Cleared on successful fetch; pushed further on each error.
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Relationships
     entries: Mapped[list["FeedEntry"]] = relationship(
         back_populates="feed",
@@ -62,24 +66,30 @@ class Feed(Base):
 
     def mark_success(self, etag: str | None = None, last_modified: str | None = None) -> None:
         """Mark a successful fetch."""
-        from datetime import timezone
         now = datetime.now(timezone.utc)
         self.last_fetched_at = now
         self.last_successful_fetch_at = now
         self.error_count = 0
         self.last_error = None
+        self.next_retry_at = None
         if etag:
             self.etag = etag
         if last_modified:
             self.last_modified = last_modified
 
-    def mark_error(self, error: str) -> None:
-        """Mark a failed fetch."""
-        from datetime import timezone
-        self.last_fetched_at = datetime.now(timezone.utc)
+    def mark_error(self, error: str, base_delay_seconds: int = 3600) -> None:
+        """Record a failed fetch and schedule the next retry with exponential
+        backoff: delay = base_delay * 2^min(error_count, 5), capped so we
+        don't overshoot before the error_count=10 auto-deactivate kicks in.
+        """
+        now = datetime.now(timezone.utc)
+        self.last_fetched_at = now
         self.error_count += 1
         self.last_error = error
-        # Deactivate after 10 consecutive errors
+
+        factor = 2 ** min(self.error_count, 5)
+        self.next_retry_at = now + timedelta(seconds=base_delay_seconds * factor)
+
         if self.error_count >= 10:
             self.is_active = False
 

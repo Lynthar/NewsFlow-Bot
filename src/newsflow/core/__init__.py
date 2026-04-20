@@ -15,7 +15,6 @@ from newsflow.core.feed_fetcher import (
     close_fetcher,
     get_fetcher,
 )
-from newsflow.core.scheduler import TaskScheduler, get_scheduler, shutdown_scheduler
 
 __all__ = [
     # Feed fetcher
@@ -29,8 +28,4 @@ __all__ = [
     "get_source_name",
     "process_content",
     "truncate_text",
-    # Scheduler
-    "TaskScheduler",
-    "get_scheduler",
-    "shutdown_scheduler",
 ]

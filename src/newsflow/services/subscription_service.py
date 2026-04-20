@@ -109,7 +109,17 @@ class SubscriptionService:
                 is_new=False,
             )
 
-        logger.info(f"New subscription: {platform}/{channel_id} -> {feed_url}")
+        # Seed SentEntry with existing entries so the channel doesn't get
+        # flooded with the feed's back catalog on first subscribe.
+        seeded = await self.sub_repo.seed_sent_entries(
+            subscription_id=subscription.id,
+            feed_id=feed.id,
+        )
+
+        logger.info(
+            f"New subscription: {platform}/{channel_id} -> {feed_url} "
+            f"(seeded {seeded} existing entries as sent)"
+        )
 
         return SubscribeResult(
             success=True,

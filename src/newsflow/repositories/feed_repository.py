@@ -150,19 +150,6 @@ class FeedRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_unsent_entries(self, feed_id: int, limit: int = 50) -> Sequence[FeedEntry]:
-        """Get entries that haven't been sent yet."""
-        result = await self.session.execute(
-            select(FeedEntry)
-            .where(
-                FeedEntry.feed_id == feed_id,
-                FeedEntry.is_sent == False,
-            )
-            .order_by(FeedEntry.published_at.desc().nullslast())
-            .limit(limit)
-        )
-        return result.scalars().all()
-
     async def get_recent_entries(
         self,
         feed_id: int,
@@ -221,14 +208,20 @@ class FeedRepository:
         Returns:
             List of newly created entries
         """
-        created = []
-        for data in entries_data:
-            # Skip if exists
-            existing = await self.get_entry_by_guid(feed_id, data["guid"])
-            if existing:
-                continue
+        if not entries_data:
+            return []
 
-            entry = await self.create_entry(
+        guids = [data["guid"] for data in entries_data]
+        result = await self.session.execute(
+            select(FeedEntry.guid).where(
+                FeedEntry.feed_id == feed_id,
+                FeedEntry.guid.in_(guids),
+            )
+        )
+        existing_guids = set(result.scalars().all())
+
+        new_entries = [
+            FeedEntry(
                 feed_id=feed_id,
                 guid=data["guid"],
                 title=data["title"],
@@ -239,15 +232,15 @@ class FeedRepository:
                 published_at=data.get("published_at"),
                 image_url=data.get("image_url"),
             )
-            created.append(entry)
+            for data in entries_data
+            if data["guid"] not in existing_guids
+        ]
 
-        return created
+        if new_entries:
+            self.session.add_all(new_entries)
+            await self.session.flush()
 
-    async def mark_entry_sent(self, entry_id: int) -> None:
-        """Mark an entry as sent."""
-        await self.session.execute(
-            update(FeedEntry).where(FeedEntry.id == entry_id).values(is_sent=True)
-        )
+        return new_entries
 
     async def update_entry_translation(
         self,

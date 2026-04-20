@@ -252,6 +252,39 @@ class SubscriptionRepository:
         await self.session.flush()
         return sent
 
+    async def seed_sent_entries(
+        self,
+        subscription_id: int,
+        feed_id: int,
+    ) -> int:
+        """
+        Seed SentEntry with all existing entries of a feed.
+
+        Called on new subscription to prevent dumping historical entries
+        into the channel. Only entries published after this point will be sent.
+
+        Returns:
+            Number of seeded entries.
+        """
+        from newsflow.models.feed import FeedEntry
+
+        result = await self.session.execute(
+            select(FeedEntry.id).where(FeedEntry.feed_id == feed_id)
+        )
+        entry_ids = result.scalars().all()
+
+        if not entry_ids:
+            return 0
+
+        self.session.add_all(
+            [
+                SentEntry(subscription_id=subscription_id, entry_id=entry_id)
+                for entry_id in entry_ids
+            ]
+        )
+        await self.session.flush()
+        return len(entry_ids)
+
     async def get_unsent_entries_for_subscription(
         self,
         subscription_id: int,

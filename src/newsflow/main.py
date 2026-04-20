@@ -13,7 +13,7 @@ from pathlib import Path
 import structlog
 
 from newsflow.config import get_settings, Settings
-from newsflow.core import close_fetcher, get_scheduler, shutdown_scheduler
+from newsflow.core import close_fetcher
 from newsflow.models import close_db, init_db
 from newsflow.services.dispatcher import get_dispatcher
 
@@ -90,9 +90,6 @@ async def shutdown(loop: asyncio.AbstractEventLoop) -> None:
     """Graceful shutdown handler."""
     logging.info("Shutting down...")
 
-    # Stop scheduler
-    shutdown_scheduler(wait=False)
-
     # Close feed fetcher
     await close_fetcher()
 
@@ -129,6 +126,12 @@ async def start_dispatch_loop(settings: Settings) -> None:
     dispatcher = get_dispatcher()
     logging.info("Starting unified dispatch loop...")
     await dispatcher.run_dispatch_loop(settings.fetch_interval_minutes)
+
+
+async def start_cleanup_loop() -> None:
+    """Start the periodic cleanup loop."""
+    dispatcher = get_dispatcher()
+    await dispatcher.run_cleanup_loop()
 
 
 async def main() -> None:
@@ -171,10 +174,6 @@ async def main() -> None:
         init_cache("memory")
         logger.info("Memory cache initialized")
 
-    # Start scheduler
-    scheduler = get_scheduler()
-    scheduler.start()
-
     # Setup signal handlers
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -199,6 +198,9 @@ async def main() -> None:
 
         # Add the unified dispatch loop (runs for all platforms)
         tasks.append(start_dispatch_loop(settings))
+
+        # Add the cleanup loop (deletes old entries/sent records)
+        tasks.append(start_cleanup_loop())
 
         logger.info("All services starting...")
 

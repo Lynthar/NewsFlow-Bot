@@ -115,9 +115,6 @@ class FeedEntry(Base):
     summary_translated: Mapped[str | None] = mapped_column(Text)
     translation_language: Mapped[str | None] = mapped_column(String(10))
 
-    # Processing status
-    is_sent: Mapped[bool] = mapped_column(Boolean, default=False)
-
     # Relationship
     feed: Mapped["Feed"] = relationship(back_populates="entries")
 
@@ -125,7 +122,6 @@ class FeedEntry(Base):
     __table_args__ = (
         Index("ix_feed_entries_feed_guid", "feed_id", "guid", unique=True),
         Index("ix_feed_entries_published", "published_at"),
-        Index("ix_feed_entries_is_sent", "is_sent"),
     )
 
     def __repr__(self) -> str:

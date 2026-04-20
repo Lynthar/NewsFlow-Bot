@@ -56,11 +56,40 @@ class Dispatcher:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._adapters: dict[str, MessageSender] = {}
+        # Platforms we expect to register before the first dispatch round.
+        # Cleared as each adapter registers; guards against silently dropping
+        # the first round of messages while bots are still connecting.
+        self._expected_platforms: set[str] = set()
+        if self.settings.discord_enabled:
+            self._expected_platforms.add("discord")
+        if self.settings.telegram_enabled:
+            self._expected_platforms.add("telegram")
+        self._ready_event = asyncio.Event()
+        if not self._expected_platforms:
+            self._ready_event.set()
 
     def register_adapter(self, platform: str, adapter: MessageSender) -> None:
         """Register a platform adapter for message sending."""
         self._adapters[platform] = adapter
+        self._expected_platforms.discard(platform)
+        if not self._expected_platforms:
+            self._ready_event.set()
         logger.info(f"Registered adapter for platform: {platform}")
+
+    async def wait_for_adapters(self, timeout: float = 60.0) -> bool:
+        """Wait until all expected adapters have registered.
+
+        Returns True if ready, False on timeout. On timeout the dispatch loop
+        should still run — a stuck platform shouldn't block the others.
+        """
+        try:
+            await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Timed out waiting for adapters; missing: {self._expected_platforms}"
+            )
+            return False
 
     async def dispatch_once(self) -> DispatchResult:
         """
@@ -259,6 +288,43 @@ class Dispatcher:
             summary_translated=summary_translated,
         )
 
+    async def run_cleanup_loop(self) -> None:
+        """Periodically delete old feed entries and sent-entry records.
+
+        Runs forever on `settings.cleanup_interval_hours`, deleting anything
+        older than `settings.entry_retention_days`.
+        """
+        interval_seconds = self.settings.cleanup_interval_hours * 3600
+        retention_days = self.settings.entry_retention_days
+
+        logger.info(
+            f"Starting cleanup loop (every {self.settings.cleanup_interval_hours}h, "
+            f"retaining {retention_days} days)"
+        )
+
+        # Delay first run so startup logs stay clean and DB is definitely up.
+        await asyncio.sleep(60)
+
+        while True:
+            try:
+                session_factory = get_session_factory()
+                async with session_factory() as session:
+                    feed_repo = FeedRepository(session)
+                    sub_repo = SubscriptionRepository(session)
+
+                    entries_deleted = await feed_repo.cleanup_old_entries(retention_days)
+                    sent_deleted = await sub_repo.cleanup_old_sent_entries(retention_days)
+                    await session.commit()
+
+                    logger.info(
+                        f"Cleanup: deleted {entries_deleted} old entries, "
+                        f"{sent_deleted} old sent records"
+                    )
+            except Exception:
+                logger.exception("Cleanup loop error")
+
+            await asyncio.sleep(interval_seconds)
+
     async def run_dispatch_loop(self, interval_minutes: int | None = None) -> None:
         """
         Run the dispatch loop continuously.
@@ -267,6 +333,12 @@ class Dispatcher:
             interval_minutes: Override the default fetch interval
         """
         interval = interval_minutes or self.settings.fetch_interval_minutes
+
+        # Don't start dispatching until adapters are ready — otherwise the
+        # first round finds no registered adapter and no-ops (users would
+        # wait a full interval for the first message).
+        await self.wait_for_adapters(timeout=60.0)
+
         logger.info(f"Starting dispatch loop with {interval} minute interval")
 
         while True:

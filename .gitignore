@@ -48,3 +48,7 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+# Claude Code per-project state and guidance (local-only)
+.claude/
+CLAUDE.md

@@ -9,8 +9,6 @@
 # For production with Redis:
 #   docker-compose --profile with-redis up -d
 
-version: "3.8"
-
 services:
   # ============================================
   # Main Application
@@ -35,6 +33,13 @@ services:
       - "${API_PORT:-8000}:8000"
     networks:
       - newsflow-network
+    # Use public DNS resolvers instead of whatever the host hands the
+    # container. Some VPS providers hand out 127.0.0.53 (systemd-resolved
+    # stub on host) which doesn't exist inside the container, breaking all
+    # outbound name resolution.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     logging:
       driver: "json-file"
       options:

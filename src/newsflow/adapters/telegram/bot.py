@@ -14,6 +14,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from newsflow.adapters.base import BaseAdapter, Message
@@ -44,9 +46,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/list [page] — List subscribed feeds\n"
         "/info &lt;url&gt; — Detailed status of one feed\n"
         "/test &lt;url&gt; — Check if a URL is a valid feed\n\n"
-        "<b>Settings:</b>\n"
-        "/language &lt;code&gt; — Translation target language\n"
-        "/translate &lt;on/off&gt; — Toggle translation\n\n"
+        "<b>OPML:</b>\n"
+        "/export — Download subscriptions as OPML\n"
+        "/import &lt;url&gt; — Import from a hosted OPML URL\n"
+        "(or just upload an .opml file to this chat)\n\n"
+        "<b>Settings (channel-wide):</b>\n"
+        "/language &lt;code&gt; — Default translation language\n"
+        "/translate &lt;on/off&gt; — Default translation toggle\n\n"
+        "<b>Settings (per-feed overrides):</b>\n"
+        "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
+        "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n\n"
         "<b>Other:</b>\n"
         "/status — Bot status\n"
         "/help — This message",
@@ -336,6 +345,225 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def setlang_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /setlang <url> <code> — per-feed translation language override."""
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: /setlang <rss_url> <language_code>\n"
+            "Example: /setlang https://example.com/feed zh-CN\n\n"
+            "Sets the translation language for ONE feed. Use /language for "
+            "the channel-wide default."
+        )
+        return
+
+    url, code = context.args
+    chat_id = str(update.effective_chat.id)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.set_feed_language(
+            platform="telegram", channel_id=chat_id, feed_url=url, language=code
+        )
+        await session.commit()
+
+    prefix = "✅" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+    )
+
+
+async def settrans_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /settrans <url> <on|off> — per-feed translation toggle."""
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: /settrans <rss_url> <on|off>\n"
+            "Example: /settrans https://example.com/feed off\n\n"
+            "Toggles translation for ONE feed. Use /translate for the "
+            "channel-wide default."
+        )
+        return
+
+    url = context.args[0]
+    enabled = context.args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    chat_id = str(update.effective_chat.id)
+
+    if enabled and not get_settings().can_translate():
+        await update.message.reply_text(
+            "⚠️ <b>Translation Not Available</b>\n\n"
+            "Translation is not configured on this bot instance.",
+            parse_mode="HTML",
+        )
+        return
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.set_feed_translate(
+            platform="telegram", channel_id=chat_id, feed_url=url, enabled=enabled
+        )
+        await session.commit()
+
+    prefix = "✅" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+    )
+
+
+async def export_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /export — send the subscription list as an OPML file."""
+    import io
+
+    chat_id = str(update.effective_chat.id)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        opml_xml = await service.export_opml(
+            platform="telegram", channel_id=chat_id
+        )
+
+    buf = io.BytesIO(opml_xml.encode("utf-8"))
+    await update.message.reply_document(
+        document=buf,
+        filename=f"newsflow-{chat_id}.opml",
+        caption="Your subscription list",
+    )
+
+
+async def _do_opml_import(
+    update: Update, chat_id: str, user_id: str, opml_content: str
+) -> None:
+    """Shared core for /import with URL and document-upload handlers."""
+    processing = await update.message.reply_text("⏳ Importing…")
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.import_opml(
+            platform="telegram",
+            user_id=user_id,
+            channel_id=chat_id,
+            opml_content=opml_content,
+        )
+        await session.commit()
+
+    lines = [
+        "<b>OPML Import Result</b>",
+        f"✅ Added: <b>{len(result.added)}</b>",
+        f"⏭️ Already subscribed: <b>{len(result.already_subscribed)}</b>",
+        f"❌ Failed: <b>{len(result.failed)}</b>",
+    ]
+    if result.failed:
+        lines.append("")
+        lines.append("<b>Failures:</b>")
+        for url, err in result.failed[:10]:
+            lines.append(
+                f"• <code>{_escape_html(url[:60])}</code>: "
+                f"{_escape_html(err[:80])}"
+            )
+        if len(result.failed) > 10:
+            lines.append(f"…and {len(result.failed) - 10} more")
+
+    await processing.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+async def import_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /import <url> — fetch an OPML document from a URL and import.
+
+    File-upload imports are handled by import_document below.
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /import &lt;url&gt;\n\n"
+            "Or upload an .opml file directly to this chat — I'll pick it up.",
+            parse_mode="HTML",
+        )
+        return
+
+    url = context.args[0]
+    from newsflow.core import get_fetcher
+    from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
+
+    try:
+        validate_feed_url(url)
+    except InvalidFeedURLError as e:
+        await update.message.reply_text(f"❌ Rejected URL: {e}")
+        return
+
+    try:
+        fetcher = get_fetcher()
+        client = await fetcher._get_session()
+        async with client.get(url) as response:
+            if response.status != 200:
+                await update.message.reply_text(
+                    f"❌ Failed to fetch OPML: HTTP {response.status}"
+                )
+                return
+            data = await response.content.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024:
+                await update.message.reply_text(
+                    "❌ OPML file too large (1 MB cap)"
+                )
+                return
+            content = data.decode("utf-8", errors="replace")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to fetch OPML: {e}")
+        return
+
+    await _do_opml_import(
+        update,
+        chat_id=str(update.effective_chat.id),
+        user_id=str(update.effective_user.id),
+        opml_content=content,
+    )
+
+
+async def import_document(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Auto-import when a user uploads an .opml / .xml file to the chat.
+
+    Triggered by a document filter registered in TelegramAdapter.start,
+    not by /import text command — PTB's CommandHandler doesn't inspect
+    captions, and requiring `/import` as caption would be error-prone UX.
+    """
+    doc = update.message.document
+    if doc is None:
+        return
+    name = (doc.file_name or "").lower()
+    if not name.endswith((".opml", ".xml")):
+        return
+    if doc.file_size and doc.file_size > 1024 * 1024:
+        await update.message.reply_text("❌ OPML file too large (1 MB cap)")
+        return
+
+    try:
+        tg_file = await doc.get_file()
+        data = await tg_file.download_as_bytearray()
+        content = data.decode("utf-8")
+    except UnicodeDecodeError:
+        await update.message.reply_text("❌ OPML file is not valid UTF-8")
+        return
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to read OPML: {e}")
+        return
+
+    await _do_opml_import(
+        update,
+        chat_id=str(update.effective_chat.id),
+        user_id=str(update.effective_user.id),
+        opml_content=content,
+    )
+
+
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /test command - test an RSS feed."""
     if not context.args:
@@ -514,7 +742,19 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("test", test_command))
         self.app.add_handler(CommandHandler("language", language_command))
         self.app.add_handler(CommandHandler("translate", translate_command))
+        self.app.add_handler(CommandHandler("setlang", setlang_command))
+        self.app.add_handler(CommandHandler("settrans", settrans_command))
+        self.app.add_handler(CommandHandler("import", import_command))
+        self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))
+        # Auto-import when user uploads an .opml/.xml file (no caption needed).
+        self.app.add_handler(
+            MessageHandler(
+                filters.Document.FileExtension("opml")
+                | filters.Document.FileExtension("xml"),
+                import_document,
+            )
+        )
 
         logger.info("Starting Telegram bot...")
         await self.app.initialize()

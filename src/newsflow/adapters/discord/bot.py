@@ -55,6 +55,37 @@ def _format_sub_line(sub: Subscription) -> str:
     return f"**{title}** · {meta}\n{feed.url}"
 
 
+def _build_import_embed(result) -> discord.Embed:  # type: ignore[no-untyped-def]
+    """Summary embed for /feed import."""
+    added = len(result.added)
+    existing = len(result.already_subscribed)
+    failed = len(result.failed)
+    color = (
+        discord.Color.green()
+        if added and not failed
+        else (discord.Color.orange() if added or existing else discord.Color.red())
+    )
+    lines = [
+        f"✅ Added: **{added}**",
+        f"⏭️ Already subscribed: **{existing}**",
+        f"❌ Failed: **{failed}**",
+    ]
+    embed = discord.Embed(
+        title="OPML Import Result",
+        description="\n".join(lines),
+        color=color,
+    )
+    if result.failed:
+        fail_lines = []
+        for url, err in result.failed[:10]:
+            fail_lines.append(f"• `{url[:60]}` — {err[:80]}")
+        if len(result.failed) > 10:
+            fail_lines.append(f"…and {len(result.failed) - 10} more")
+        value = "\n".join(fail_lines)
+        embed.add_field(name="Failures", value=value[:1024], inline=False)
+    return embed
+
+
 def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def]
     """Build the /feed status embed from a SubscriptionDetail."""
     sub = detail.subscription
@@ -381,6 +412,149 @@ class FeedCommands(commands.Cog):
             return
 
         embed = _build_status_embed(detail)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="language",
+        description="Set translation language for ONE feed (overrides channel default)",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL",
+        code="Target language code (e.g. zh-CN, ja, ko, en)",
+    )
+    async def feed_language(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        code: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.set_feed_language(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+                language=code,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Language Updated" if result.success else "Failed",
+            description=result.message,
+            color=discord.Color.green() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="translate",
+        description="Toggle translation for ONE feed (overrides channel default)",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL",
+        enabled="Whether to translate this feed",
+    )
+    async def feed_translate(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        enabled: bool,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.set_feed_translate(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+                enabled=enabled,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Translation Updated" if result.success else "Failed",
+            description=result.message,
+            color=discord.Color.green() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="export",
+        description="Download this channel's subscriptions as an OPML file",
+    )
+    async def feed_export(self, interaction: discord.Interaction) -> None:
+        import io
+
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            opml_xml = await service.export_opml(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+            )
+
+        buf = io.BytesIO(opml_xml.encode("utf-8"))
+        filename = f"newsflow-{interaction.channel_id}.opml"
+        file = discord.File(buf, filename=filename)
+        await interaction.followup.send(
+            content="Subscriptions export attached:",
+            file=file,
+            ephemeral=True,
+        )
+
+    @feed_group.command(
+        name="import",
+        description="Bulk-subscribe from an OPML file (from Feedly / Reeder / etc.)",
+    )
+    @app_commands.describe(
+        file="The OPML file (.opml or .xml). Must be UTF-8 and under 1 MB.",
+    )
+    async def feed_import(
+        self,
+        interaction: discord.Interaction,
+        file: discord.Attachment,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        # Validate up-front, cheap checks before the network read.
+        if not file.filename.lower().endswith((".opml", ".xml")):
+            await interaction.followup.send(
+                f"⚠️ Expected a .opml or .xml file, got `{file.filename}`.",
+                ephemeral=True,
+            )
+            return
+        if file.size and file.size > 1024 * 1024:
+            await interaction.followup.send(
+                "⚠️ OPML file too large (1 MB cap).", ephemeral=True
+            )
+            return
+
+        try:
+            content = (await file.read()).decode("utf-8")
+        except UnicodeDecodeError:
+            await interaction.followup.send(
+                "⚠️ OPML file is not valid UTF-8.", ephemeral=True
+            )
+            return
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.import_opml(
+                platform="discord",
+                user_id=str(interaction.user.id),
+                channel_id=str(interaction.channel_id),
+                opml_content=content,
+                guild_id=(
+                    str(interaction.guild_id) if interaction.guild_id else None
+                ),
+            )
+            await session.commit()
+
+        embed = _build_import_embed(result)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @feed_group.command(name="test", description="Test an RSS feed URL")

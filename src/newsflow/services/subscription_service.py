@@ -9,6 +9,7 @@ from typing import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.config import get_settings
+from newsflow.core.opml import OpmlEntry, OpmlParseError, build_opml, parse_opml
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
 from newsflow.repositories.feed_repository import FeedRepository
@@ -49,6 +50,18 @@ class SubscriptionDetail:
     subscription: Subscription
     feed: Feed
     recent_entries: list[FeedEntry]
+
+
+@dataclass
+class OpmlImportResult:
+    """Outcome of bulk-subscribing from an OPML file."""
+    added: list[str]                  # URLs newly subscribed in this call
+    already_subscribed: list[str]     # URLs already subscribed in the channel
+    failed: list[tuple[str, str]]     # (url, reason)
+
+    @property
+    def total(self) -> int:
+        return len(self.added) + len(self.already_subscribed) + len(self.failed)
 
 
 class SubscriptionService:
@@ -310,6 +323,131 @@ class SubscriptionService:
             )
 
         return True
+
+    async def set_feed_language(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        language: str,
+    ) -> SubscriptionActionResult:
+        """Set the translation target language for a single subscription.
+
+        Unlike update_settings(feed_url=None), which acts channel-wide,
+        this is explicitly one-feed: different feeds in the same channel
+        can have different target languages.
+        """
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(
+                success=False, message="Feed not found"
+            )
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(
+                success=False, message="Subscription not found"
+            )
+        await self.sub_repo.update_subscription_settings(
+            subscription_id=sub.id, target_language=language
+        )
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Language set to {language} for {feed.title or feed_url}",
+        )
+
+    async def set_feed_translate(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        enabled: bool,
+    ) -> SubscriptionActionResult:
+        """Toggle translation for one subscription (see set_feed_language for
+        rationale)."""
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(
+                success=False, message="Feed not found"
+            )
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(
+                success=False, message="Subscription not found"
+            )
+        await self.sub_repo.update_subscription_settings(
+            subscription_id=sub.id, translate=enabled
+        )
+        state = "enabled" if enabled else "disabled"
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Translation {state} for {feed.title or feed_url}",
+        )
+
+    async def export_opml(
+        self, platform: str, channel_id: str
+    ) -> str:
+        """Dump this channel's subscriptions as an OPML 2.0 document."""
+        subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
+        entries = [
+            OpmlEntry(
+                url=sub.feed.url,
+                title=sub.feed.title or None,
+                html_url=sub.feed.site_url,
+            )
+            for sub in subs
+        ]
+        return build_opml(entries, title=f"NewsFlow Subscriptions ({platform})")
+
+    async def import_opml(
+        self,
+        platform: str,
+        user_id: str,
+        channel_id: str,
+        opml_content: str,
+        guild_id: str | None = None,
+    ) -> OpmlImportResult:
+        """Parse an OPML document and bulk-subscribe. Preview dispatch is
+        intentionally NOT triggered here — a 20-feed import would otherwise
+        spam the channel with 20 preview articles at once. Users see new
+        content on the next dispatch cycle like any other subscription.
+        """
+        try:
+            entries = parse_opml(opml_content)
+        except OpmlParseError as e:
+            return OpmlImportResult(
+                added=[],
+                already_subscribed=[],
+                failed=[("<opml>", str(e))],
+            )
+
+        result = OpmlImportResult(added=[], already_subscribed=[], failed=[])
+        for entry in entries:
+            sub_result = await self.subscribe(
+                platform=platform,
+                user_id=user_id,
+                channel_id=channel_id,
+                feed_url=entry.url,
+                guild_id=guild_id,
+            )
+            if sub_result.success:
+                if sub_result.is_new:
+                    result.added.append(entry.url)
+                else:
+                    result.already_subscribed.append(entry.url)
+            else:
+                result.failed.append((entry.url, sub_result.message))
+
+        logger.info(
+            f"OPML import ({platform}/{channel_id}): "
+            f"{len(result.added)} added, "
+            f"{len(result.already_subscribed)} existing, "
+            f"{len(result.failed)} failed"
+        )
+        return result
 
     async def get_unsent_entries(
         self,

@@ -3,13 +3,36 @@ SQLAlchemy base configuration and database utilities.
 """
 
 from datetime import datetime, timezone
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from newsflow.config import get_settings
+
+
+@event.listens_for(Engine, "connect")
+def _set_sqlite_fk_pragma(dbapi_connection: Any, connection_record: Any) -> None:
+    """Enable SQLite foreign-key enforcement for every new connection.
+
+    SQLite ships with FK checks OFF by default; `PRAGMA foreign_keys=ON`
+    has to be set per connection. Without it, `ON DELETE CASCADE` on our
+    FKs is silently ignored — deleting a Subscription leaves its SentEntry
+    rows behind, and subsequent /feed add races UNIQUE constraint errors
+    when seed_sent_entries tries to insert the same (sub_id, entry_id) pair.
+
+    The check narrows to SQLite so non-SQLite backends (e.g. asyncpg) are
+    unaffected.
+    """
+    if "sqlite" not in dbapi_connection.__class__.__module__.lower():
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
 
 # Naming convention for constraints (important for migrations)
 convention = {

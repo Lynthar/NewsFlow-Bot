@@ -113,3 +113,13 @@ class BaseAdapter(ABC):
     async def on_error(self, error: Exception) -> None:
         """Called when an error occurs."""
         pass
+
+    def is_connected(self) -> bool:
+        """Whether this adapter currently has a live connection to its
+        platform. Default is True (conservative — treat as healthy unless
+        the adapter says otherwise). Override where the underlying library
+        exposes a meaningful connection flag (e.g. discord.py's is_ready,
+        python-telegram-bot's updater.running). The result gates per-platform
+        heartbeat writes used by HEALTHCHECK.
+        """
+        return True

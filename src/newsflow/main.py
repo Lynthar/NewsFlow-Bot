@@ -135,6 +135,12 @@ async def start_cleanup_loop() -> None:
     await dispatcher.run_cleanup_loop()
 
 
+async def start_platform_monitor() -> None:
+    """Emit per-platform heartbeats while each adapter reports as connected."""
+    dispatcher = get_dispatcher()
+    await dispatcher.run_platform_monitor()
+
+
 async def main() -> None:
     """Main entry point."""
     settings = get_settings()
@@ -202,6 +208,9 @@ async def main() -> None:
 
         # Add the cleanup loop (deletes old entries/sent records)
         tasks.append(start_cleanup_loop())
+
+        # Add the platform monitor (per-platform heartbeats for HEALTHCHECK)
+        tasks.append(start_platform_monitor())
 
         logger.info("All services starting...")
 

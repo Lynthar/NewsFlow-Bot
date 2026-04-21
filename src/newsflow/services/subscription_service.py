@@ -35,6 +35,22 @@ class UnsubscribeResult:
     message: str = ""
 
 
+@dataclass
+class SubscriptionActionResult:
+    """Result of a simple state change on a subscription (pause/resume)."""
+    success: bool
+    message: str = ""
+
+
+@dataclass
+class SubscriptionDetail:
+    """Data transfer object for /feed status. Composes a subscription with
+    its owning feed and a few recent entries for context."""
+    subscription: Subscription
+    feed: Feed
+    recent_entries: list[FeedEntry]
+
+
 class SubscriptionService:
     """
     Service for subscription management.
@@ -109,16 +125,19 @@ class SubscriptionService:
                 is_new=False,
             )
 
-        # Seed SentEntry with existing entries so the channel doesn't get
-        # flooded with the feed's back catalog on first subscribe.
+        # Seed SentEntry with all but the single most-recent entry. That
+        # entry stays unsent so the user gets one preview article shortly
+        # after subscribing (delivered by Dispatcher.schedule_preview post-commit),
+        # instead of waiting up to a full FETCH_INTERVAL for the first message.
         seeded = await self.sub_repo.seed_sent_entries(
             subscription_id=subscription.id,
             feed_id=feed.id,
+            keep_latest=1,
         )
 
         logger.info(
             f"New subscription: {platform}/{channel_id} -> {feed_url} "
-            f"(seeded {seeded} existing entries as sent)"
+            f"(seeded {seeded} back-catalog entries as sent; 1 kept for preview)"
         )
 
         return SubscribeResult(
@@ -172,6 +191,77 @@ class SubscriptionService:
         return UnsubscribeResult(
             success=True,
             message=f"Unsubscribed from {feed.title or feed_url}",
+        )
+
+    async def pause_subscription(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+    ) -> SubscriptionActionResult:
+        """Mark a subscription inactive. Dispatch skips it until resumed."""
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(
+                success=False, message="Feed not found"
+            )
+        updated = await self.sub_repo.deactivate_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not updated:
+            return SubscriptionActionResult(
+                success=False, message="Subscription not found"
+            )
+        logger.info(f"Paused: {platform}/{channel_id} × {feed_url}")
+        return SubscriptionActionResult(
+            success=True, message=f"Paused {feed.title or feed_url}"
+        )
+
+    async def resume_subscription(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+    ) -> SubscriptionActionResult:
+        """Reactivate a previously paused subscription."""
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(
+                success=False, message="Feed not found"
+            )
+        updated = await self.sub_repo.activate_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not updated:
+            return SubscriptionActionResult(
+                success=False, message="Subscription not found"
+            )
+        logger.info(f"Resumed: {platform}/{channel_id} × {feed_url}")
+        return SubscriptionActionResult(
+            success=True, message=f"Resumed {feed.title or feed_url}"
+        )
+
+    async def get_subscription_detail(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        entry_limit: int = 5,
+    ) -> SubscriptionDetail | None:
+        """Fetch a single subscription with its feed and recent entries for
+        a detailed status view. Returns None if the subscription doesn't exist.
+        """
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return None
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return None
+        recent = await self.feed_repo.get_recent_entries(feed.id, entry_limit)
+        return SubscriptionDetail(
+            subscription=sub, feed=feed, recent_entries=list(recent)
         )
 
     async def get_channel_subscriptions(

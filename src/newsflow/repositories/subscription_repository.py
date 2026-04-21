@@ -178,7 +178,8 @@ class SubscriptionRepository:
         channel_id: str,
         feed_id: int,
     ) -> bool:
-        """Deactivate a subscription."""
+        """Deactivate a subscription. Dispatch skips inactive subscriptions
+        but the row is retained so it can be resumed without losing state."""
         result = await self.session.execute(
             update(Subscription)
             .where(
@@ -187,6 +188,24 @@ class SubscriptionRepository:
                 Subscription.feed_id == feed_id,
             )
             .values(is_active=False)
+        )
+        return result.rowcount > 0
+
+    async def activate_subscription(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_id: int,
+    ) -> bool:
+        """Reactivate a previously paused subscription."""
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+                Subscription.feed_id == feed_id,
+            )
+            .values(is_active=True)
         )
         return result.rowcount > 0
 
@@ -256,21 +275,30 @@ class SubscriptionRepository:
         self,
         subscription_id: int,
         feed_id: int,
+        keep_latest: int = 0,
     ) -> int:
-        """
-        Seed SentEntry with all existing entries of a feed.
-
-        Called on new subscription to prevent dumping historical entries
-        into the channel. Only entries published after this point will be sent.
+        """Seed SentEntry so a new subscription doesn't flood the channel
+        with backlog. Entries ordered newest-first by published_at; the top
+        `keep_latest` are left unsent (they'll be delivered on next dispatch
+        as a preview). Remaining entries are marked sent.
 
         Returns:
-            Number of seeded entries.
+            Number of rows seeded (i.e. count of entries excluded from preview).
         """
         from newsflow.models.feed import FeedEntry
 
-        result = await self.session.execute(
-            select(FeedEntry.id).where(FeedEntry.feed_id == feed_id)
+        stmt = (
+            select(FeedEntry.id)
+            .where(FeedEntry.feed_id == feed_id)
+            .order_by(
+                FeedEntry.published_at.desc().nullslast(),
+                FeedEntry.id.desc(),
+            )
         )
+        if keep_latest > 0:
+            stmt = stmt.offset(keep_latest)
+
+        result = await self.session.execute(stmt)
         entry_ids = result.scalars().all()
 
         if not entry_ids:

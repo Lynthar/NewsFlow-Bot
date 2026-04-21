@@ -18,8 +18,12 @@ from telegram.ext import (
 
 from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.config import get_settings
+from newsflow.core.timeutil import relative_time, time_until
 from newsflow.models.base import get_session_factory
+from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
+
+LIST_PAGE_SIZE = 20
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +36,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         "🗞️ <b>Welcome to NewsFlow Bot!</b>\n\n"
         "I can send you updates from RSS feeds.\n\n"
-        "<b>Commands:</b>\n"
-        "/add &lt;url&gt; - Add an RSS feed\n"
-        "/remove &lt;url&gt; - Remove an RSS feed\n"
-        "/list - List subscribed feeds\n"
-        "/test &lt;url&gt; - Test an RSS feed\n"
-        "/language &lt;code&gt; - Set translation language\n"
-        "/translate &lt;on/off&gt; - Toggle translation\n"
-        "/status - Show bot status\n"
-        "/help - Show this help message",
+        "<b>Feed management:</b>\n"
+        "/add &lt;url&gt; — Subscribe\n"
+        "/remove &lt;url&gt; — Unsubscribe\n"
+        "/pause &lt;url&gt; — Temporarily stop delivery\n"
+        "/resume &lt;url&gt; — Resume delivery\n"
+        "/list [page] — List subscribed feeds\n"
+        "/info &lt;url&gt; — Detailed status of one feed\n"
+        "/test &lt;url&gt; — Check if a URL is a valid feed\n\n"
+        "<b>Settings:</b>\n"
+        "/language &lt;code&gt; — Translation target language\n"
+        "/translate &lt;on/off&gt; — Toggle translation\n\n"
+        "<b>Other:</b>\n"
+        "/status — Bot status\n"
+        "/help — This message",
         parse_mode="HTML",
     )
 
@@ -78,6 +87,13 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
         await session.commit()
+
+    # Deliver a preview entry in the background so the user sees content
+    # without waiting a full fetch interval.
+    if result.success and result.is_new and result.subscription:
+        asyncio.create_task(
+            get_dispatcher().schedule_preview(result.subscription.id)
+        )
 
     if result.success:
         feed_title = result.feed.title or url
@@ -120,38 +136,204 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(message, parse_mode="HTML")
 
 
+def _escape_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
+def _sub_status_chip(sub: Subscription) -> str | None:
+    feed = sub.feed
+    if not sub.is_active:
+        return "⏸ paused"
+    if not feed.is_active:
+        return "🛑 auto-disabled"
+    if feed.error_count > 0:
+        return f"⚠️ {feed.error_count} errors, retry {time_until(feed.next_retry_at)}"
+    return None
+
+
+def _format_sub_line(sub: Subscription) -> str:
+    feed = sub.feed
+    title = _escape_html(feed.title or "Untitled")
+    parts = [
+        f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"
+    ]
+    chip = _sub_status_chip(sub)
+    if chip:
+        parts.append(chip)
+    meta = " · ".join(parts)
+    return f"<b>{title}</b> · {meta}\n{_escape_html(feed.url)}"
+
+
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /list command."""
+    """Handle /list [page]. Paginated: LIST_PAGE_SIZE feeds per page."""
+    chat_id = str(update.effective_chat.id)
+
+    try:
+        page = int(context.args[0]) if context.args else 1
+    except (ValueError, IndexError):
+        page = 1
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        subs = list(
+            await service.get_channel_subscriptions(
+                platform="telegram", channel_id=chat_id
+            )
+        )
+
+    if not subs:
+        await update.message.reply_text(
+            "📭 <b>No feeds subscribed</b>\n\n"
+            "Use /add &lt;url&gt; to subscribe to an RSS feed.",
+            parse_mode="HTML",
+        )
+        return
+
+    total = len(subs)
+    total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * LIST_PAGE_SIZE
+    page_subs = subs[start : start + LIST_PAGE_SIZE]
+
+    header = f"📰 <b>Subscribed Feeds ({total})</b>"
+    if total_pages > 1:
+        header += f" — page {page}/{total_pages}"
+
+    body = "\n\n".join(_format_sub_line(s) for s in page_subs)
+
+    footer = ""
+    if page < total_pages:
+        footer = f"\n\n<i>Use /list {page + 1} for the next page.</i>"
+
+    await update.message.reply_text(
+        header + "\n\n" + body + footer,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /pause <url>."""
+    if not context.args:
+        await update.message.reply_text("Usage: /pause <rss_url>")
+        return
+    url = context.args[0]
     chat_id = str(update.effective_chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
-        subscriptions = await service.get_channel_subscriptions(
-            platform="telegram",
-            channel_id=chat_id,
+        result = await service.pause_subscription(
+            platform="telegram", channel_id=chat_id, feed_url=url
+        )
+        await session.commit()
+
+    prefix = "⏸" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+    )
+
+
+async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /resume <url>."""
+    if not context.args:
+        await update.message.reply_text("Usage: /resume <rss_url>")
+        return
+    url = context.args[0]
+    chat_id = str(update.effective_chat.id)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.resume_subscription(
+            platform="telegram", channel_id=chat_id, feed_url=url
+        )
+        await session.commit()
+
+    prefix = "▶️" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+    )
+
+
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /info <url> — detailed status of one subscribed feed."""
+    if not context.args:
+        await update.message.reply_text("Usage: /info <rss_url>")
+        return
+    url = context.args[0]
+    chat_id = str(update.effective_chat.id)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        detail = await service.get_subscription_detail(
+            platform="telegram", channel_id=chat_id, feed_url=url
         )
 
-    if not subscriptions:
+    if detail is None:
         await update.message.reply_text(
-            "📭 <b>No feeds subscribed</b>\n\n"
-            "Use /add <url> to subscribe to an RSS feed.",
+            f"⚠️ No subscription to <code>{_escape_html(url)}</code> in this chat.",
             parse_mode="HTML",
         )
         return
 
-    lines = [f"📰 <b>Subscribed Feeds ({len(subscriptions)})</b>\n"]
-
-    for sub in subscriptions:
-        feed = sub.feed
-        translate_status = "🌐 On" if sub.translate else "Off"
-        lines.append(
-            f"\n<b>{feed.title or 'Untitled'}</b>\n"
-            f"URL: {feed.url}\n"
-            f"Translate: {translate_status} ({sub.target_language})"
+    sub = detail.subscription
+    feed = detail.feed
+    if not sub.is_active:
+        state = "⏸ Paused"
+    elif not feed.is_active:
+        state = "🛑 Auto-disabled (10+ consecutive errors)"
+    elif feed.error_count > 0:
+        state = (
+            f"⚠️ {feed.error_count} errors — retry "
+            f"{time_until(feed.next_retry_at)}"
         )
+    else:
+        state = "✅ Healthy"
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    lines = [
+        f"📊 <b>{_escape_html(feed.title or 'Untitled Feed')}</b>",
+        f"🔗 {_escape_html(feed.url)}",
+        "",
+        f"<b>State:</b> {state}",
+        f"<b>Translation:</b> "
+        f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
+        f"<b>Last OK fetch:</b> {relative_time(feed.last_successful_fetch_at)}",
+        f"<b>Last attempt:</b> {relative_time(feed.last_fetched_at)}",
+    ]
+    if feed.last_error and feed.error_count > 0:
+        err = feed.last_error
+        if len(err) > 200:
+            err = err[:200] + "…"
+        lines.append(f"<b>Last error:</b> {_escape_html(err)}")
+
+    if detail.recent_entries:
+        lines.append("")
+        lines.append("<b>Recent articles:</b>")
+        for entry in detail.recent_entries:
+            ts = (
+                relative_time(entry.published_at)
+                if entry.published_at
+                else ""
+            )
+            title_line = entry.title[:80] + (
+                "…" if len(entry.title) > 80 else ""
+            )
+            suffix = f" — {ts}" if ts else ""
+            lines.append(
+                f"• <a href=\"{_escape_html(entry.link)}\">"
+                f"{_escape_html(title_line)}</a>{suffix}"
+            )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -296,6 +478,15 @@ class TelegramAdapter(BaseAdapter):
     def platform_name(self) -> str:
         return "telegram"
 
+    def is_connected(self) -> bool:
+        """Application running + updater polling. PTB auto-reconnects on
+        transient errors; this flag turns off only when the updater is
+        actually stopped or never started."""
+        if self.app is None:
+            return False
+        updater = self.app.updater
+        return bool(updater is not None and updater.running)
+
     async def start(self) -> None:
         """Start the Telegram bot."""
         global _adapter
@@ -316,7 +507,10 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("help", help_command))
         self.app.add_handler(CommandHandler("add", add_command))
         self.app.add_handler(CommandHandler("remove", remove_command))
+        self.app.add_handler(CommandHandler("pause", pause_command))
+        self.app.add_handler(CommandHandler("resume", resume_command))
         self.app.add_handler(CommandHandler("list", list_command))
+        self.app.add_handler(CommandHandler("info", info_command))
         self.app.add_handler(CommandHandler("test", test_command))
         self.app.add_handler(CommandHandler("language", language_command))
         self.app.add_handler(CommandHandler("translate", translate_command))

@@ -15,8 +15,106 @@ from discord.ext import commands
 
 from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.config import get_settings
+from newsflow.core.timeutil import relative_time, time_until
 from newsflow.models.base import get_session_factory
+from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
+
+# Max subscriptions per /feed list page. Discord embed description caps
+# at 4096 chars; 20 entries × ~150 chars each leaves comfortable headroom.
+LIST_PAGE_SIZE = 20
+
+
+def _sub_status_chip(sub: Subscription) -> str | None:
+    """Return a one-line status chip when the sub needs user attention, else None.
+
+    Priority: user-paused > feed auto-disabled > feed errored. Healthy subs
+    get no chip to keep the list uncluttered.
+    """
+    feed = sub.feed
+    if not sub.is_active:
+        return "⏸ paused"
+    if not feed.is_active:
+        return "🛑 auto-disabled (too many errors)"
+    if feed.error_count > 0:
+        return f"⚠️ {feed.error_count} errors, retry {time_until(feed.next_retry_at)}"
+    return None
+
+
+def _format_sub_line(sub: Subscription) -> str:
+    """Format one subscription for the /feed list description."""
+    feed = sub.feed
+    title = feed.title or "Untitled"
+    parts = [
+        f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"
+    ]
+    chip = _sub_status_chip(sub)
+    if chip:
+        parts.append(chip)
+    meta = " · ".join(parts)
+    return f"**{title}** · {meta}\n{feed.url}"
+
+
+def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def]
+    """Build the /feed status embed from a SubscriptionDetail."""
+    sub = detail.subscription
+    feed = detail.feed
+
+    if not sub.is_active:
+        state = "⏸ Paused"
+        color = discord.Color.orange()
+    elif not feed.is_active:
+        state = "🛑 Auto-disabled (10+ consecutive errors)"
+        color = discord.Color.red()
+    elif feed.error_count > 0:
+        state = f"⚠️ {feed.error_count} errors — retry {time_until(feed.next_retry_at)}"
+        color = discord.Color.gold()
+    else:
+        state = "✅ Healthy"
+        color = discord.Color.green()
+
+    embed = discord.Embed(
+        title=feed.title or "Untitled Feed",
+        url=feed.url,
+        description=feed.description[:300] + "…"
+        if feed.description and len(feed.description) > 300
+        else (feed.description or ""),
+        color=color,
+    )
+    embed.add_field(name="State", value=state, inline=False)
+    embed.add_field(
+        name="Translation",
+        value=f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
+        inline=True,
+    )
+    embed.add_field(
+        name="Last Successful Fetch",
+        value=relative_time(feed.last_successful_fetch_at),
+        inline=True,
+    )
+    embed.add_field(
+        name="Last Fetch Attempt",
+        value=relative_time(feed.last_fetched_at),
+        inline=True,
+    )
+    if feed.last_error and feed.error_count > 0:
+        err = feed.last_error
+        if len(err) > 200:
+            err = err[:200] + "…"
+        embed.add_field(name="Last Error", value=err, inline=False)
+
+    if detail.recent_entries:
+        lines = []
+        for entry in detail.recent_entries:
+            ts = relative_time(entry.published_at) if entry.published_at else ""
+            title_line = entry.title[:80] + ("…" if len(entry.title) > 80 else "")
+            lines.append(f"• [{title_line}]({entry.link})" + (f" — {ts}" if ts else ""))
+        val = "\n".join(lines)
+        if len(val) > 1024:
+            val = val[:1020] + "…"
+        embed.add_field(name="Recent Articles", value=val, inline=False)
+
+    return embed
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +199,13 @@ class FeedCommands(commands.Cog):
 
             await session.commit()
 
+        # Deliver a preview entry in the background so the user sees content
+        # without waiting a full fetch interval.
+        if result.success and result.is_new and result.subscription:
+            asyncio.create_task(
+                get_dispatcher().schedule_preview(result.subscription.id)
+            )
+
         if result.success:
             embed = discord.Embed(
                 title="Feed Added",
@@ -155,17 +260,22 @@ class FeedCommands(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @feed_group.command(name="list", description="List all RSS feeds in this channel")
-    async def feed_list(self, interaction: discord.Interaction) -> None:
-        """List all feeds for this channel."""
+    @feed_group.command(name="list", description="List RSS feeds in this channel")
+    @app_commands.describe(page="Page number (20 feeds per page)")
+    async def feed_list(
+        self, interaction: discord.Interaction, page: int = 1
+    ) -> None:
+        """List feeds for this channel, paginated."""
         await interaction.response.defer(ephemeral=True)
 
         session_factory = get_session_factory()
         async with session_factory() as session:
             service = SubscriptionService(session)
-            subscriptions = await service.get_channel_subscriptions(
-                platform="discord",
-                channel_id=str(interaction.channel_id),
+            subscriptions = list(
+                await service.get_channel_subscriptions(
+                    platform="discord",
+                    channel_id=str(interaction.channel_id),
+                )
             )
 
         if not subscriptions:
@@ -174,20 +284,103 @@ class FeedCommands(commands.Cog):
                 description="No feeds subscribed yet.\nUse `/feed add <url>` to add one.",
                 color=discord.Color.blue(),
             )
-        else:
-            embed = discord.Embed(
-                title=f"Subscribed Feeds ({len(subscriptions)})",
-                color=discord.Color.blue(),
-            )
-            for sub in subscriptions:
-                feed = sub.feed
-                translate_status = "On" if sub.translate else "Off"
-                embed.add_field(
-                    name=feed.title or "Untitled",
-                    value=f"URL: {feed.url}\nTranslate: {translate_status} ({sub.target_language})",
-                    inline=False,
-                )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
+        total = len(subscriptions)
+        total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+        page = max(1, min(page, total_pages))
+        start = (page - 1) * LIST_PAGE_SIZE
+        page_subs = subscriptions[start : start + LIST_PAGE_SIZE]
+
+        description = "\n\n".join(_format_sub_line(sub) for sub in page_subs)
+
+        embed = discord.Embed(
+            title=f"Subscribed Feeds ({total})",
+            description=description,
+            color=discord.Color.blue(),
+        )
+        if total_pages > 1:
+            embed.set_footer(
+                text=(
+                    f"Page {page}/{total_pages}"
+                    + (f" — /feed list page:{page + 1} for next" if page < total_pages else "")
+                )
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(name="pause", description="Stop delivering from this feed")
+    @app_commands.describe(url="The RSS feed URL to pause")
+    async def feed_pause(
+        self, interaction: discord.Interaction, url: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.pause_subscription(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Paused" if result.success else "Failed to Pause",
+            description=result.message,
+            color=discord.Color.orange() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(name="resume", description="Resume delivery from a paused feed")
+    @app_commands.describe(url="The RSS feed URL to resume")
+    async def feed_resume(
+        self, interaction: discord.Interaction, url: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.resume_subscription(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Resumed" if result.success else "Failed to Resume",
+            description=result.message,
+            color=discord.Color.green() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(name="status", description="Detailed status of one feed in this channel")
+    @app_commands.describe(url="The RSS feed URL")
+    async def feed_status(
+        self, interaction: discord.Interaction, url: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            detail = await service.get_subscription_detail(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+            )
+
+        if detail is None:
+            embed = discord.Embed(
+                title="Feed Not Found",
+                description=f"No subscription to `{url}` in this channel.",
+                color=discord.Color.orange(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        embed = _build_status_embed(detail)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @feed_group.command(name="test", description="Test an RSS feed URL")
@@ -375,6 +568,15 @@ class DiscordAdapter(BaseAdapter):
     async def stop(self) -> None:
         """Stop the Discord bot."""
         await self.bot.close()
+
+    def is_connected(self) -> bool:
+        """Ready + not closed. discord.py handles auto-reconnect internally
+        but briefly reports not-ready during disconnect windows."""
+        return (
+            self.bot is not None
+            and self.bot.is_ready()
+            and not self.bot.is_closed()
+        )
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Discord channel."""

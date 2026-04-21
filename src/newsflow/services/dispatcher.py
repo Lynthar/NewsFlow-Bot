@@ -31,9 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 class MessageSender(Protocol):
-    """Protocol for message sending."""
+    """Protocol for message sending. Adapters supply send_message and
+    is_connected; everything else on BaseAdapter is optional from the
+    dispatcher's point of view."""
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
+        ...
+
+    def is_connected(self) -> bool:
         ...
 
 
@@ -77,21 +82,21 @@ class Dispatcher:
             self._ready_event.set()
         logger.info(f"Registered adapter for platform: {platform}")
 
-    @property
-    def heartbeat_path(self) -> Path:
-        """Liveness heartbeat file, touched after every dispatch cycle."""
-        return self.settings.data_dir / ".heartbeat"
+    def heartbeat_path(self, name: str = "dispatch") -> Path:
+        """Per-task heartbeat file. HEALTHCHECK reads the directory and
+        fails if any file hasn't been touched within the freshness window,
+        so each long-running task writes its own."""
+        return self.settings.data_dir / "heartbeat" / name
 
-    def _write_heartbeat(self) -> None:
-        """Touch the heartbeat file so external probes can tell a stuck
-        dispatch loop apart from a crashed process. Failures are swallowed —
-        a heartbeat write must never break dispatch.
-        """
+    def _write_heartbeat(self, name: str = "dispatch") -> None:
+        """Touch a named heartbeat file. Failures are swallowed — heartbeat
+        must never be the thing that breaks a task."""
         try:
-            self.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
-            self.heartbeat_path.touch()
+            path = self.heartbeat_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
         except OSError as e:
-            logger.debug(f"Heartbeat write failed: {e}")
+            logger.debug(f"Heartbeat write failed ({name}): {e}")
 
     async def wait_for_adapters(self, timeout: float = 60.0) -> bool:
         """Wait until all expected adapters have registered.
@@ -153,7 +158,7 @@ class Dispatcher:
 
         # Heartbeat reflects "dispatch loop iterated", not "dispatch succeeded".
         # A handled error still counts — the loop is alive and trying.
-        self._write_heartbeat()
+        self._write_heartbeat("dispatch")
         return result
 
     async def _dispatch_to_subscription(
@@ -307,6 +312,74 @@ class Dispatcher:
             summary_translated=summary_translated,
         )
 
+    async def run_platform_monitor(self, interval_seconds: int = 30) -> None:
+        """Periodically touch a per-platform heartbeat while its adapter
+        reports a live connection. HEALTHCHECK reads these alongside the
+        dispatch/cleanup heartbeats, so a hung platform connection shows up
+        independently of the dispatch loop still iterating.
+        """
+        await self.wait_for_adapters(timeout=60.0)
+        logger.info("Starting platform monitor")
+
+        while True:
+            for platform, adapter in list(self._adapters.items()):
+                try:
+                    connected = adapter.is_connected()
+                except Exception:
+                    logger.exception(
+                        f"adapter.is_connected() raised for {platform}"
+                    )
+                    connected = False
+
+                if connected:
+                    self._write_heartbeat(platform)
+
+            await asyncio.sleep(interval_seconds)
+
+    async def dispatch_subscription(self, subscription_id: int) -> int:
+        """Dispatch unsent entries for one subscription, in its own session.
+
+        Used for the post-subscribe preview path: after a user runs /add, we
+        immediately deliver the single most-recent entry (seed kept it unsent)
+        so they don't have to wait a full FETCH_INTERVAL to see any content.
+
+        Returns:
+            Number of messages successfully sent.
+        """
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            sub_repo = SubscriptionRepository(session)
+            sub = await sub_repo.get_subscription_by_id(subscription_id)
+            if sub is None or not sub.is_active:
+                return 0
+            adapter = self._adapters.get(sub.platform)
+            if adapter is None:
+                logger.debug(
+                    f"dispatch_subscription: no adapter for {sub.platform}; "
+                    f"preview deferred to regular dispatch loop"
+                )
+                return 0
+
+            sent = await self._dispatch_to_subscription(session, sub, sub_repo)
+            await session.commit()
+            return sent
+
+    async def schedule_preview(self, subscription_id: int) -> None:
+        """Fire-and-forget wrapper for dispatch_subscription, safe to use
+        with `asyncio.create_task(...)` from a slash command handler. Never
+        raises — preview failures are logged but don't affect the user's ack.
+        """
+        try:
+            sent = await self.dispatch_subscription(subscription_id)
+            if sent:
+                logger.info(
+                    f"Preview: delivered {sent} entry/entries to subscription {subscription_id}"
+                )
+        except Exception:
+            logger.exception(
+                f"Preview dispatch failed for subscription {subscription_id}"
+            )
+
     async def run_cleanup_loop(self) -> None:
         """Periodically delete old feed entries and sent-entry records.
 
@@ -342,6 +415,8 @@ class Dispatcher:
             except Exception:
                 logger.exception("Cleanup loop error")
 
+            # Mark cleanup alive regardless of whether the iteration did work.
+            self._write_heartbeat("cleanup")
             await asyncio.sleep(interval_seconds)
 
     async def run_dispatch_loop(self, interval_minutes: int | None = None) -> None:

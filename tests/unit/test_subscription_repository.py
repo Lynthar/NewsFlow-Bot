@@ -58,6 +58,49 @@ async def test_seed_sent_entries_empty_feed(session):
     assert seeded == 0
 
 
+async def test_seed_sent_entries_keep_latest_preserves_n_newest(session):
+    """With keep_latest=1, the single newest entry stays unsent — used by
+    subscribe() to deliver a preview to the user."""
+    from datetime import datetime, timedelta, timezone
+
+    feed = Feed(url="https://example.com/feed")
+    session.add(feed)
+    await session.flush()
+
+    now = datetime.now(timezone.utc)
+    # 3 entries, newest last by hours_ago
+    for i, hours_ago in enumerate([3, 2, 1]):
+        session.add(
+            FeedEntry(
+                feed_id=feed.id,
+                guid=f"g{i}",
+                title=f"Entry {i}",
+                link=f"https://example.com/{i}",
+                published_at=now - timedelta(hours=hours_ago),
+            )
+        )
+    await session.flush()
+
+    sub = Subscription(
+        platform="test",
+        platform_user_id="u1",
+        platform_channel_id="c1",
+        feed_id=feed.id,
+        is_active=True,
+    )
+    session.add(sub)
+    await session.flush()
+
+    repo = SubscriptionRepository(session)
+    seeded = await repo.seed_sent_entries(sub.id, feed.id, keep_latest=1)
+
+    assert seeded == 2
+
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    assert len(unsent) == 1
+    assert unsent[0].guid == "g2"  # the newest (1 hour ago)
+
+
 async def test_entries_added_after_seed_are_unsent(session):
     feed = await _make_feed_with_entries(session, 2)
     sub = await _make_subscription(session, feed.id)

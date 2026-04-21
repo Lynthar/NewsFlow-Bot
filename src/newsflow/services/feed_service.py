@@ -2,10 +2,12 @@
 Feed service - Business logic for feed management.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.config import get_settings
@@ -95,23 +97,45 @@ class FeedService:
                 message="Feed has no entries",
             )
 
-        # Create feed record
-        feed = await self.repo.create_feed(
-            url=url,
-            title=result.feed_title,
-            description=result.feed_description,
-            site_url=result.feed_link,
-        )
+        # Create feed record. Guard against a race where two concurrent
+        # subscribers pass the get_feed_by_url check at the same time and
+        # both try to INSERT — SQLite's unique constraint on Feed.url makes
+        # the second INSERT raise IntegrityError instead of silently
+        # succeeding, and we want to surface that as "reuse the existing"
+        # rather than a SQL stack trace to the user.
+        try:
+            feed = await self.repo.create_feed(
+                url=url,
+                title=result.feed_title,
+                description=result.feed_description,
+                site_url=result.feed_link,
+            )
 
-        # Update with cache headers
-        await self.repo.update_feed_metadata(
-            feed_id=feed.id,
-            etag=result.etag,
-            last_modified=result.last_modified,
-        )
+            # Update with cache headers
+            await self.repo.update_feed_metadata(
+                feed_id=feed.id,
+                etag=result.etag,
+                last_modified=result.last_modified,
+            )
 
-        # Store entries
-        entries = await self.repo.create_entries_bulk(feed.id, result.entries)
+            # Store entries
+            entries = await self.repo.create_entries_bulk(feed.id, result.entries)
+        except IntegrityError:
+            await self.session.rollback()
+            existing = await self.repo.get_feed_by_url(url)
+            if existing is None:
+                return AddFeedResult(
+                    success=False,
+                    message="Concurrent add race — please retry",
+                )
+            logger.info(
+                f"add_feed: concurrent race on {url}, reusing winner"
+            )
+            return AddFeedResult(
+                success=True,
+                feed=existing,
+                message="Feed already exists",
+            )
 
         logger.info(f"Added feed: {url} with {len(entries)} entries")
 
@@ -140,9 +164,22 @@ class FeedService:
         """Write a FetchResult to the DB. No network I/O — safe to call
         sequentially over a batch of already-fetched results."""
         if not result.success:
+            was_active = feed.is_active
             await self.repo.mark_feed_error(
                 feed.id, result.error, base_delay_seconds=self._backoff_base_seconds
             )
+            # Feed.mark_error mutates the same ORM instance via the identity
+            # map, so feed.is_active now reflects the post-update state.
+            if was_active and not feed.is_active:
+                # Transitioned this call — notify subscribers in a separate
+                # session (theirs; ours isn't committed yet). Pass identity
+                # by value so the notify task doesn't need to re-read.
+                from newsflow.services.dispatcher import get_dispatcher
+                asyncio.create_task(
+                    get_dispatcher().notify_feed_deactivated(
+                        feed.id, feed.url, feed.title
+                    )
+                )
             return FetchFeedResult(
                 success=False,
                 feed=feed,

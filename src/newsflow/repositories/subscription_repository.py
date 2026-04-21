@@ -70,14 +70,21 @@ class SubscriptionRepository:
         )
         return result.scalars().all()
 
-    async def get_feed_subscriptions(self, feed_id: int) -> Sequence[Subscription]:
-        """Get all active subscriptions for a feed."""
+    async def get_feed_subscriptions(
+        self, feed_id: int, include_inactive: bool = False
+    ) -> Sequence[Subscription]:
+        """Get subscriptions for a feed.
+
+        By default only active ones (what dispatch uses). Pass
+        include_inactive=True when the caller wants paused subscribers too
+        — e.g. for system notifications that every subscriber should see
+        regardless of their pause state.
+        """
+        conditions = [Subscription.feed_id == feed_id]
+        if not include_inactive:
+            conditions.append(Subscription.is_active == True)
         result = await self.session.execute(
-            select(Subscription)
-            .where(
-                Subscription.feed_id == feed_id,
-                Subscription.is_active == True,
-            )
+            select(Subscription).where(*conditions)
         )
         return result.scalars().all()
 

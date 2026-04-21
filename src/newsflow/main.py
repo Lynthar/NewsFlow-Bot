@@ -181,10 +181,20 @@ async def main() -> None:
         init_cache("memory")
         logger.info("Memory cache initialized")
 
-    # Setup signal handlers
+    # Setup signal handlers. loop.add_signal_handler isn't implemented on
+    # Windows' ProactorEventLoop, but Ctrl+C still surfaces as
+    # KeyboardInterrupt out of asyncio.run() and is caught in cli(), so
+    # dev-on-Windows still shuts down cleanly via that path.
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(loop)))
+        try:
+            loop.add_signal_handler(
+                sig, lambda: asyncio.create_task(shutdown(loop))
+            )
+        except NotImplementedError:
+            logger.debug(
+                f"Signal {sig.name} handler not supported on this platform"
+            )
 
     # Start all services
     try:

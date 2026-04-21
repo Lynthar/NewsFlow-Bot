@@ -31,11 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 class MessageSender(Protocol):
-    """Protocol for message sending. Adapters supply send_message and
-    is_connected; everything else on BaseAdapter is optional from the
-    dispatcher's point of view."""
+    """Protocol for message sending. Adapters supply send_message (for
+    structured feed entries), send_text (for system notifications like
+    feed-auto-disabled notices), and is_connected (for HEALTHCHECK)."""
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
+        ...
+
+    async def send_text(self, channel_id: str, text: str) -> bool:
         ...
 
     def is_connected(self) -> bool:
@@ -363,6 +366,48 @@ class Dispatcher:
             sent = await self._dispatch_to_subscription(session, sub, sub_repo)
             await session.commit()
             return sent
+
+    async def notify_feed_deactivated(
+        self, feed_id: int, feed_url: str, feed_title: str | None
+    ) -> None:
+        """Send a system message to all of a feed's subscribers (including
+        paused ones) that the feed has been auto-disabled. Caller schedules
+        this via asyncio.create_task after detecting the deactivation —
+        identity is passed as args rather than re-read from DB so it works
+        before the caller's transaction commits.
+        """
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                sub_repo = SubscriptionRepository(session)
+                subs = await sub_repo.get_feed_subscriptions(
+                    feed_id, include_inactive=True
+                )
+
+            if not subs:
+                return
+
+            name = feed_title or feed_url
+            text = (
+                f"⚠️ The RSS feed \"{name}\" has been auto-disabled after "
+                f"10 consecutive fetch errors. Use /feed resume <url> once "
+                f"the source is working again, or /feed remove <url> to "
+                f"clean up.\nURL: {feed_url}"
+            )
+
+            for sub in subs:
+                adapter = self._adapters.get(sub.platform)
+                if adapter is None:
+                    continue
+                try:
+                    await adapter.send_text(sub.platform_channel_id, text)
+                except Exception:
+                    logger.exception(
+                        f"Failed to send deactivation notice to "
+                        f"{sub.platform}/{sub.platform_channel_id}"
+                    )
+        except Exception:
+            logger.exception(f"notify_feed_deactivated({feed_id}) failed")
 
     async def schedule_preview(self, subscription_id: int) -> None:
         """Fire-and-forget wrapper for dispatch_subscription, safe to use

@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.adapters.base import Message
 from newsflow.config import get_settings
-from newsflow.core.content_processor import get_source_name, process_content
+from newsflow.core.content_processor import (
+    MAX_SUMMARY_LENGTH,
+    clean_html,
+    get_source_name,
+    truncate_text,
+)
 from newsflow.models.base import get_session_factory
 from newsflow.models.feed import FeedEntry
 from newsflow.models.subscription import Subscription
@@ -230,11 +235,13 @@ class Dispatcher:
         entry: FeedEntry,
         target_language: str,
         session: AsyncSession,
+        plain_summary: str,
     ) -> tuple[str | None, str | None]:
         """
         Translate entry title and summary.
 
-        Uses cached translations from the database if available.
+        Uses cached translations from the database if available. Caller passes
+        `plain_summary` (HTML already stripped) so we never translate markup.
         """
         # Check if already translated to this language
         if (
@@ -260,9 +267,9 @@ class Dispatcher:
                 if result.success:
                     title_translated = result.translated_text
 
-            # Translate summary (truncate if too long)
-            if entry.summary:
-                summary_text = entry.summary[:1000] if len(entry.summary) > 1000 else entry.summary
+            # Translate summary (cap length to keep token usage bounded)
+            if plain_summary:
+                summary_text = plain_summary[:1000]
                 result = await translation_service.translate(
                     summary_text, target_language
                 )
@@ -295,18 +302,28 @@ class Dispatcher:
         lang = "zh" if subscription.target_language.startswith("zh") else "en"
         source = get_source_name(entry.link, lang)
 
+        # Feeds like hnrss.org embed raw HTML (<p>, <a href>) in summary /
+        # description fields. Discord/Telegram don't render HTML, so we'd
+        # ship it to the user as literal angle brackets. Strip here, prefer
+        # `content` (fuller) over `summary`.
+        raw_body = entry.content or entry.summary or ""
+        plain_summary, _images = clean_html(raw_body)
+        plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
+
         title_translated = entry.title_translated
         summary_translated = entry.summary_translated
 
-        # Translate if enabled for this subscription
+        # Translate if enabled for this subscription. Pass the cleaned
+        # summary so we don't spend tokens translating <p> tags or get back
+        # a translation that still contains HTML.
         if subscription.translate:
             title_translated, summary_translated = await self._translate_entry(
-                entry, subscription.target_language, session
+                entry, subscription.target_language, session, plain_summary
             )
 
         return Message(
             title=entry.title,
-            summary=entry.summary or "",
+            summary=plain_summary,
             link=entry.link,
             source=source,
             published_at=entry.published_at,

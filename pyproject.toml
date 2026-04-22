@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "newsflow-bot"
 version = "0.1.0"
-description = "Self-hosted RSS to Discord/Telegram bot with translation support"
-authors = ["Your Name <you@example.com>"]
+description = "Self-hosted RSS push backend for Discord and Telegram bots with translation, keyword filtering, and AI-generated digests"
+authors = ["Lynthar <6722766+Lynthar@users.noreply.github.com>"]
 license = "MIT"
 readme = "README.md"
 packages = [{include = "newsflow", from = "src"}]
@@ -61,7 +61,7 @@ api = ["fastapi", "uvicorn"]
 translation-google = ["google-cloud-translate"]
 translation-deepl = ["deepl"]
 translation-openai = ["openai"]
-translation = ["google-cloud-translate", "deepl"]
+translation = ["google-cloud-translate", "deepl", "openai"]
 cache = ["redis"]
 postgres = ["asyncpg"]
 all = [

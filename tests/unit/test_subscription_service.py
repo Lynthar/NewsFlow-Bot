@@ -249,6 +249,89 @@ async def test_import_opml_bulk_subscribes(session):
     assert result.failed == []
 
 
+async def test_set_feed_filter_persists_keywords(session):
+    feed = Feed(url="https://example.com/feed", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+    )
+    session.add(sub)
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.set_feed_filter(
+        platform="discord",
+        channel_id="c",
+        feed_url="https://example.com/feed",
+        include_keywords=("python", "rust"),
+        exclude_keywords=("job",),
+    )
+
+    assert result.success is True
+    await session.refresh(sub)
+    assert sub.filter_rule == {
+        "include_keywords": ["python", "rust"],
+        "exclude_keywords": ["job"],
+    }
+
+
+async def test_set_feed_filter_with_empty_lists_clears(session):
+    feed = Feed(url="https://example.com/feed", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+        filter_rule={"include_keywords": ["old"], "exclude_keywords": []},
+    )
+    session.add(sub)
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    await svc.set_feed_filter(
+        platform="discord",
+        channel_id="c",
+        feed_url="https://example.com/feed",
+    )
+
+    await session.refresh(sub)
+    assert sub.filter_rule is None
+
+
+async def test_get_feed_filter_returns_rule_object(session):
+    feed = Feed(url="https://example.com/feed", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    session.add(
+        Subscription(
+            platform="discord",
+            platform_user_id="u",
+            platform_channel_id="c",
+            feed_id=feed.id,
+            is_active=True,
+            filter_rule={"include_keywords": ["a"], "exclude_keywords": ["b"]},
+        )
+    )
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    rule = await svc.get_feed_filter(
+        platform="discord", channel_id="c", feed_url="https://example.com/feed"
+    )
+
+    assert rule is not None
+    assert rule.include_keywords == ("a",)
+    assert rule.exclude_keywords == ("b",)
+
+
 async def test_import_opml_reports_parse_errors(session):
     svc = SubscriptionService(session)
 

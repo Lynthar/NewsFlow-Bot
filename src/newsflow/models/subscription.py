@@ -5,7 +5,7 @@ Subscription model for user feed subscriptions.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from newsflow.models.base import Base
@@ -41,6 +41,11 @@ class Subscription(Base):
     # Display customization
     show_summary: Mapped[bool] = mapped_column(Boolean, default=True)
     show_image: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Filter rule: narrows which entries from this feed actually reach the
+    # channel. Stored as serialized FilterRule (see core/filter.py); None
+    # means no filter, all entries pass.
+    filter_rule: Mapped[dict | None] = mapped_column(JSON)
 
     # Tracking
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -91,11 +96,16 @@ class SentEntry(Base):
         ForeignKey("feed_entries.id", ondelete="CASCADE")
     )
 
-    # When sent
+    # When processed (either sent or dropped by filter)
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(__import__("datetime").timezone.utc),
     )
+
+    # True if this row exists because the entry matched the subscription's
+    # filter_rule out (i.e. was NOT actually delivered). Still written so the
+    # dispatch loop doesn't keep re-evaluating the same entry every cycle.
+    was_filtered: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Indexes
     __table_args__ = (

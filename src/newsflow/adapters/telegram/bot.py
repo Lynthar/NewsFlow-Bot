@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.config import get_settings
+from newsflow.core.filter import parse_keyword_csv
 from newsflow.core.timeutil import relative_time, time_until
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
@@ -55,7 +56,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/translate &lt;on/off&gt; — Default translation toggle\n\n"
         "<b>Settings (per-feed overrides):</b>\n"
         "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
-        "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n\n"
+        "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
+        "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
         "<b>Other:</b>\n"
         "/status — Bot status\n"
         "/help — This message",
@@ -342,6 +344,131 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
+    )
+
+
+async def filter_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /filter <url> [show | clear | include=... exclude=...]
+
+    Forms:
+      /filter <url>                       → show current filter
+      /filter <url> clear                 → remove filter
+      /filter <url> include=a,b exclude=c → set filter
+      /filter <url> include=a,b           → set include only
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/filter &lt;url&gt; — show current filter\n"
+            "/filter &lt;url&gt; clear — remove filter\n"
+            "/filter &lt;url&gt; include=a,b exclude=c,d — set filter\n\n"
+            "Matching is case-insensitive substring on title + summary.",
+            parse_mode="HTML",
+        )
+        return
+
+    url = context.args[0]
+    chat_id = str(update.effective_chat.id)
+    rest = context.args[1:]
+
+    session_factory = get_session_factory()
+
+    # Show
+    if not rest:
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            rule = await service.get_feed_filter(
+                platform="telegram", channel_id=chat_id, feed_url=url
+            )
+        if rule is None:
+            await update.message.reply_text(
+                f"⚠️ No subscription to <code>{_escape_html(url)}</code> in this chat.",
+                parse_mode="HTML",
+            )
+            return
+        if rule.is_empty():
+            await update.message.reply_text(
+                "No filter set — every entry is delivered."
+            )
+            return
+        lines = ["<b>Filter</b>"]
+        if rule.include_keywords:
+            lines.append(
+                "<b>Include</b> (any of): "
+                + ", ".join(
+                    f"<code>{_escape_html(k)}</code>"
+                    for k in rule.include_keywords
+                )
+            )
+        if rule.exclude_keywords:
+            lines.append(
+                "<b>Exclude</b> (none of): "
+                + ", ".join(
+                    f"<code>{_escape_html(k)}</code>"
+                    for k in rule.exclude_keywords
+                )
+            )
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        return
+
+    # Clear
+    if len(rest) == 1 and rest[0].lower() == "clear":
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.clear_feed_filter(
+                platform="telegram", channel_id=chat_id, feed_url=url
+            )
+            await session.commit()
+        prefix = "✅" if result.success else "❌"
+        await update.message.reply_text(
+            f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+        )
+        return
+
+    # Set: parse include=... exclude=... tokens
+    include_csv: str | None = None
+    exclude_csv: str | None = None
+    for token in rest:
+        if "=" not in token:
+            await update.message.reply_text(
+                f"❌ Can't parse <code>{_escape_html(token)}</code>. "
+                "Expected <code>include=a,b</code> or <code>exclude=a,b</code>.",
+                parse_mode="HTML",
+            )
+            return
+        key, _, value = token.partition("=")
+        key = key.lower()
+        if key == "include":
+            include_csv = value
+        elif key == "exclude":
+            exclude_csv = value
+        else:
+            await update.message.reply_text(
+                f"❌ Unknown key <code>{_escape_html(key)}</code>. "
+                "Use <code>include=</code> or <code>exclude=</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+    include_kw = parse_keyword_csv(include_csv)
+    exclude_kw = parse_keyword_csv(exclude_csv)
+
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.set_feed_filter(
+            platform="telegram",
+            channel_id=chat_id,
+            feed_url=url,
+            include_keywords=include_kw,
+            exclude_keywords=exclude_kw,
+        )
+        await session.commit()
+
+    prefix = "✅" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
     )
 
 
@@ -744,6 +871,7 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("translate", translate_command))
         self.app.add_handler(CommandHandler("setlang", setlang_command))
         self.app.add_handler(CommandHandler("settrans", settrans_command))
+        self.app.add_handler(CommandHandler("filter", filter_command))
         self.app.add_handler(CommandHandler("import", import_command))
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))

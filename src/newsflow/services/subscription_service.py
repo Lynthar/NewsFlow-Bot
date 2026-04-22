@@ -9,6 +9,7 @@ from typing import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.config import get_settings
+from newsflow.core.filter import FilterRule
 from newsflow.core.opml import OpmlEntry, OpmlParseError, build_opml, parse_opml
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
@@ -356,6 +357,90 @@ class SubscriptionService:
             success=True,
             message=f"Language set to {language} for {feed.title or feed_url}",
         )
+
+    async def set_feed_filter(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        include_keywords: tuple[str, ...] = (),
+        exclude_keywords: tuple[str, ...] = (),
+    ) -> SubscriptionActionResult:
+        """Set a keyword filter on a subscription.
+
+        Passing both keyword lists empty clears any existing filter.
+        """
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(
+                success=False, message="Feed not found"
+            )
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(
+                success=False, message="Subscription not found"
+            )
+
+        rule = FilterRule(
+            include_keywords=include_keywords,
+            exclude_keywords=exclude_keywords,
+        )
+        await self.sub_repo.set_subscription_filter(
+            subscription_id=sub.id, filter_rule=rule.to_json()
+        )
+
+        if rule.is_empty():
+            msg = f"Filter cleared for {feed.title or feed_url}"
+        else:
+            parts = []
+            if rule.include_keywords:
+                parts.append(
+                    f"include=[{', '.join(rule.include_keywords)}]"
+                )
+            if rule.exclude_keywords:
+                parts.append(
+                    f"exclude=[{', '.join(rule.exclude_keywords)}]"
+                )
+            msg = (
+                f"Filter set for {feed.title or feed_url}: "
+                + " · ".join(parts)
+            )
+        return SubscriptionActionResult(success=True, message=msg)
+
+    async def clear_feed_filter(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+    ) -> SubscriptionActionResult:
+        """Remove any filter on a subscription."""
+        return await self.set_feed_filter(
+            platform=platform,
+            channel_id=channel_id,
+            feed_url=feed_url,
+            include_keywords=(),
+            exclude_keywords=(),
+        )
+
+    async def get_feed_filter(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+    ) -> FilterRule | None:
+        """Return the current filter for a subscription, or None if there's
+        no subscription matching (platform, channel_id, feed_url)."""
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return None
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return None
+        return FilterRule.from_json(sub.filter_rule)
 
     async def set_feed_translate(
         self,

@@ -179,6 +179,18 @@ class SubscriptionRepository:
                 .values(**update_data)
             )
 
+    async def set_subscription_filter(
+        self,
+        subscription_id: int,
+        filter_rule: dict | None,
+    ) -> None:
+        """Set or clear the filter_rule column. `None` clears the filter."""
+        await self.session.execute(
+            update(Subscription)
+            .where(Subscription.id == subscription_id)
+            .values(filter_rule=filter_rule)
+        )
+
     async def deactivate_subscription(
         self,
         platform: str,
@@ -268,11 +280,18 @@ class SubscriptionRepository:
         self,
         subscription_id: int,
         entry_id: int,
+        was_filtered: bool = False,
     ) -> SentEntry:
-        """Mark an entry as sent to a subscription."""
+        """Record that a subscription has processed an entry.
+
+        `was_filtered=True` means the entry matched the subscription's
+        filter rule out and was NOT actually delivered — we still persist
+        a row so the dispatcher doesn't keep re-evaluating it forever.
+        """
         sent = SentEntry(
             subscription_id=subscription_id,
             entry_id=entry_id,
+            was_filtered=was_filtered,
         )
         self.session.add(sent)
         await self.session.flush()

@@ -21,6 +21,7 @@ from newsflow.core.content_processor import (
     get_source_name,
     truncate_text,
 )
+from newsflow.core.filter import FilterRule
 from newsflow.models.base import get_session_factory
 from newsflow.models.feed import FeedEntry
 from newsflow.models.subscription import Subscription
@@ -195,9 +196,28 @@ class Dispatcher:
         if not entries:
             return 0
 
+        # Decode the subscription's keyword filter once for this batch.
+        # Empty rule matches everything (no-op filter).
+        filter_rule = FilterRule.from_json(subscription.filter_rule)
+
         sent_count = 0
         for entry in entries:
             try:
+                # Apply filter before the (potentially expensive) translation
+                # and send path. Filtered entries are marked "processed" so
+                # the loop doesn't re-evaluate them every dispatch cycle.
+                if not filter_rule.is_empty():
+                    haystack = f"{entry.title} {entry.summary or ''}"
+                    if not filter_rule.matches(haystack):
+                        await sub_repo.mark_entry_sent(
+                            subscription.id, entry.id, was_filtered=True
+                        )
+                        logger.debug(
+                            f"Entry {entry.id} filtered out for "
+                            f"{subscription.platform}/{subscription.platform_channel_id}"
+                        )
+                        continue
+
                 # Create message (with translation if enabled)
                 message = await self._create_message(entry, subscription, session)
 

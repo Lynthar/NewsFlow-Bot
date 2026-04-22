@@ -15,6 +15,7 @@ from discord.ext import commands
 
 from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.config import get_settings
+from newsflow.core.filter import parse_keyword_csv
 from newsflow.core.timeutil import relative_time, time_until
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
@@ -504,6 +505,123 @@ class FeedCommands(commands.Cog):
             file=file,
             ephemeral=True,
         )
+
+    @feed_group.command(
+        name="filter-set",
+        description="Set a keyword filter for one feed (comma-separated lists)",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL",
+        include="Entries must contain at least one of these (csv). Leave blank for no include filter.",
+        exclude="Entries containing any of these are skipped (csv). Leave blank for no exclude filter.",
+    )
+    async def feed_filter_set(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        include: str = "",
+        exclude: str = "",
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        include_kw = parse_keyword_csv(include)
+        exclude_kw = parse_keyword_csv(exclude)
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.set_feed_filter(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+                include_keywords=include_kw,
+                exclude_keywords=exclude_kw,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Filter Updated" if result.success else "Failed",
+            description=result.message,
+            color=discord.Color.green() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="filter-show",
+        description="Show the current keyword filter on one feed",
+    )
+    @app_commands.describe(url="The RSS feed URL")
+    async def feed_filter_show(
+        self, interaction: discord.Interaction, url: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            rule = await service.get_feed_filter(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+            )
+
+        if rule is None:
+            embed = discord.Embed(
+                title="Filter",
+                description=f"No subscription to `{url}` in this channel.",
+                color=discord.Color.orange(),
+            )
+        elif rule.is_empty():
+            embed = discord.Embed(
+                title="Filter",
+                description="No filter set — every entry is delivered.",
+                color=discord.Color.blue(),
+            )
+        else:
+            lines = []
+            if rule.include_keywords:
+                lines.append(
+                    f"**Include** (any of): "
+                    + ", ".join(f"`{k}`" for k in rule.include_keywords)
+                )
+            if rule.exclude_keywords:
+                lines.append(
+                    f"**Exclude** (none of): "
+                    + ", ".join(f"`{k}`" for k in rule.exclude_keywords)
+                )
+            embed = discord.Embed(
+                title="Filter",
+                description="\n".join(lines),
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(text="Matching is case-insensitive on title + summary")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="filter-clear",
+        description="Remove the keyword filter from one feed",
+    )
+    @app_commands.describe(url="The RSS feed URL")
+    async def feed_filter_clear(
+        self, interaction: discord.Interaction, url: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.clear_feed_filter(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Filter Cleared" if result.success else "Failed",
+            description=result.message,
+            color=discord.Color.green() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @feed_group.command(
         name="import",

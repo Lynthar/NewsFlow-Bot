@@ -11,6 +11,18 @@ from newsflow.services.translation.base import TranslationProvider, TranslationR
 
 logger = logging.getLogger(__name__)
 
+# Default translation prompt. Users can override via
+# Settings.translation_system_prompt (env: TRANSLATION_SYSTEM_PROMPT).
+# Both placeholders are always filled — {source_desc} collapses to
+# "the source language (auto-detect)" when source_lang is unknown.
+DEFAULT_TRANSLATION_PROMPT = (
+    "You are a professional translator. "
+    "Translate the following text from {source_desc} to {target_name}. "
+    "Preserve the original meaning and tone. "
+    "Only output the translated text, nothing else."
+)
+
+
 # Language names for better prompts
 LANGUAGE_NAMES = {
     "zh": "Simplified Chinese",
@@ -47,10 +59,14 @@ class OpenAIProvider(TranslationProvider):
         api_key: str,
         model: str = "gpt-5.4-nano",
         base_url: str | None = None,
+        system_prompt_template: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        self.system_prompt_template = (
+            system_prompt_template or DEFAULT_TRANSLATION_PROMPT
+        )
         self._client: Any = None
 
     @property
@@ -95,21 +111,22 @@ class OpenAIProvider(TranslationProvider):
             client = self._get_client()
             target_name = self._get_language_name(target_lang)
 
-            # Build system prompt
-            if source_lang:
-                source_name = self._get_language_name(source_lang)
-                system_prompt = (
-                    f"You are a professional translator. "
-                    f"Translate the following text from {source_name} to {target_name}. "
-                    f"Preserve the original meaning and tone. "
-                    f"Only output the translated text, nothing else."
+            source_desc = (
+                self._get_language_name(source_lang)
+                if source_lang
+                else "the source language (auto-detect)"
+            )
+            try:
+                system_prompt = self.system_prompt_template.format(
+                    source_desc=source_desc, target_name=target_name
                 )
-            else:
-                system_prompt = (
-                    f"You are a professional translator. "
-                    f"Translate the following text to {target_name}. "
-                    f"Preserve the original meaning and tone. "
-                    f"Only output the translated text, nothing else."
+            except (KeyError, IndexError) as e:
+                logger.warning(
+                    f"translation_system_prompt references unknown placeholder "
+                    f"{e}; falling back to default"
+                )
+                system_prompt = DEFAULT_TRANSLATION_PROMPT.format(
+                    source_desc=source_desc, target_name=target_name
                 )
 
             response = await client.chat.completions.create(

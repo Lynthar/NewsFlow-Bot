@@ -45,6 +45,7 @@ def create_translation_provider() -> TranslationProvider | None:
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             base_url=settings.openai_base_url,
+            system_prompt_template=settings.translation_system_prompt,
         )
 
     elif provider == "google" and settings.google_credentials_path:

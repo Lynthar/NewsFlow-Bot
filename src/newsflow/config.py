@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.4-nano"
     openai_base_url: str | None = None  # For compatible APIs
+    # Override the built-in OpenAI translation system prompt. Supports
+    # {source_desc} and {target_name} placeholders. None → use default.
+    translation_system_prompt: str | None = None
 
     # Scheduling
     fetch_interval_minutes: int = 60
@@ -64,6 +67,9 @@ class Settings(BaseSettings):
     digest_max_articles: int = 50
     digest_max_input_chars_per_article: int = 300
     digest_check_interval_minutes: int = 5
+    # Override the built-in digest system prompt. Supports {window} and
+    # {lang} placeholders. None → use default.
+    digest_system_prompt: str | None = None
 
     # API service (disabled by default)
     api_enabled: bool = False

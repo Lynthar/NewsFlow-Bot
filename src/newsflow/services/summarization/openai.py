@@ -46,10 +46,14 @@ class OpenAIDigestProvider(SummarizationProvider):
         api_key: str,
         model: str,
         base_url: str | None = None,
+        system_prompt_template: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        self.system_prompt_template = (
+            system_prompt_template or SYSTEM_PROMPT_TEMPLATE
+        )
         self._client: Any = None
 
     @property
@@ -100,9 +104,18 @@ class OpenAIDigestProvider(SummarizationProvider):
             )
 
         lang = language_name(language)
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-            window=time_window_desc, lang=lang
-        )
+        try:
+            system_prompt = self.system_prompt_template.format(
+                window=time_window_desc, lang=lang
+            )
+        except (KeyError, IndexError) as e:
+            logger.warning(
+                f"digest_system_prompt references unknown placeholder "
+                f"{e}; falling back to default"
+            )
+            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+                window=time_window_desc, lang=lang
+            )
         user_prompt = (
             f"Here are {len(articles)} articles from {time_window_desc}:\n\n"
             + self._format_articles(articles)

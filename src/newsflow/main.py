@@ -141,6 +141,12 @@ async def start_platform_monitor() -> None:
     await dispatcher.run_platform_monitor()
 
 
+async def start_digest_loop() -> None:
+    """Periodically deliver AI-generated digests to channels that enabled them."""
+    dispatcher = get_dispatcher()
+    await dispatcher.run_digest_loop()
+
+
 async def main() -> None:
     """Main entry point."""
     settings = get_settings()
@@ -221,6 +227,9 @@ async def main() -> None:
 
         # Add the platform monitor (per-platform heartbeats for HEALTHCHECK)
         tasks.append(start_platform_monitor())
+
+        # Add the digest loop (periodic AI-generated summaries)
+        tasks.append(start_digest_loop())
 
         logger.info("All services starting...")
 

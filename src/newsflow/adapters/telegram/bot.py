@@ -58,6 +58,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
         "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
         "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
+        "<b>AI Digest:</b>\n"
+        "/digest show — Show current digest config\n"
+        "/digest enable daily &lt;hour_utc&gt; [lang] — Daily digest\n"
+        "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang] — Weekly digest\n"
+        "/digest disable — Turn off\n"
+        "/digest now — Generate and send one immediately\n\n"
         "<b>Other:</b>\n"
         "/status — Bot status\n"
         "/help — This message",
@@ -344,6 +350,218 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
+    )
+
+
+_WEEKDAY_NAMES = {
+    "mon": 0, "monday": 0,
+    "tue": 1, "tuesday": 1,
+    "wed": 2, "wednesday": 2,
+    "thu": 3, "thursday": 3,
+    "fri": 4, "friday": 4,
+    "sat": 5, "saturday": 5,
+    "sun": 6, "sunday": 6,
+}
+
+
+async def digest_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /digest <subcommand> …
+
+    Forms:
+      /digest show
+      /digest disable
+      /digest now
+      /digest enable daily <hour_utc> [lang]
+      /digest enable weekly <weekday> <hour_utc> [lang]
+    """
+    from datetime import datetime, timezone
+
+    from newsflow.repositories.digest_repository import (
+        ChannelDigestRepository,
+    )
+    from newsflow.services.digest_service import DigestService
+    from newsflow.services.summarization import get_summarizer
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/digest show\n"
+            "/digest enable daily &lt;hour_utc&gt; [lang]\n"
+            "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang]\n"
+            "/digest disable\n"
+            "/digest now",
+            parse_mode="HTML",
+        )
+        return
+
+    sub = context.args[0].lower()
+    rest = context.args[1:]
+    chat_id = str(update.effective_chat.id)
+    session_factory = get_session_factory()
+
+    if sub == "show":
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            config = await repo.get("telegram", chat_id)
+        if config is None:
+            await update.message.reply_text(
+                "No digest configured. Use /digest enable to set one up."
+            )
+            return
+        lines = [
+            "<b>Digest Configuration</b>",
+            f"Enabled: {'✅ yes' if config.enabled else '⏸ no'}",
+            f"Schedule: {config.schedule}"
+            + (
+                f" (weekday {config.delivery_weekday})"
+                if config.schedule == "weekly"
+                else ""
+            ),
+            f"Delivery time: {config.delivery_hour_utc:02d}:00 UTC",
+            f"Language: {config.language}",
+            f"Max articles: {config.max_articles}",
+            f"Include filtered: {'yes' if config.include_filtered else 'no'}",
+            f"Last delivered: {relative_time(config.last_delivered_at)}",
+        ]
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="HTML"
+        )
+        return
+
+    if sub == "disable":
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            config = await repo.get("telegram", chat_id)
+            if config is None:
+                await update.message.reply_text(
+                    "No digest configured for this chat."
+                )
+                return
+            config.enabled = False
+            await session.commit()
+        await update.message.reply_text(
+            "⏸ Digest disabled. Use /digest enable to turn it back on."
+        )
+        return
+
+    if sub == "now":
+        summarizer = get_summarizer()
+        if summarizer is None:
+            await update.message.reply_text(
+                "⚠️ Digest not available: LLM provider not configured "
+                "(check OPENAI_API_KEY)."
+            )
+            return
+
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            config = await repo.get("telegram", chat_id)
+            if config is None:
+                await update.message.reply_text(
+                    "No digest configured. Use /digest enable first."
+                )
+                return
+
+            service = DigestService(session, summarizer)
+            now = datetime.now(timezone.utc)
+            result = await service.generate(config, now=now)
+            if result is None:
+                await update.message.reply_text(
+                    "No articles in the current window — nothing to summarize."
+                )
+                return
+            if not result.success:
+                await update.message.reply_text(
+                    f"❌ Digest generation failed: {result.error}"
+                )
+                return
+
+            dispatcher = get_dispatcher()
+            adapter = dispatcher._adapters.get("telegram")
+            if adapter is None:
+                await update.message.reply_text(
+                    "Telegram adapter not registered yet — try again."
+                )
+                return
+            chunks = await dispatcher._send_text_split(
+                adapter, chat_id, result.text, chunk_size=3800,
+            )
+            if chunks:
+                await repo.mark_delivered(config.id, now)
+                await session.commit()
+        return
+
+    if sub == "enable":
+        # Forms:
+        #   enable daily <hour> [lang]
+        #   enable weekly <weekday> <hour> [lang]
+        if not rest:
+            await update.message.reply_text(
+                "Usage: /digest enable daily &lt;hour_utc&gt; [lang]  OR\n"
+                "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang]",
+                parse_mode="HTML",
+            )
+            return
+
+        mode = rest[0].lower()
+        try:
+            if mode == "daily":
+                if len(rest) < 2:
+                    raise ValueError("hour required")
+                hour = int(rest[1])
+                weekday = None
+                language = rest[2] if len(rest) >= 3 else "zh-CN"
+            elif mode == "weekly":
+                if len(rest) < 3:
+                    raise ValueError("weekday and hour required")
+                wd_raw = rest[1].lower()
+                if wd_raw in _WEEKDAY_NAMES:
+                    weekday = _WEEKDAY_NAMES[wd_raw]
+                else:
+                    weekday = int(wd_raw)
+                    if not 0 <= weekday <= 6:
+                        raise ValueError("weekday must be 0-6 or name")
+                hour = int(rest[2])
+                language = rest[3] if len(rest) >= 4 else "zh-CN"
+            else:
+                raise ValueError(f"unknown schedule '{mode}'")
+
+            if not 0 <= hour <= 23:
+                raise ValueError("hour must be 0-23")
+        except ValueError as e:
+            await update.message.reply_text(f"❌ {e}")
+            return
+
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            await repo.upsert(
+                platform="telegram",
+                channel_id=chat_id,
+                guild_id=None,
+                enabled=True,
+                schedule=mode,
+                delivery_hour_utc=hour,
+                delivery_weekday=weekday,
+                language=language,
+            )
+            await session.commit()
+
+        desc = (
+            f"daily at {hour:02d}:00 UTC"
+            if mode == "daily"
+            else f"weekly on weekday {weekday} at {hour:02d}:00 UTC"
+        )
+        await update.message.reply_text(
+            f"✅ Digest enabled — {desc}, language {language}."
+        )
+        return
+
+    await update.message.reply_text(
+        f"Unknown subcommand <code>{_escape_html(sub)}</code>. "
+        "Use /digest for help.",
+        parse_mode="HTML",
     )
 
 
@@ -872,6 +1090,7 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("setlang", setlang_command))
         self.app.add_handler(CommandHandler("settrans", settrans_command))
         self.app.add_handler(CommandHandler("filter", filter_command))
+        self.app.add_handler(CommandHandler("digest", digest_command))
         self.app.add_handler(CommandHandler("import", import_command))
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))

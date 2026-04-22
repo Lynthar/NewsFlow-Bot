@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 # Import models so their tables register on Base.metadata before autogenerate.
+import newsflow.models.digest  # noqa: F401
 import newsflow.models.feed  # noqa: F401
 import newsflow.models.subscription  # noqa: F401
 from newsflow.config import get_settings

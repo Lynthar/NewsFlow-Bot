@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     translation_cache_ttl_days: int = 7
 
+    # Digest (LLM-generated daily / weekly summaries)
+    digest_provider: Literal["openai"] = "openai"
+    digest_model: str = "gpt-4o-mini"
+    digest_max_articles: int = 50
+    digest_max_input_chars_per_article: int = 300
+    digest_check_interval_minutes: int = 5
+
     # API service (disabled by default)
     api_enabled: bool = False
     api_host: str = "0.0.0.0"

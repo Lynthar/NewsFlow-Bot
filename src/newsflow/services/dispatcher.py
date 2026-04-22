@@ -462,6 +462,153 @@ class Dispatcher:
                 f"Preview dispatch failed for subscription {subscription_id}"
             )
 
+    async def _send_text_split(
+        self, adapter: "MessageSender", channel_id: str, text: str, chunk_size: int
+    ) -> int:
+        """Split long text on paragraph boundaries and send in chunks.
+        Returns the number of successfully-sent chunks.
+        """
+        if len(text) <= chunk_size:
+            ok = await adapter.send_text(channel_id, text)
+            return 1 if ok else 0
+
+        chunks: list[str] = []
+        current = ""
+        for paragraph in text.split("\n\n"):
+            prospective = (current + "\n\n" + paragraph).strip()
+            if len(prospective) > chunk_size and current:
+                chunks.append(current)
+                current = paragraph
+            else:
+                current = prospective
+        if current:
+            chunks.append(current)
+
+        sent = 0
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                await asyncio.sleep(0.1)  # small smoothing
+            if await adapter.send_text(channel_id, chunk):
+                sent += 1
+        return sent
+
+    async def run_digest_loop(
+        self, check_interval_seconds: int | None = None
+    ) -> None:
+        """Periodically check for channels whose digest is due and deliver.
+
+        Wakes every `digest_check_interval_minutes` by default. The loop
+        itself is cheap; the is_due() check only fires heavy work (LLM +
+        send) when a channel actually matches its schedule slot.
+        """
+        from newsflow.services.digest_service import DigestService, is_due
+        from newsflow.services.summarization import get_summarizer
+
+        interval = check_interval_seconds or (
+            self.settings.digest_check_interval_minutes * 60
+        )
+        await self.wait_for_adapters(timeout=60.0)
+        logger.info(f"Starting digest loop (check every {interval}s)")
+
+        # Delay first check so startup noise settles.
+        await asyncio.sleep(60)
+
+        while True:
+            try:
+                await self._tick_digests()
+            except Exception:
+                logger.exception("Digest loop error")
+
+            self._write_heartbeat("digest")
+            await asyncio.sleep(interval)
+
+    async def _tick_digests(self) -> None:
+        from newsflow.services.digest_service import DigestService, is_due
+        from newsflow.services.summarization import get_summarizer
+
+        summarizer = get_summarizer()
+        if summarizer is None:
+            # No LLM configured — not an error, just nothing to do.
+            return
+
+        now = datetime.now(timezone.utc)
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            from newsflow.repositories.digest_repository import (
+                ChannelDigestRepository,
+            )
+
+            repo = ChannelDigestRepository(session)
+            configs = await repo.list_enabled()
+
+        for config in configs:
+            if not is_due(config, now):
+                continue
+            adapter = self._adapters.get(config.platform)
+            if adapter is None:
+                logger.debug(
+                    f"Digest due for {config.platform}/"
+                    f"{config.platform_channel_id} but adapter not registered; "
+                    f"deferring"
+                )
+                continue
+
+            # Fresh session per channel so one failure doesn't poison others.
+            try:
+                async with session_factory() as session:
+                    service = DigestService(session, summarizer)
+                    service.repo = type(service.repo)(session)  # bind to this session
+                    # Re-fetch config in this session's identity map to update it.
+                    fresh_config = await service.repo.get(
+                        config.platform, config.platform_channel_id
+                    )
+                    if fresh_config is None:
+                        continue
+
+                    result = await service.generate(fresh_config, now=now)
+                    if result is None:
+                        # No articles in window; still mark delivered so we
+                        # don't keep re-firing this slot.
+                        await service.repo.mark_delivered(fresh_config.id, now)
+                        await session.commit()
+                        continue
+
+                    if not result.success:
+                        logger.warning(
+                            f"Digest generation failed for "
+                            f"{config.platform}/{config.platform_channel_id}: "
+                            f"{result.error}"
+                        )
+                        continue
+
+                    # Deliver. Discord text messages cap at ~2000 chars;
+                    # Telegram at 4096. Use 1900 to be safe for both.
+                    chunks_sent = await self._send_text_split(
+                        adapter,
+                        config.platform_channel_id,
+                        result.text,
+                        chunk_size=1900,
+                    )
+                    if chunks_sent == 0:
+                        logger.warning(
+                            f"Digest generated but send failed for "
+                            f"{config.platform}/{config.platform_channel_id}"
+                        )
+                        continue
+
+                    await service.repo.mark_delivered(fresh_config.id, now)
+                    await session.commit()
+                    logger.info(
+                        f"Delivered digest to {config.platform}/"
+                        f"{config.platform_channel_id} ({chunks_sent} chunks)"
+                    )
+            except Exception:
+                logger.exception(
+                    f"Digest delivery failed for "
+                    f"{config.platform}/{config.platform_channel_id}"
+                )
+
     async def run_cleanup_loop(self) -> None:
         """Periodically delete old feed entries and sent-entry records.
 

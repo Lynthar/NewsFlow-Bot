@@ -173,6 +173,7 @@ class NewsFlowBot(commands.Bot):
         # Add cogs
         await self.add_cog(FeedCommands(self))
         await self.add_cog(SettingsCommands(self))
+        await self.add_cog(DigestCommands(self))
 
         # Sync slash commands
         logger.info("Syncing slash commands...")
@@ -835,6 +836,266 @@ class SettingsCommands(commands.Cog):
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class DigestCommands(commands.Cog):
+    """AI-generated daily / weekly digest configuration."""
+
+    def __init__(self, bot: NewsFlowBot) -> None:
+        self.bot = bot
+
+    digest_group = app_commands.Group(
+        name="digest",
+        description="Daily / weekly AI digest of what was pushed to this channel",
+    )
+
+    @digest_group.command(
+        name="enable",
+        description="Enable or update the periodic digest for this channel",
+    )
+    @app_commands.describe(
+        schedule="How often to deliver: daily or weekly",
+        hour_utc="Delivery hour in UTC, 0-23",
+        weekday="Day of week for weekly schedule (0=Mon … 6=Sun)",
+        language="Target language code (e.g. zh-CN, en)",
+        include_filtered="Include entries that matched filter out",
+        max_articles="Cap articles per digest (default 50)",
+    )
+    @app_commands.choices(
+        schedule=[
+            app_commands.Choice(name="daily", value="daily"),
+            app_commands.Choice(name="weekly", value="weekly"),
+        ]
+    )
+    async def digest_enable(
+        self,
+        interaction: discord.Interaction,
+        schedule: app_commands.Choice[str],
+        hour_utc: app_commands.Range[int, 0, 23] = 9,
+        weekday: app_commands.Range[int, 0, 6] | None = None,
+        language: str = "zh-CN",
+        include_filtered: bool = False,
+        max_articles: app_commands.Range[int, 1, 200] = 50,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        if schedule.value == "weekly" and weekday is None:
+            await interaction.followup.send(
+                "Weekly schedule requires a `weekday` (0=Mon … 6=Sun).",
+                ephemeral=True,
+            )
+            return
+
+        from newsflow.repositories.digest_repository import (
+            ChannelDigestRepository,
+        )
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            await repo.upsert(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                guild_id=(
+                    str(interaction.guild_id) if interaction.guild_id else None
+                ),
+                enabled=True,
+                schedule=schedule.value,
+                delivery_hour_utc=int(hour_utc),
+                delivery_weekday=(
+                    int(weekday) if schedule.value == "weekly" else None
+                ),
+                language=language,
+                include_filtered=bool(include_filtered),
+                max_articles=int(max_articles),
+            )
+            await session.commit()
+
+        lines = [
+            f"✅ Digest enabled",
+            f"**Schedule:** {schedule.value}"
+            + (
+                f" (weekday {weekday})"
+                if schedule.value == "weekly"
+                else ""
+            ),
+            f"**Delivery time:** {hour_utc:02d}:00 UTC",
+            f"**Language:** {language}",
+            f"**Max articles:** {max_articles}",
+            f"**Include filtered:** {'yes' if include_filtered else 'no'}",
+        ]
+        embed = discord.Embed(
+            title="Digest Configured",
+            description="\n".join(lines),
+            color=discord.Color.green(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @digest_group.command(
+        name="disable",
+        description="Turn off the digest for this channel (config preserved)",
+    )
+    async def digest_disable(
+        self, interaction: discord.Interaction
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        from newsflow.repositories.digest_repository import (
+            ChannelDigestRepository,
+        )
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            config = await repo.get(
+                "discord", str(interaction.channel_id)
+            )
+            if config is None:
+                await interaction.followup.send(
+                    "No digest configured for this channel.",
+                    ephemeral=True,
+                )
+                return
+            config.enabled = False
+            await session.commit()
+
+        await interaction.followup.send(
+            "⏸ Digest disabled. Use `/digest enable` to turn it back on.",
+            ephemeral=True,
+        )
+
+    @digest_group.command(
+        name="show",
+        description="Show the current digest configuration",
+    )
+    async def digest_show(
+        self, interaction: discord.Interaction
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        from newsflow.repositories.digest_repository import (
+            ChannelDigestRepository,
+        )
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            config = await repo.get(
+                "discord", str(interaction.channel_id)
+            )
+
+        if config is None:
+            embed = discord.Embed(
+                title="Digest",
+                description="No digest configured for this channel.\n"
+                "Use `/digest enable` to set one up.",
+                color=discord.Color.blue(),
+            )
+        else:
+            lines = [
+                f"**Enabled:** {'✅ yes' if config.enabled else '⏸ no'}",
+                f"**Schedule:** {config.schedule}"
+                + (
+                    f" (weekday {config.delivery_weekday})"
+                    if config.schedule == "weekly"
+                    else ""
+                ),
+                f"**Delivery time:** {config.delivery_hour_utc:02d}:00 UTC",
+                f"**Language:** {config.language}",
+                f"**Max articles:** {config.max_articles}",
+                f"**Include filtered:** "
+                f"{'yes' if config.include_filtered else 'no'}",
+                f"**Last delivered:** "
+                f"{relative_time(config.last_delivered_at)}",
+            ]
+            embed = discord.Embed(
+                title="Digest Configuration",
+                description="\n".join(lines),
+                color=discord.Color.blue(),
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @digest_group.command(
+        name="now",
+        description="Generate and deliver a digest immediately (for testing)",
+    )
+    async def digest_now(
+        self, interaction: discord.Interaction
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        from datetime import datetime, timezone
+
+        from newsflow.repositories.digest_repository import (
+            ChannelDigestRepository,
+        )
+        from newsflow.services.digest_service import DigestService
+        from newsflow.services.summarization import get_summarizer
+
+        summarizer = get_summarizer()
+        if summarizer is None:
+            await interaction.followup.send(
+                "⚠️ Digest not available: LLM provider is not configured "
+                "(check `OPENAI_API_KEY` and `digest_provider` settings).",
+                ephemeral=True,
+            )
+            return
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            repo = ChannelDigestRepository(session)
+            config = await repo.get(
+                "discord", str(interaction.channel_id)
+            )
+            if config is None:
+                await interaction.followup.send(
+                    "No digest configured. Run `/digest enable` first.",
+                    ephemeral=True,
+                )
+                return
+
+            service = DigestService(session, summarizer)
+            now = datetime.now(timezone.utc)
+            result = await service.generate(config, now=now)
+
+            if result is None:
+                await interaction.followup.send(
+                    "No articles in the current window — nothing to summarize.",
+                    ephemeral=True,
+                )
+                return
+            if not result.success:
+                await interaction.followup.send(
+                    f"❌ Digest generation failed: {result.error}",
+                    ephemeral=True,
+                )
+                return
+
+            # Post into the channel (not ephemeral — this IS the digest).
+            dispatcher = get_dispatcher()
+            adapter = dispatcher._adapters.get("discord")
+            if adapter is None:
+                await interaction.followup.send(
+                    "Discord adapter not registered yet — try again.",
+                    ephemeral=True,
+                )
+                return
+
+            chunks = await dispatcher._send_text_split(
+                adapter,
+                str(interaction.channel_id),
+                result.text,
+                chunk_size=1900,
+            )
+            if chunks:
+                await repo.mark_delivered(config.id, now)
+                await session.commit()
+
+        await interaction.followup.send(
+            f"✅ Digest delivered ({chunks} message{'s' if chunks != 1 else ''}).",
+            ephemeral=True,
+        )
 
 
 class DiscordAdapter(BaseAdapter):

@@ -65,6 +65,8 @@ NewsFlow Bot is an RSS push backend you run **on your own server**. Give it a Di
 | 🌐 **Multi-platform push** | Discord (slash commands) + Telegram (prefix commands) in parallel; platform and channel isolated |
 | 🌍 **Automatic translation** | Optional DeepL / OpenAI-compatible / Google Cloud Translation; two-tier cache (DB + memory/Redis) |
 | 🔁 **Exponential backoff** | Transient source failures automatically stretch the retry interval; 10 consecutive failures auto-disables and **notifies subscribers** |
+| 🎯 **Keyword filtering** | Per-subscription include/exclude rules; filtered entries skip the translate path entirely |
+| 📰 **AI digest (daily / weekly)** | Optional LLM-generated briefings that roll up the articles pushed to a channel over the schedule window |
 | 📋 **OPML import/export** | Migrate from Feedly / Reeder / any RSS reader, or back up your subscription list |
 | ⏸ **Pause / resume** | Temporarily stop a feed without losing the subscription |
 | 👀 **Subscribe preview** | Push the latest article within seconds of subscribing, no need to wait for the next cycle |
@@ -231,6 +233,12 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `CACHE_BACKEND` | `memory` | `memory` (in-process LRU) or `redis` |
 | `REDIS_URL` | empty | e.g. `redis://redis:6379/0` |
 | `TRANSLATION_CACHE_TTL_DAYS` | `7` | Translation result cache TTL |
+| **AI digest** | | |
+| `DIGEST_PROVIDER` | `openai` | Only OpenAI-compatible for now |
+| `DIGEST_MODEL` | `gpt-4o-mini` | Model used for digest generation |
+| `DIGEST_MAX_ARTICLES` | `50` | Cap on articles per digest |
+| `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | Per-article char budget when building the prompt |
+| `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | How often the digest loop checks for due deliveries |
 | **REST API** | | |
 | `API_ENABLED` | `false` | Enables the FastAPI management server |
 | `API_HOST` | `0.0.0.0` | Bind address |
@@ -276,6 +284,30 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `/feed export` | Download this channel's subscriptions as OPML |
 | `/feed import <file>` | Bulk-subscribe from an uploaded `.opml` / `.xml` file (max 1 MB) |
 
+#### Keyword filter
+
+| Command | Description |
+|---|---|
+| `/feed filter-set <url> include:<csv> exclude:<csv>` | Set per-feed keyword filter (both args optional) |
+| `/feed filter-show <url>` | Show current filter |
+| `/feed filter-clear <url>` | Remove the filter |
+
+Match semantics: **case-insensitive substring on title + summary**. `include` requires at least one match; `exclude` drops entries containing any match. Empty rule = no filter.
+
+#### AI digest (daily / weekly)
+
+| Command | Description |
+|---|---|
+| `/digest enable schedule:<daily\|weekly> hour_utc:<0-23> [weekday:<0-6>] [language:<code>] [include_filtered:<bool>] [max_articles:<n>]` | Enable / update digest |
+| `/digest show` | Show current config |
+| `/digest disable` | Turn off (config preserved) |
+| `/digest now` | Generate and deliver a digest immediately (for testing) |
+
+- **Requires `OPENAI_API_KEY`** — reuses the translation key; default model is `gpt-4o-mini`
+- Window is "since last delivery"; first run falls back to the past 24 hours (daily) / 7 days (weekly)
+- Defaults to articles the channel actually received; set `include_filtered:true` to also roll in entries dropped by keyword filters
+- Digest **coexists with** per-article push — you get both the real-time stream and the periodic summary
+
 #### Other
 
 | Command | Description |
@@ -312,6 +344,24 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `/export` | Download OPML |
 | `/import <url>` | Fetch and import from a hosted OPML URL |
 | *upload `.opml` file* | Auto-imported when dropped into the chat — no command needed |
+
+#### Keyword filter
+
+| Command | Description |
+|---|---|
+| `/filter <url>` | Show current filter |
+| `/filter <url> clear` | Remove filter |
+| `/filter <url> include=a,b exclude=c,d` | Set filter (either side optional) |
+
+#### AI digest (daily / weekly)
+
+| Command | Description |
+|---|---|
+| `/digest show` | Show current config |
+| `/digest enable daily <hour_utc> [lang]` | Enable daily digest |
+| `/digest enable weekly <weekday> <hour_utc> [lang]` | Enable weekly digest (weekday accepts `mon`…`sun` or `0`…`6`) |
+| `/digest disable` | Turn off |
+| `/digest now` | Deliver a digest immediately |
 
 #### Other
 
@@ -458,6 +508,7 @@ The bot maintains 4 heartbeat files under `data/heartbeat/`, each owned by a spe
 |---|---|---|
 | `dispatch` | dispatch loop | after every fetch cycle |
 | `cleanup` | cleanup loop | after every cleanup iteration |
+| `digest` | digest loop | after every digest check iteration |
 | `discord` | platform monitor | every 30 s while Discord is connected |
 | `telegram` | platform monitor | every 30 s while Telegram is connected |
 

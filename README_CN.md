@@ -221,7 +221,7 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `TRANSLATION_PROVIDER` | `deepl` | `deepl` / `openai` / `google` |
 | `DEEPL_API_KEY` | 空 | DeepL API key |
 | `OPENAI_API_KEY` | 空 | OpenAI 或兼容 API 的 key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI 模型名 |
+| `OPENAI_MODEL` | `gpt-5.4-nano` | OpenAI 模型名（用于翻译，便宜快速） |
 | `OPENAI_BASE_URL` | 空 | 自定义 OpenAI 兼容端点（比如 DeepSeek、通义） |
 | `GOOGLE_CREDENTIALS_PATH` | 空 | Google Cloud 服务账号 JSON 路径 |
 | `GOOGLE_PROJECT_ID` | 空 | GCP 项目 ID |
@@ -235,7 +235,7 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `TRANSLATION_CACHE_TTL_DAYS` | `7` | 翻译结果缓存 TTL |
 | **AI 日报 / 周报** | | |
 | `DIGEST_PROVIDER` | `openai` | 目前仅支持 openai-compatible |
-| `DIGEST_MODEL` | `gpt-4o-mini` | 生成 digest 用的模型 |
+| `DIGEST_MODEL` | `gpt-5.4-mini` | 生成 digest 用的模型（主题聚合质量比 nano 好） |
 | `DIGEST_MAX_ARTICLES` | `50` | 单次 digest 最多纳入的文章数 |
 | `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | 单篇文章喂给 LLM 时的字符上限（标题 + 摘要） |
 | `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | digest 调度循环的检查间隔 |
@@ -305,7 +305,7 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `/digest disable` | 关闭（配置保留） |
 | `/digest now` | 立即生成并投递一次（测试用） |
 
-- **需要配置 `OPENAI_API_KEY`**，复用翻译用的 key，默认模型 `gpt-4o-mini`
+- **需要配置 `OPENAI_API_KEY`**，复用翻译用的 key，默认模型 `gpt-5.4-mini`
 - 窗口 = "自上次投递以来"；首次则过去 24 小时（日报）或 7 天（周报）
 - 默认只归纳"**实际推送的文章**"；若想把过滤掉的也纳入，加 `include_filtered:true`
 - 与逐篇推送**并存** —— 用户既会收到每篇实时推送，也会按时收到汇总

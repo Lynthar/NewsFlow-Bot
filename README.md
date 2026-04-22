@@ -221,7 +221,7 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `TRANSLATION_PROVIDER` | `deepl` | `deepl` / `openai` / `google` |
 | `DEEPL_API_KEY` | empty | DeepL API key |
 | `OPENAI_API_KEY` | empty | OpenAI (or compatible) key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model name |
+| `OPENAI_MODEL` | `gpt-5.4-nano` | Model name (used for translation; cheap and fast) |
 | `OPENAI_BASE_URL` | empty | Override for OpenAI-compatible endpoints (DeepSeek, Qwen, …) |
 | `GOOGLE_CREDENTIALS_PATH` | empty | Path to Google Cloud service account JSON |
 | `GOOGLE_PROJECT_ID` | empty | GCP project id |
@@ -235,7 +235,7 @@ TELEGRAM_TOKEN=your_real_telegram_token
 | `TRANSLATION_CACHE_TTL_DAYS` | `7` | Translation result cache TTL |
 | **AI digest** | | |
 | `DIGEST_PROVIDER` | `openai` | Only OpenAI-compatible for now |
-| `DIGEST_MODEL` | `gpt-4o-mini` | Model used for digest generation |
+| `DIGEST_MODEL` | `gpt-5.4-mini` | Model used for digest generation (better topic-clustering than nano) |
 | `DIGEST_MAX_ARTICLES` | `50` | Cap on articles per digest |
 | `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | Per-article char budget when building the prompt |
 | `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | How often the digest loop checks for due deliveries |
@@ -303,7 +303,7 @@ Match semantics: **case-insensitive substring on title + summary**. `include` re
 | `/digest disable` | Turn off (config preserved) |
 | `/digest now` | Generate and deliver a digest immediately (for testing) |
 
-- **Requires `OPENAI_API_KEY`** — reuses the translation key; default model is `gpt-4o-mini`
+- **Requires `OPENAI_API_KEY`** — reuses the translation key; default model is `gpt-5.4-mini`
 - Window is "since last delivery"; first run falls back to the past 24 hours (daily) / 7 days (weekly)
 - Defaults to articles the channel actually received; set `include_filtered:true` to also roll in entries dropped by keyword filters
 - Digest **coexists with** per-article push — you get both the real-time stream and the periodic summary

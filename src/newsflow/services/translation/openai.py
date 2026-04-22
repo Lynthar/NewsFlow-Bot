@@ -45,7 +45,7 @@ class OpenAIProvider(TranslationProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-5.4-nano",
         base_url: str | None = None,
     ) -> None:
         self.api_key = api_key

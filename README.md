@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**自托管的 RSS 推送后端 —— 为 Discord / Telegram 机器人提供订阅、翻译、健康管理**
+**Self-hosted RSS push backend for Discord / Telegram bots — subscriptions, translation, health management**
 
 [![Python](https://img.shields.io/badge/Python-3.11%20–%203.13-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -11,110 +11,110 @@
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-red.svg)](https://www.sqlalchemy.org/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ed.svg)](https://www.docker.com/)
 
-简体中文 | [English](README_EN.md)
+English | [简体中文](README_CN.md)
 
 </div>
 
 ---
 
-## 📖 目录
+## 📖 Table of Contents
 
-- [项目定位](#-项目定位)
-- [功能特点](#-功能特点)
-- [架构总览](#-架构总览)
-- [快速开始（Docker）](#-快速开始docker)
-- [环境要求](#-环境要求)
-- [配置项](#-配置项)
-- [命令参考](#-命令参考)
-  - [Discord 斜杠命令](#discord-斜杠命令)
-  - [Telegram 命令](#telegram-命令)
-- [OPML 导入导出](#-opml-导入导出)
-- [REST API（可选）](#-rest-api可选)
-- [高级部署](#-高级部署)
-- [健康检查与监控](#-健康检查与监控)
-- [常见问题](#-常见问题)
-- [贡献与开发](#-贡献与开发)
-- [许可证](#-许可证)
-
----
-
-## 🎯 项目定位
-
-NewsFlow Bot 是一个**部署在你自己服务器上**的 RSS 推送后端。给它一个 Discord 或 Telegram 机器人的 token，在你的频道里发 `/feed add <url>`，源更新时 bot 会自动把新文章推到频道，可选翻译成你想要的语言。
-
-**设计原则**
-
-- 🏠 **自托管优先** —— 你的 VPS、你的 token、你的翻译 API key，数据完全在你手里
-- ⚡ **零配置启动** —— 最小只需填 `DISCORD_TOKEN` 或 `TELEGRAM_TOKEN`，一条 `docker compose up` 搞定
-- 🧩 **渐进式复杂度** —— 翻译、REST API、Redis、Postgres 全部可选，按需启用
-- 🛡️ **生产就绪** —— 指数退避、SSRF 校验、rate-limit、健康检查、alembic 迁移全部内置
-
-**反设计：本仓库不做的**
-
-- ❌ 不内置多租户 / 配额 / 计费（中心化版本会另开仓库）
-- ❌ 不自带 Web UI（管理靠 bot 命令或可选 REST API）
-- ❌ 不强制翻译（默认关闭；你想用再配 DeepL / OpenAI / Google key）
+- [What is this?](#-what-is-this)
+- [Features](#-features)
+- [Architecture](#️-architecture)
+- [Quick Start (Docker)](#-quick-start-docker)
+- [Requirements](#-requirements)
+- [Configuration](#️-configuration)
+- [Command Reference](#-command-reference)
+  - [Discord slash commands](#discord-slash-commands)
+  - [Telegram commands](#telegram-commands)
+- [OPML Import / Export](#-opml-import--export)
+- [REST API (Optional)](#-rest-api-optional)
+- [Advanced Deployment](#-advanced-deployment)
+- [Health Checks](#-health-checks)
+- [FAQ](#-faq)
+- [Contributing](#-contributing)
+- [License](#-license)
 
 ---
 
-## ✨ 功能特点
+## 🎯 What is this?
 
-| 功能 | 说明 |
+NewsFlow Bot is an RSS push backend you run **on your own server**. Give it a Discord or Telegram bot token, run `/feed add <url>` in your channel, and the bot will push new articles to that channel whenever the source updates — optionally translating them to the language you want.
+
+**Design principles**
+
+- 🏠 **Self-hosted first** — your VPS, your tokens, your translation API keys; data stays with you
+- ⚡ **Zero-config start** — minimum setup is one platform token + `docker compose up`
+- 🧩 **Progressive complexity** — translation, REST API, Redis, Postgres are all optional; enable as needed
+- 🛡️ **Production-ready** — exponential backoff, SSRF guard, rate limiting, health checks, alembic migrations built in
+
+**Non-goals (won't be added here)**
+
+- ❌ No multi-tenancy / quotas / billing (a centralized variant will live in a separate repo)
+- ❌ No bundled web UI (manage via bot commands or the optional REST API)
+- ❌ No forced translation (off by default; configure DeepL / OpenAI / Google to enable)
+
+---
+
+## ✨ Features
+
+| Feature | Notes |
 |---|---|
-| 📡 **RSS 抓取** | 基于 `feedparser` + `aiohttp`，支持 ETag / Last-Modified 条件请求、并发抓取、大小上限、SSRF 校验 |
-| 🌐 **多平台推送** | Discord（斜杠命令）+ Telegram（前缀命令）同时工作，平台隔离、频道隔离 |
-| 🌍 **自动翻译** | 可选 DeepL / OpenAI-compatible / Google Cloud Translation；两层缓存（DB + 内存/Redis）节省 API 调用 |
-| 🔁 **指数退避** | 源临时失效时自动拉长重试间隔，10 次连续失败自动停订并**通知用户** |
-| 🎯 **关键词过滤** | 单条订阅可设 include / exclude 关键词，只推感兴趣内容；被过滤的条目不消耗翻译 API |
-| 📰 **AI 日报 / 周报** | 可选开启 LLM 摘要，按日或按周把频道推送过的文章归纳成一份简报 |
-| 📋 **OPML 导入导出** | 从 Feedly / Reeder / 其他 RSS reader 直接搬家，或备份到文件 |
-| ⏸ **暂停 / 恢复** | 临时不收推送又不想删订阅？`/feed pause` 即可 |
-| 👀 **订阅预览** | 订阅成功后几秒内就推 1 条最新文章，不用等下一轮 |
-| 🩺 **健康状态可视** | `/feed status <url>` 显示失败次数、退避窗口、最近文章等 |
-| 🐳 **Docker 就绪** | 一条 `docker compose` 启动；内置 heartbeat 健康检查、alembic 自动迁移 |
-| 🔒 **链路安全** | URL 白名单（http/https、拒绝私网/环回/云元数据 IP）、响应体 5 MiB 上限 |
-| 🔧 **灵活数据库** | 默认 SQLite 单文件；改一条 URL 即可切 PostgreSQL |
+| 📡 **RSS fetching** | `feedparser` + `aiohttp`, ETag / Last-Modified conditional requests, concurrent fetch, size cap, SSRF guard |
+| 🌐 **Multi-platform push** | Discord (slash commands) + Telegram (prefix commands) in parallel; platform and channel isolated |
+| 🌍 **Automatic translation** | Optional DeepL / OpenAI-compatible / Google Cloud Translation; two-tier cache (DB + memory/Redis) |
+| 🔁 **Exponential backoff** | Transient source failures automatically stretch the retry interval; 10 consecutive failures auto-disables and **notifies subscribers** |
+| 🎯 **Keyword filtering** | Per-subscription include/exclude rules; filtered entries skip the translate path entirely |
+| 📰 **AI digest (daily / weekly)** | Optional LLM-generated briefings that roll up the articles pushed to a channel over the schedule window |
+| 📋 **OPML import/export** | Migrate from Feedly / Reeder / any RSS reader, or back up your subscription list |
+| ⏸ **Pause / resume** | Temporarily stop a feed without losing the subscription |
+| 👀 **Subscribe preview** | Push the latest article within seconds of subscribing, no need to wait for the next cycle |
+| 🩺 **Health visibility** | `/feed status <url>` shows error count, backoff window, recent articles |
+| 🐳 **Docker ready** | Single `docker compose up`; built-in heartbeat healthcheck + auto alembic migrations |
+| 🔒 **Chain-of-safety** | URL scheme / host allowlist (rejects private / loopback / cloud-metadata IPs); 5 MiB response cap |
+| 🔧 **Flexible DB** | SQLite by default; change one URL to switch to PostgreSQL |
 
 ---
 
-## 🏗️ 架构总览
+## 🏗️ Architecture
 
 ```
                    ┌──────────── NewsFlow Process ────────────┐
                    │                                           │
-                   │   单 asyncio 事件循环，并发以下任务：         │
+                   │   Single asyncio event loop runs:          │
                    │                                           │
 Discord Slash ◀───▶│  • Discord Adapter       ┐                │
 Commands           │                          │                │
-Telegram  ◀───────▶│  • Telegram Adapter      │ register 到     │
+Telegram  ◀───────▶│  • Telegram Adapter      │ register with   │
 Polling            │                          │ Dispatcher       │
                    │  • Dispatch Loop         ┘                │
-                   │    (每 N 分钟抓取 → 翻译 → 推送)              │
+                   │    (every N min: fetch → translate → send) │
                    │  • Cleanup Loop                           │
-                   │    (每 24h 删过期条目)                         │
+                   │    (every 24h: prune old entries)          │
                    │  • Platform Monitor                       │
-                   │    (每 30s 检查 adapter 连通 → 写 heartbeat) │
+                   │    (every 30s: check adapters → heartbeat) │
                    │                                           │
-                   │  共享单例：Settings / Fetcher /              │
-                   │  TranslationService / Cache / DB Engine    │
+                   │  Shared singletons: Settings / Fetcher /    │
+                   │  TranslationService / Cache / DB Engine     │
                    │                                           │
                    └───────────────┬───────────────────────────┘
                                    │
                                    ▼
-                    SQLite 文件  /  Postgres（可选）
+                    SQLite file  /  PostgreSQL (optional)
 ```
 
-**分层**：`adapters/` 和 `api/`（可选 REST）→ `services/` 业务逻辑 → `repositories/` 数据访问 → `models/` SQLAlchemy ORM；`core/` 是无状态原语（抓取、HTML 清洗、URL 安全校验、时间格式化）。
+**Layers**: `adapters/` & `api/` → `services/` (business logic) → `repositories/` (data access) → `models/` (SQLAlchemy ORM); `core/` holds stateless primitives (fetcher, HTML cleaner, URL validator, time format).
 
-详细架构说明见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+Deep architecture notes live in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ---
 
-## 🚀 快速开始（Docker）
+## 🚀 Quick Start (Docker)
 
-**Debian 12 / Ubuntu 22+ 示例**。其他 Linux 发行版把 Docker 安装命令换成对应的即可。
+Example for **Debian 12 / Ubuntu 22+**. Swap the Docker install commands for your distro if needed.
 
-### 1. 装 Docker（如未安装）
+### 1. Install Docker (if you haven't)
 
 ```bash
 sudo apt update
@@ -129,321 +129,319 @@ sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 ```
 
-### 2. 准备 token
+### 2. Get a bot token
 
 <details>
 <summary><b>Discord Bot Token</b></summary>
 
-1. 访问 [Discord Developer Portal](https://discord.com/developers/applications) 新建应用
-2. `Bot` 页面 → `Reset Token` 拿到 token
-3. 打开 **MESSAGE CONTENT INTENT**
-4. `OAuth2 → URL Generator` 勾 `bot` + `applications.commands`，权限选 `Send Messages`、`Embed Links`、`Read Message History`
-5. 用生成的链接把 bot 邀请到你的服务器
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create an application
+2. On the `Bot` page, click `Reset Token` to get one
+3. Enable **MESSAGE CONTENT INTENT**
+4. On `OAuth2 → URL Generator` tick `bot` + `applications.commands`, grant `Send Messages`, `Embed Links`, `Read Message History`
+5. Invite the bot to your server with the generated URL
 </details>
 
 <details>
 <summary><b>Telegram Bot Token</b></summary>
 
-1. 在 Telegram 里找 [@BotFather](https://t.me/BotFather) 发 `/newbot`
-2. 按提示设置机器人名字
-3. 拿到 token，格式类似 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`
+2. Follow the prompts to name the bot
+3. Grab the token — format looks like `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`
 </details>
 
-### 3. 克隆、配置、启动
+### 3. Clone, configure, start
 
 ```bash
 git clone https://github.com/Lynthar/NewsFlow-Bot.git
 cd NewsFlow-Bot
 
 cp .env.example .env
-nano .env     # 至少填一个 token
+nano .env     # fill in at least one token
 
 docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 
-看到 `Discord bot logged in as ...` 或 `Telegram bot started successfully` 就跑起来了。
+When you see `Discord bot logged in as ...` or `Telegram bot started successfully`, you're live.
 
-### 4. 在你的频道 / 聊天里试命令
+### 4. Try commands in your channel / chat
 
-Discord：
+Discord:
 ```
 /feed test https://feeds.bbci.co.uk/news/rss.xml
 /feed add  https://feeds.bbci.co.uk/news/rss.xml
 ```
 
-Telegram：
+Telegram:
 ```
 /test https://feeds.bbci.co.uk/news/rss.xml
 /add  https://feeds.bbci.co.uk/news/rss.xml
 ```
 
-订阅成功后几秒内会推一条最新文章作为预览；之后按 `FETCH_INTERVAL_MINUTES`（默认 60 分钟）的周期自动推送新内容。
+Within seconds of a successful subscribe, the bot pushes one preview article. After that, new content arrives on the `FETCH_INTERVAL_MINUTES` cadence (60 min by default).
 
 ---
 
-## 📋 环境要求
+## 📋 Requirements
 
-| 项目 | 要求 | 备注 |
+| Item | Requirement | Notes |
 |---|---|---|
-| **操作系统** | Linux（Debian 12 / Ubuntu 22+ / CentOS 等） | Docker 路线跨发行版通用 |
-| **Python** | 3.11 / 3.12 / 3.13 | **3.14 暂不支持**（`lxml` 尚无 wheel） |
-| **内存** | 最低 256 MiB，推荐 512 MiB | 订阅数 100+ 建议 1 GiB |
-| **磁盘** | SQLite 模式 ~100 MiB 起 | 按保留天数 × 订阅数量增长 |
-| **网络** | 仅需出站 HTTPS 443 | Bot 主动连 Discord / Telegram / RSS 源 |
-| **Docker** | 20.10+ + Compose v2 | 或 [systemd 部署](#高级部署) |
+| **OS** | Linux (Debian 12 / Ubuntu 22+ / CentOS / etc.) | Docker path is distro-agnostic |
+| **Python** | 3.11 / 3.12 / 3.13 | **3.14 not yet supported** (`lxml` has no wheel) |
+| **RAM** | Minimum 256 MiB, recommended 512 MiB | 1 GiB+ for 100+ subscriptions |
+| **Disk** | ~100 MiB baseline for SQLite | Grows with retention × subscription count |
+| **Network** | Outbound HTTPS 443 only | Bot connects out to Discord / Telegram / RSS sources |
+| **Docker** | 20.10+ with Compose v2 | Or use [systemd deployment](#advanced-deployment) |
 
-Windows 也能开发（`make dev`），但生产部署建议 Linux。
+Windows works for development (`make dev`), but Linux is recommended for production.
 
 ---
 
-## ⚙️ 配置项
+## ⚙️ Configuration
 
-所有配置通过 `.env` 文件或环境变量传入。最小配置：
+All settings go through `.env` or environment variables. Minimum:
 
 ```bash
-# 二选一，也可以两个都填
+# Either (or both) is fine
 DISCORD_TOKEN=your_real_discord_token
 TELEGRAM_TOKEN=your_real_telegram_token
 ```
 
-### 全部配置项
+### All settings
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| **平台** | | |
-| `DISCORD_TOKEN` | 空 | Discord Bot token，空则不启用 Discord |
-| `TELEGRAM_TOKEN` | 空 | Telegram Bot token，空则不启用 Telegram |
-| **数据库** | | |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/newsflow.db` | SQLAlchemy 异步连接串；换成 `postgresql+asyncpg://...` 即切 Postgres |
-| **翻译** | | |
-| `TRANSLATION_ENABLED` | `false` | 总开关 |
+| **Platforms** | | |
+| `DISCORD_TOKEN` | empty | Discord bot token; empty = Discord disabled |
+| `TELEGRAM_TOKEN` | empty | Telegram bot token; empty = Telegram disabled |
+| **Database** | | |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/newsflow.db` | SQLAlchemy async URL; swap with `postgresql+asyncpg://...` for Postgres |
+| **Translation** | | |
+| `TRANSLATION_ENABLED` | `false` | Master switch |
 | `TRANSLATION_PROVIDER` | `deepl` | `deepl` / `openai` / `google` |
-| `DEEPL_API_KEY` | 空 | DeepL API key |
-| `OPENAI_API_KEY` | 空 | OpenAI 或兼容 API 的 key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI 模型名 |
-| `OPENAI_BASE_URL` | 空 | 自定义 OpenAI 兼容端点（比如 DeepSeek、通义） |
-| `GOOGLE_CREDENTIALS_PATH` | 空 | Google Cloud 服务账号 JSON 路径 |
-| `GOOGLE_PROJECT_ID` | 空 | GCP 项目 ID |
-| **调度** | | |
-| `FETCH_INTERVAL_MINUTES` | `60` | 抓取循环间隔 |
-| `CLEANUP_INTERVAL_HOURS` | `24` | 清理循环间隔 |
-| `ENTRY_RETENTION_DAYS` | `7` | 保留多少天的条目 |
-| **缓存** | | |
-| `CACHE_BACKEND` | `memory` | `memory`（进程内 LRU）或 `redis` |
-| `REDIS_URL` | 空 | 如 `redis://redis:6379/0` |
-| `TRANSLATION_CACHE_TTL_DAYS` | `7` | 翻译结果缓存 TTL |
-| **AI 日报 / 周报** | | |
-| `DIGEST_PROVIDER` | `openai` | 目前仅支持 openai-compatible |
-| `DIGEST_MODEL` | `gpt-4o-mini` | 生成 digest 用的模型 |
-| `DIGEST_MAX_ARTICLES` | `50` | 单次 digest 最多纳入的文章数 |
-| `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | 单篇文章喂给 LLM 时的字符上限（标题 + 摘要） |
-| `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | digest 调度循环的检查间隔 |
+| `DEEPL_API_KEY` | empty | DeepL API key |
+| `OPENAI_API_KEY` | empty | OpenAI (or compatible) key |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model name |
+| `OPENAI_BASE_URL` | empty | Override for OpenAI-compatible endpoints (DeepSeek, Qwen, …) |
+| `GOOGLE_CREDENTIALS_PATH` | empty | Path to Google Cloud service account JSON |
+| `GOOGLE_PROJECT_ID` | empty | GCP project id |
+| **Scheduling** | | |
+| `FETCH_INTERVAL_MINUTES` | `60` | Fetch loop interval |
+| `CLEANUP_INTERVAL_HOURS` | `24` | Cleanup loop interval |
+| `ENTRY_RETENTION_DAYS` | `7` | How long to keep entries |
+| **Cache** | | |
+| `CACHE_BACKEND` | `memory` | `memory` (in-process LRU) or `redis` |
+| `REDIS_URL` | empty | e.g. `redis://redis:6379/0` |
+| `TRANSLATION_CACHE_TTL_DAYS` | `7` | Translation result cache TTL |
+| **AI digest** | | |
+| `DIGEST_PROVIDER` | `openai` | Only OpenAI-compatible for now |
+| `DIGEST_MODEL` | `gpt-4o-mini` | Model used for digest generation |
+| `DIGEST_MAX_ARTICLES` | `50` | Cap on articles per digest |
+| `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | Per-article char budget when building the prompt |
+| `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | How often the digest loop checks for due deliveries |
 | **REST API** | | |
-| `API_ENABLED` | `false` | 启用 FastAPI 管理端点 |
-| `API_HOST` | `0.0.0.0` | 监听地址 |
-| `API_PORT` | `8000` | 监听端口 |
-| **日志** | | |
+| `API_ENABLED` | `false` | Enables the FastAPI management server |
+| `API_HOST` | `0.0.0.0` | Bind address |
+| `API_PORT` | `8000` | Bind port |
+| **Logging** | | |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `LOG_FORMAT` | `console` | `console`（带颜色）或 `json`（结构化，适合 Loki / ELK） |
-| **配额（0 = 无限制）** | | |
-| `MAX_FEEDS_PER_CHANNEL` | `0` | 单频道最多订阅数 |
-| `MAX_ENTRIES_PER_FEED` | `0` | 单 feed 保留多少条 |
+| `LOG_FORMAT` | `console` | `console` (human) or `json` (for Loki / ELK) |
+| **Quotas (0 = unlimited)** | | |
+| `MAX_FEEDS_PER_CHANNEL` | `0` | Max subscriptions per channel |
+| `MAX_ENTRIES_PER_FEED` | `0` | Max retained entries per feed |
 
 ---
 
-## 📱 命令参考
+## 📱 Command Reference
 
-命令按**使用频率**和**功能类别**分组。Discord 用斜杠命令 + 参数（自动补全），Telegram 用前缀命令 + 空格分隔参数。
+### Discord slash commands
 
-### Discord 斜杠命令
+#### Feed management
 
-#### Feed 管理
-
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/feed add <url>` | 订阅；成功后几秒会推 1 条预览 |
-| `/feed remove <url>` | 退订 |
-| `/feed pause <url>` | 暂停（不删，可 resume） |
-| `/feed resume <url>` | 恢复已暂停的订阅 |
-| `/feed list [page]` | 分页列出本频道订阅（每页 20 条） |
-| `/feed test <url>` | 不订阅只测试 URL 是否是合法 feed |
-| `/feed status <url>` | 单 feed 详情：健康、最近失败时间、最近 5 篇文章 |
+| `/feed add <url>` | Subscribe; one preview article is sent within seconds |
+| `/feed remove <url>` | Unsubscribe |
+| `/feed pause <url>` | Pause delivery (don't delete; resume later) |
+| `/feed resume <url>` | Resume a paused subscription |
+| `/feed list [page]` | Paginated list (20 per page) |
+| `/feed test <url>` | Check a URL without subscribing |
+| `/feed status <url>` | Detailed status: health, last error, recent 5 articles |
 
-#### 翻译设置
+#### Translation
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/settings language <code>` | 设置本频道**所有订阅**的翻译目标语言 |
-| `/settings translate <on\|off>` | 开关本频道**所有订阅**的翻译 |
-| `/feed language <url> <code>` | **单条订阅**的语言（覆盖频道默认） |
-| `/feed translate <url> <on\|off>` | **单条订阅**的翻译开关（覆盖频道默认） |
+| `/settings language <code>` | Channel-wide default target language |
+| `/settings translate <on\|off>` | Channel-wide translate toggle |
+| `/feed language <url> <code>` | Per-feed language (overrides channel default) |
+| `/feed translate <url> <on\|off>` | Per-feed toggle (overrides channel default) |
 
 #### OPML
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/feed export` | 导出本频道订阅为 OPML 文件 |
-| `/feed import <file>` | 上传 `.opml` / `.xml` 文件批量订阅（上限 1 MB） |
+| `/feed export` | Download this channel's subscriptions as OPML |
+| `/feed import <file>` | Bulk-subscribe from an uploaded `.opml` / `.xml` file (max 1 MB) |
 
-#### 关键词过滤
+#### Keyword filter
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/feed filter-set <url> include:<csv> exclude:<csv>` | 设置单个 feed 的关键词过滤（两个参数都可选） |
-| `/feed filter-show <url>` | 查看当前过滤规则 |
-| `/feed filter-clear <url>` | 移除过滤 |
+| `/feed filter-set <url> include:<csv> exclude:<csv>` | Set per-feed keyword filter (both args optional) |
+| `/feed filter-show <url>` | Show current filter |
+| `/feed filter-clear <url>` | Remove the filter |
 
-匹配行为：**title + summary 合并、大小写不敏感、子串匹配**。`include` 需要"至少包含一个"，`exclude` 需要"一个都不包含"，两者叠加评估。规则为空 = 不过滤。
+Match semantics: **case-insensitive substring on title + summary**. `include` requires at least one match; `exclude` drops entries containing any match. Empty rule = no filter.
 
-#### AI 日报 / 周报
+#### AI digest (daily / weekly)
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/digest enable schedule:<daily\|weekly> hour_utc:<0-23> [weekday:<0-6>] [language:<code>] [include_filtered:<bool>] [max_articles:<n>]` | 启用或更新日报 / 周报 |
-| `/digest show` | 查看当前配置 |
-| `/digest disable` | 关闭（配置保留） |
-| `/digest now` | 立即生成并投递一次（测试用） |
+| `/digest enable schedule:<daily\|weekly> hour_utc:<0-23> [weekday:<0-6>] [language:<code>] [include_filtered:<bool>] [max_articles:<n>]` | Enable / update digest |
+| `/digest show` | Show current config |
+| `/digest disable` | Turn off (config preserved) |
+| `/digest now` | Generate and deliver a digest immediately (for testing) |
 
-- **需要配置 `OPENAI_API_KEY`**，复用翻译用的 key，默认模型 `gpt-4o-mini`
-- 窗口 = "自上次投递以来"；首次则过去 24 小时（日报）或 7 天（周报）
-- 默认只归纳"**实际推送的文章**"；若想把过滤掉的也纳入，加 `include_filtered:true`
-- 与逐篇推送**并存** —— 用户既会收到每篇实时推送，也会按时收到汇总
+- **Requires `OPENAI_API_KEY`** — reuses the translation key; default model is `gpt-4o-mini`
+- Window is "since last delivery"; first run falls back to the past 24 hours (daily) / 7 days (weekly)
+- Defaults to articles the channel actually received; set `include_filtered:true` to also roll in entries dropped by keyword filters
+- Digest **coexists with** per-article push — you get both the real-time stream and the periodic summary
 
-#### 其他
+#### Other
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/status` | Bot 整体状态 |
+| `/status` | Bot-wide status |
 
-### Telegram 命令
+### Telegram commands
 
-#### Feed 管理
+#### Feed management
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/add <url>` | 订阅 |
-| `/remove <url>` | 退订 |
-| `/pause <url>` | 暂停 |
-| `/resume <url>` | 恢复 |
-| `/list [page]` | 分页列出 |
-| `/test <url>` | 测试 URL |
-| `/info <url>` | 单 feed 详情（等于 Discord 的 `/feed status`） |
+| `/add <url>` | Subscribe |
+| `/remove <url>` | Unsubscribe |
+| `/pause <url>` | Pause |
+| `/resume <url>` | Resume |
+| `/list [page]` | Paginated list |
+| `/test <url>` | Test URL |
+| `/info <url>` | Feed detail (Telegram equivalent of Discord's `/feed status`) |
 
-#### 翻译设置
+#### Translation
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/language <code>` | 频道级翻译语言 |
-| `/translate <on\|off>` | 频道级翻译开关 |
-| `/setlang <url> <code>` | 单 feed 语言 |
-| `/settrans <url> <on\|off>` | 单 feed 翻译开关 |
+| `/language <code>` | Channel-wide language |
+| `/translate <on\|off>` | Channel-wide toggle |
+| `/setlang <url> <code>` | Per-feed language |
+| `/settrans <url> <on\|off>` | Per-feed toggle |
 
 #### OPML
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/export` | 导出 OPML 文件 |
-| `/import <url>` | 从 URL 获取 OPML 导入 |
-| *上传 `.opml` 文件* | 拖进聊天即自动导入，**无需命令** |
+| `/export` | Download OPML |
+| `/import <url>` | Fetch and import from a hosted OPML URL |
+| *upload `.opml` file* | Auto-imported when dropped into the chat — no command needed |
 
-#### 关键词过滤
+#### Keyword filter
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/filter <url>` | 显示当前过滤规则 |
-| `/filter <url> clear` | 移除过滤 |
-| `/filter <url> include=a,b exclude=c,d` | 设置过滤（两个字段都可选） |
+| `/filter <url>` | Show current filter |
+| `/filter <url> clear` | Remove filter |
+| `/filter <url> include=a,b exclude=c,d` | Set filter (either side optional) |
 
-#### AI 日报 / 周报
+#### AI digest (daily / weekly)
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/digest show` | 显示当前配置 |
-| `/digest enable daily <hour_utc> [lang]` | 启用日报 |
-| `/digest enable weekly <weekday> <hour_utc> [lang]` | 启用周报（weekday 支持 `mon`…`sun` 或 `0`…`6`） |
-| `/digest disable` | 关闭 |
-| `/digest now` | 立即投递一次 |
+| `/digest show` | Show current config |
+| `/digest enable daily <hour_utc> [lang]` | Enable daily digest |
+| `/digest enable weekly <weekday> <hour_utc> [lang]` | Enable weekly digest (weekday accepts `mon`…`sun` or `0`…`6`) |
+| `/digest disable` | Turn off |
+| `/digest now` | Deliver a digest immediately |
 
-#### 其他
+#### Other
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `/start`、`/help` | 帮助 |
-| `/status` | Bot 状态 |
+| `/start`, `/help` | Help |
+| `/status` | Bot status |
 
-### 常用语言代码
+### Common language codes
 
-`zh-CN`（简中）· `zh-TW`（繁中）· `en` · `ja` · `ko` · `fr` · `de` · `es` · `ru` · `ar` · ...（DeepL / OpenAI 支持的任意 BCP-47 代码）
+`zh-CN` (Simplified Chinese) · `zh-TW` (Traditional Chinese) · `en` · `ja` · `ko` · `fr` · `de` · `es` · `ru` · `ar` · any BCP-47 tag your provider supports.
 
 ---
 
-## 📋 OPML 导入导出
+## 📋 OPML Import / Export
 
-**场景**：从 Feedly、Reeder、NetNewsWire 搬家；备份订阅列表；在多个频道 / 实例间迁移。
+**Use cases**: migrate from Feedly / Reeder / NetNewsWire; back up subscription lists; move between channels or instances.
 
-### 导出
+### Export
 
-- **Discord**：`/feed export` → bot 返回一个 `.opml` 文件附件
-- **Telegram**：`/export` → bot 发送 `.opml` 文件
+- **Discord**: `/feed export` → bot attaches an `.opml` file
+- **Telegram**: `/export` → bot sends `.opml` as a document
 
-### 导入
+### Import
 
-- **Discord**：`/feed import file:<上传文件>`
-- **Telegram**：直接把 `.opml` 文件拖进聊天（无需输入命令），或 `/import <url>` 从 URL 获取
+- **Discord**: `/feed import file:<attach file>`
+- **Telegram**: drop an `.opml` file into the chat (no command needed), or `/import <url>` to fetch a hosted file
 
-### 预置的源列表
+### Curated starter list
 
-仓库 `samples/curated-feeds.opml` 提供 23 个精选源（WSJ、FT、NYT、Bloomberg、Economist、Reuters、Atlantic、Foreign Affairs、Nautilus、Longreads、Cloudflare Blog、EFF 等）。
+`samples/curated-feeds.opml` in this repo contains 23 hand-picked sources (WSJ, FT, NYT, Bloomberg, Economist, Reuters, Atlantic, Foreign Affairs, Nautilus, Longreads, Cloudflare Blog, EFF, …).
 
-**使用**：下载该文件到本地电脑 → Discord `/feed import` 上传 or Telegram 直接拖文件 → 23 个源一次订阅完。
+**Usage**: download the file → Discord `/feed import` upload it, or drop it in your Telegram chat → all 23 feeds subscribed in one go.
 
-> **批量导入不会刷屏** —— 避免一次推 20+ 条预览消息，导入走"安静"流程，等下一轮 dispatch 循环时正常发送新文章。
+> **Bulk imports don't spam previews** — rather than firing 20 preview articles at once, import uses a quiet flow; new content arrives on the next dispatch cycle like any normal subscription.
 
 ---
 
-## 🔌 REST API（可选）
+## 🔌 REST API (Optional)
 
-`.env` 里设 `API_ENABLED=true` 启用。
+Set `API_ENABLED=true` in `.env` to enable.
 
-> ⚠️ **当前 API 无认证 + CORS 允许所有来源**。仅建议在内网 / 本机使用，公网暴露前请加 nginx 反代 + Basic Auth 或 API Key 中间件。
+> ⚠️ **The API currently has no auth and CORS allows all origins.** Intended for local / intranet use; if exposing publicly, put nginx + Basic Auth or an API key middleware in front.
 
-### 端点
+### Endpoints
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Description |
 |---|---|---|
-| `GET` | `/health` | 服务状态（简单存活） |
-| `GET` | `/ready` | 就绪检查（含 DB 连接） |
-| `GET` | `/live` | 存活探针（K8s 友好） |
-| `GET` | `/api/feeds` | 列出所有 feed |
-| `POST` | `/api/feeds` | 添加 feed |
-| `GET` | `/api/feeds/{id}` | 单 feed 详情 |
-| `DELETE` | `/api/feeds/{id}` | 删 feed |
-| `POST` | `/api/feeds/{id}/refresh` | 手动触发抓取 |
-| `POST` | `/api/feeds/test` | 测试 URL |
-| `GET` | `/api/stats` | 整体统计 |
-| `GET` | `/api/stats/feeds` | 每个 feed 的统计 |
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/ready` | Readiness (includes DB connectivity) |
+| `GET` | `/live` | K8s-style liveness |
+| `GET` | `/api/feeds` | List all feeds |
+| `POST` | `/api/feeds` | Add a feed |
+| `GET` | `/api/feeds/{id}` | Feed detail |
+| `DELETE` | `/api/feeds/{id}` | Delete a feed |
+| `POST` | `/api/feeds/{id}/refresh` | Force a fetch |
+| `POST` | `/api/feeds/test` | Test a URL |
+| `GET` | `/api/stats` | Overall stats |
+| `GET` | `/api/stats/feeds` | Per-feed stats |
 
-`LOG_LEVEL=DEBUG` 时自动暴露 `/docs`（Swagger UI）。
+When `LOG_LEVEL=DEBUG`, `/docs` (Swagger UI) is exposed.
 
 ---
 
-## 🔧 高级部署
+## 🔧 Advanced Deployment
 
-### Docker Compose Profiles
+### Docker Compose profiles
 
 ```bash
-# 加 Redis（多实例或想让翻译缓存跨重启）
+# With Redis (multi-instance or if you want translation cache to survive restart)
 docker compose -f docker/docker-compose.yml --profile with-redis up -d
 
-# 加 Postgres（订阅上 10 万条再考虑；SQLite 之前都够用）
+# With Postgres (only needed past ~100k entries; SQLite is fine up to that)
 docker compose -f docker/docker-compose.yml --profile with-postgres up -d
 
-# 全栈
+# Full stack
 docker compose -f docker/docker-compose.yml --profile with-redis --profile with-postgres up -d
 ```
 
-### systemd + venv（无 Docker）
+### systemd + venv (no Docker)
 
 ```bash
 sudo apt install -y python3 python3-venv python3-pip libxml2-dev libxslt1-dev build-essential
@@ -481,48 +479,48 @@ sudo systemctl enable --now newsflow
 sudo journalctl -u newsflow -f
 ```
 
-### 升级到新版本
+### Upgrading
 
 ```bash
 cd ~/NewsFlow-Bot
 git pull
 docker compose -f docker/docker-compose.yml up -d --build
-# alembic 迁移会在启动时自动跑，无需手动操作
+# alembic migrations run automatically on startup; no manual step
 ```
 
-### 备份
+### Backup
 
 ```bash
-# SQLite 模式：单文件备份
+# SQLite: single file
 docker cp newsflow-bot:/app/data/newsflow.db ./backup-$(date +%F).db
 
-# Postgres 模式：
+# Postgres:
 docker compose -f docker/docker-compose.yml exec postgres pg_dump -U newsflow > backup-$(date +%F).sql
 ```
 
 ---
 
-## 🩺 健康检查与监控
+## 🩺 Health Checks
 
-Bot 在 `data/heartbeat/` 下维护 4 个文件，每个任务自己负责刷新：
+The bot maintains 4 heartbeat files under `data/heartbeat/`, each owned by a specific task:
 
-| 文件 | 刷新者 | 刷新频率 |
+| File | Written by | Frequency |
 |---|---|---|
-| `dispatch` | dispatch loop | 每轮抓取结束后 |
-| `cleanup` | cleanup loop | 每轮清理结束后 |
-| `digest` | digest loop | 每次 digest 检查循环结束 |
-| `discord` | platform monitor | Discord 连接活跃时每 30 秒 |
-| `telegram` | platform monitor | Telegram 连接活跃时每 30 秒 |
+| `dispatch` | dispatch loop | after every fetch cycle |
+| `cleanup` | cleanup loop | after every cleanup iteration |
+| `digest` | digest loop | after every digest check iteration |
+| `discord` | platform monitor | every 30 s while Discord is connected |
+| `telegram` | platform monitor | every 30 s while Telegram is connected |
 
-Dockerfile 的 `HEALTHCHECK` 检查**所有文件都在 120 分钟内被刷新过**；任何一个老化 → 容器状态 `unhealthy`。
+The Dockerfile `HEALTHCHECK` passes **only if every file is fresh within 120 minutes**. If any file goes stale, the container is marked `unhealthy`.
 
-查看各任务健康：
+Check heartbeat state:
 
 ```bash
 docker exec newsflow-bot ls -la /app/data/heartbeat/
 ```
 
-查看 bot 内部统计（如果启用了 REST API）：
+Internal stats (if REST API is enabled):
 
 ```bash
 curl http://localhost:8000/api/stats | jq
@@ -530,32 +528,32 @@ curl http://localhost:8000/api/stats | jq
 
 ---
 
-## 🐛 常见问题
+## 🐛 FAQ
 
 <details>
-<summary><b>订阅成功了但等了很久没有新消息</b></summary>
+<summary><b>Subscribed, but no new messages arriving</b></summary>
 
-正常行为。Bot 在订阅成功几秒内会推送 1 条**预览**（最新那条文章），之后按 `FETCH_INTERVAL_MINUTES`（默认 60 分钟）的周期抓取新内容。如果源没有新文章，自然就不会有推送。
+Expected behavior. The bot pushes one **preview** article within seconds of subscribing, then waits for the `FETCH_INTERVAL_MINUTES` cycle (60 min default) to check for updates. If the source hasn't published anything new, nothing gets sent.
 
-用 `/feed status <url>` 查看上次成功抓取时间、错误计数等。
+Run `/feed status <url>` to inspect last successful fetch, error counts, etc.
 </details>
 
 <details>
-<summary><b>Bot 无限重启，日志里有 <code>InvalidToken</code></b></summary>
+<summary><b>Container keeps restarting, logs show <code>InvalidToken</code></b></summary>
 
-多半是 `.env` 里的 token 还是 `.env.example` 里的占位符（如 `your_discord_bot_token`），或者 token 输错了。确认后重启容器。
+Most likely your `.env` still has the placeholder (`your_discord_bot_token` or `your_telegram_bot_token`) instead of the real token, or there's a typo. Fix and restart.
 </details>
 
 <details>
-<summary><b>某个 feed 从未成功过 —— 网络问题</b></summary>
+<summary><b>A specific feed never works — network issue</b></summary>
 
-容器内 DNS 或出站 HTTPS 被拦。先测：
+Container DNS or outbound HTTPS may be broken. Test:
 
 ```bash
-docker exec newsflow-bot python -c "import socket; print(socket.gethostbyname('hnrss.org'))"
+docker exec newsflow-bot python -c "import socket; print(socket.gethostbyname('example.com'))"
 ```
 
-能解析就是 DNS OK。若无法解析，在 `docker-compose.yml` 的 `newsflow` 服务下确认有：
+If that resolves, DNS is fine. Otherwise confirm `docker-compose.yml` includes:
 
 ```yaml
     dns:
@@ -563,37 +561,37 @@ docker exec newsflow-bot python -c "import socket; print(socket.gethostbyname('h
       - 8.8.8.8
 ```
 
-然后 `docker compose up -d --force-recreate newsflow`。
+Then `docker compose up -d --force-recreate newsflow`.
 
-HTTPS 到特定源超时（其他源工作正常）通常是源端或 Cloudflare 针对 VPS IP 的限流，等一会儿再试或换源。
+HTTPS timeouts on one specific host while others work usually mean the source or its CDN rate-limiting your VPS IP — try again later or switch to another source.
 </details>
 
 <details>
-<summary><b>翻译没起作用</b></summary>
+<summary><b>Translation isn't working</b></summary>
 
-依次检查：
-1. `.env` 里 `TRANSLATION_ENABLED=true`
-2. `TRANSLATION_PROVIDER` 对应的 key 已配置（`DEEPL_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_CREDENTIALS_PATH`）
-3. 订阅本身开了翻译：`/feed status <url>` 看 Translation: On
-4. 重启容器让配置生效
-5. `LOG_LEVEL=DEBUG` 看详细日志里的翻译调用
+Check in order:
+1. `.env` has `TRANSLATION_ENABLED=true`
+2. The configured `TRANSLATION_PROVIDER`'s key is set (`DEEPL_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_CREDENTIALS_PATH`)
+3. The subscription itself has translation on: `/feed status <url>` → `Translation: On`
+4. Restart the container after changing `.env`
+5. `LOG_LEVEL=DEBUG` to see detailed provider calls
 </details>
 
 <details>
-<summary><b>升级后 <code>alembic</code> 报错 "table feeds already exists"</b></summary>
+<summary><b>After upgrade, alembic reports "table feeds already exists"</b></summary>
 
-你的 DB 是 alembic 接入之前由 `init_db()` 创建的。初始 migration 内建了 idempotent 检查能自动处理这种情况，如果仍报错：
+Your DB was created by `init_db()` before alembic was wired in. The initial migration has an idempotent guard that should handle this automatically. If it still errors:
 
 ```bash
-# 手工标记当前 schema 为最新
+# Manually stamp the current schema as up-to-date
 docker compose exec newsflow alembic stamp head
 ```
 </details>
 
 <details>
-<summary><b>想重置所有数据</b></summary>
+<summary><b>Reset all data</b></summary>
 
-SQLite 模式下，停容器并删除 data volume：
+In SQLite mode, stop the container and delete the data volume:
 
 ```bash
 docker compose -f docker/docker-compose.yml down
@@ -603,72 +601,73 @@ docker compose -f docker/docker-compose.yml up -d
 </details>
 
 <details>
-<summary><b>日志里 <code>No adapter for platform: discord</code></b></summary>
+<summary><b>Logs show <code>No adapter for platform: discord</code></b></summary>
 
-Discord 登录还没成功（或网络瞬断）。Dispatch loop 会跳过此轮，下轮自动恢复。持续出现则检查 `DISCORD_TOKEN` 和容器网络。
+Discord login isn't complete yet (or a transient disconnect). The dispatch loop skips this round; the next iteration recovers automatically. If it persists, check `DISCORD_TOKEN` and container networking.
 </details>
 
 ---
 
-## 🤝 贡献与开发
+## 🤝 Contributing
 
-想修 bug 或加功能？先看 [DEVELOPMENT.md](DEVELOPMENT.md) —— 那里有完整的架构说明、分层约定、代码风格、扩展点示范、日常工作流。
+Want to fix a bug or add a feature? Read [DEVELOPMENT.md](DEVELOPMENT.md) — it covers the full architecture, layering rules, code style, extension points, and daily workflow.
 
-### 快速开发循环
+### Quick dev loop
 
 ```bash
-# 建虚拟环境（推荐 uv 快 10×）
+# Set up a venv (uv is 10× faster than pip if you have it)
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
 
-# 跑测试
-make test         # 或: .venv/bin/python -m pytest tests/ -v
+# Run tests
+make test         # or: .venv/bin/python -m pytest tests/ -v
 
-# 类型检查 + lint
+# Type checks + lint
 make typecheck
 make lint
 make format
 ```
 
-### 项目结构
+### Project layout
 
 ```
 NewsFlow-Bot/
 ├── src/newsflow/
-│   ├── main.py                 # 启动入口
-│   ├── config.py               # pydantic-settings 配置
-│   ├── core/                   # 无状态原语
+│   ├── main.py                 # entry point
+│   ├── config.py               # pydantic-settings config
+│   ├── core/                   # stateless primitives
 │   │   ├── feed_fetcher.py     # HTTP + feedparser
 │   │   ├── content_processor.py
-│   │   ├── url_security.py     # SSRF 校验
+│   │   ├── url_security.py     # SSRF guard
 │   │   ├── opml.py             # OPML parse/build
-│   │   └── timeutil.py         # 相对时间格式化
+│   │   └── timeutil.py         # relative time formatting
 │   ├── models/                 # SQLAlchemy ORM
-│   ├── repositories/           # DB 查询封装
-│   ├── services/               # 业务逻辑
-│   │   ├── dispatcher.py       # ★ 中央调度循环
+│   ├── repositories/           # DB queries
+│   ├── services/               # business logic
+│   │   ├── dispatcher.py       # ★ central dispatch loop
 │   │   ├── feed_service.py
 │   │   ├── subscription_service.py
 │   │   ├── cache.py
-│   │   └── translation/        # 翻译 provider + 工厂
-│   ├── adapters/               # 平台 I/O
+│   │   └── translation/        # provider + factory
+│   ├── adapters/               # platform I/O
 │   │   ├── discord/bot.py
 │   │   └── telegram/bot.py
-│   └── api/                    # 可选 FastAPI 路由
-├── alembic/                    # 数据库迁移
+│   └── api/                    # optional FastAPI routes
+├── alembic/                    # DB migrations
 ├── docker/                     # Dockerfile + compose
-├── samples/                    # 预置 OPML 等资源
-├── tests/                      # 单元测试
-├── pyproject.toml              # 依赖权威
-├── Makefile                    # 常用命令
-├── DEVELOPMENT.md              # 开发者文档
-└── README.md                   # 本文档
+├── samples/                    # shipped OPML etc.
+├── tests/                      # unit tests
+├── pyproject.toml              # dependency authority
+├── Makefile                    # common commands
+├── DEVELOPMENT.md              # developer docs
+├── README.md                   # this file (English, primary)
+└── README_CN.md                # Chinese translation
 ```
 
 ---
 
-## 📄 许可证
+## 📄 License
 
 [MIT](LICENSE)
 
@@ -676,10 +675,10 @@ NewsFlow-Bot/
 
 <div align="center">
 
-**为自托管社区而生 ❤️**
+**Built for the self-hosting community ❤️**
 
-觉得有用欢迎点 ⭐ 和分享
+If this helps you, a ⭐ and share is appreciated.
 
-[报告 bug](https://github.com/Lynthar/NewsFlow-Bot/issues) · [功能建议](https://github.com/Lynthar/NewsFlow-Bot/issues) · [Pull Request](https://github.com/Lynthar/NewsFlow-Bot/pulls)
+[Report a bug](https://github.com/Lynthar/NewsFlow-Bot/issues) · [Feature request](https://github.com/Lynthar/NewsFlow-Bot/issues) · [Pull request](https://github.com/Lynthar/NewsFlow-Bot/pulls)
 
 </div>

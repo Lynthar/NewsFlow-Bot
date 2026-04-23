@@ -171,7 +171,7 @@ Expected. A single preview article is pushed within seconds of subscribing; afte
 <details>
 <summary><b>Container keeps restarting, logs show <code>InvalidToken</code></b></summary>
 
-Your `.env` still has the placeholder or a typo. Fix and `docker compose restart newsflow`.
+Your `.env` still has the placeholder or a typo. Fix and **`docker compose -f docker/docker-compose.yml up -d newsflow`** — `restart` alone does **not** re-read `.env`; compose only reads env_file at `up` time and caches it into the container config. For any `.env` change you need `up -d` (which will recreate the container when values changed). More on this in [GUIDE.md §7.6](GUIDE.md#76-部署后在线改配置env-的正确姿势).
 </details>
 
 <details>

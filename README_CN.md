@@ -171,7 +171,7 @@ DIGEST_MODEL=gpt-5.4-mini                # 日报用的模型
 <details>
 <summary><b>容器无限重启，日志 <code>InvalidToken</code></b></summary>
 
-`.env` 里的 token 还是占位符或者输错了。改后 `docker compose restart newsflow`。
+`.env` 里的 token 还是占位符或者输错了。改后用 **`docker compose -f docker/docker-compose.yml up -d newsflow`**——光 `restart` 是**不够**的：compose 只在 `up` 时读一次 `env_file` 并把结果缓存进容器配置，`restart` 用的是那份旧缓存。改 `.env` 后必须 `up -d`（compose 发现值变了会 recreate 容器）。详见 [GUIDE.md §7.6](GUIDE.md#76-部署后在线改配置env-的正确姿势)。
 </details>
 
 <details>

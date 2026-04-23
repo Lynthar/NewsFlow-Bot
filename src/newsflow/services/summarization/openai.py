@@ -123,14 +123,21 @@ class OpenAIDigestProvider(SummarizationProvider):
 
         try:
             client = self._get_client()
-            response = await client.chat.completions.create(
+            # Go through the compat shim so the call works on both older
+            # models (max_tokens) and newer ones (max_completion_tokens).
+            from newsflow.services._openai_compat import (
+                chat_completions_create,
+            )
+
+            response = await chat_completions_create(
+                client,
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
-                max_tokens=2000,
+                max_completion_tokens=2000,
             )
             text = (response.choices[0].message.content or "").strip()
             if not text:

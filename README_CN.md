@@ -32,6 +32,7 @@
 |---|---|
 | 📡 **RSS 抓取** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限 |
 | 🌐 **双平台推送** | Discord 斜杠命令 + Telegram 前缀命令并发工作 |
+| 🔌 **通用 Webhook** | 声明式 `webhooks.yaml` 推送到 Slack / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名 |
 | 🌍 **自动翻译** | DeepL / OpenAI / Google，两层缓存（DB + 内存/Redis） |
 | 🎯 **关键词过滤** | 单订阅 include/exclude 规则，被过滤条目不消耗翻译 API |
 | 📰 **AI 日报 / 周报** | 可选 LLM 摘要，按日/周把频道收到的文章聚合成简报 |
@@ -46,20 +47,20 @@
 ## 🏗️ 架构
 
 ```
-               单 asyncio 进程
-   ┌──────────────────────────────────────────┐
-   │  Discord / Telegram adapter               │
-   │  Dispatch loop  ← 抓取→翻译→推送            │
-   │  Cleanup loop   ← 清过期条目                │
-   │  Digest loop    ← AI 日报/周报              │
-   │  Platform monitor  ← heartbeat              │
-   └──────────────────────────────────────────┘
+                 单 asyncio 进程
+   ┌──────────────────────────────────────────────┐
+   │  Discord / Telegram / Webhook adapter        │
+   │  Dispatch loop   ← 抓取→翻译→推送              │
+   │  Cleanup loop    ← 清过期条目                  │
+   │  Digest loop     ← AI 日报/周报                │
+   │  Platform monitor ← heartbeat                │
+   └──────────────────────────────────────────────┘
                       │
                       ▼
           SQLite 文件 / Postgres (可选)
 ```
 
-详细分层、各模块职责、设计决策见 [GUIDE.md 第 9 章](GUIDE.md#九架构总览)。
+详细分层、各模块职责、设计决策见 [GUIDE.md 第 10 章](GUIDE.md#十架构总览)。
 
 ---
 
@@ -103,7 +104,7 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 | Python | 3.11 / 3.12 / 3.13（3.14 暂不支持，`lxml` 无 wheel） |
 | 内存 | 最低 256 MiB，推荐 512 MiB |
 | 网络 | 仅需出站 HTTPS 443 |
-| Docker | 20.10+ + Compose v2（或用 [systemd 部署](GUIDE.md#六高级部署与运维)） |
+| Docker | 20.10+ + Compose v2（或用 [systemd 部署](GUIDE.md#七高级部署与运维)） |
 
 ---
 
@@ -129,6 +130,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 
 **完整命令参考**（30+ 个）：[GUIDE.md 第 1 章](GUIDE.md#一完整命令参考)。
+
+**Webhook 推送**是纯出口（没有 bot 命令）——在配置目录放一份 `data/webhooks.yaml` 然后重启即可。详见 [GUIDE.md 第 4 章](GUIDE.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
 
 ---
 
@@ -177,13 +180,13 @@ DIGEST_MODEL=gpt-5.4-mini                # 日报用的模型
 `.env` 里设 `TRANSLATION_SYSTEM_PROMPT=` 或 `DIGEST_SYSTEM_PROMPT=` 覆盖默认。详见 [GUIDE.md §3.3](GUIDE.md#33-自定义-ai-提示词)。
 </details>
 
-**更多 FAQ**（DNS / 翻译没生效 / 数据重置 / 升级报错 等）：[GUIDE.md 第 14 章](GUIDE.md#十四常见陷阱--faq)。
+**更多 FAQ**（DNS / 翻译没生效 / 数据重置 / 升级报错 等）：[GUIDE.md 第 15 章](GUIDE.md#十五常见陷阱--faq)。
 
 ---
 
 ## 🤝 贡献 / 二次开发
 
-架构设计、代码风格、扩展点（加新平台 / 新翻译 provider / 新 API 端点）都在 **[GUIDE.md 第 7-16 章](GUIDE.md#开发--架构)**。
+架构设计、代码风格、扩展点（加新平台 / 新翻译 provider / 新 API 端点）都在 **[GUIDE.md 第 8-17 章](GUIDE.md#开发--架构)**。
 
 快速开发循环：
 
@@ -191,7 +194,7 @@ DIGEST_MODEL=gpt-5.4-mini                # 日报用的模型
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 134 个测试
+make test      # 178 个测试
 make lint
 ```
 

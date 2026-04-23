@@ -13,21 +13,22 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 1. [完整命令参考](#一完整命令参考)
 2. [完整配置项](#二完整配置项)
 3. [AI 功能详解（翻译 / 日报 / 提示词定制）](#三ai-功能详解)
-4. [OPML 导入导出](#四opml-导入导出)
-5. [REST API](#五rest-api)
-6. [高级部署与运维](#六高级部署与运维)
+4. [Webhook 推送](#四webhook-推送)
+5. [OPML 导入导出](#五opml-导入导出)
+6. [REST API](#六rest-api)
+7. [高级部署与运维](#七高级部署与运维)
 
 ### 开发 / 架构
-7. [项目定位与设计理念](#七项目定位与设计理念)
-8. [技术栈](#八技术栈)
-9. [架构总览](#九架构总览)
-10. [关键设计决策与"为什么"](#十关键设计决策与为什么)
-11. [代码风格与约定](#十一代码风格与约定)
-12. [开发环境搭建](#十二开发环境搭建)
-13. [日常开发流程](#十三日常开发流程)
-14. [常见陷阱 / FAQ](#十四常见陷阱--faq)
-15. [贡献流程](#十五贡献流程)
-16. [参考：项目文件速查](#十六参考项目文件速查)
+8. [项目定位与设计理念](#八项目定位与设计理念)
+9. [技术栈](#九技术栈)
+10. [架构总览](#十架构总览)
+11. [关键设计决策与"为什么"](#十一关键设计决策与为什么)
+12. [代码风格与约定](#十二代码风格与约定)
+13. [开发环境搭建](#十三开发环境搭建)
+14. [日常开发流程](#十四日常开发流程)
+15. [常见陷阱 / FAQ](#十五常见陷阱--faq)
+16. [贡献流程](#十六贡献流程)
+17. [参考：项目文件速查](#十七参考项目文件速查)
 
 ---
 
@@ -371,7 +372,158 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 
 ---
 
-## 四、OPML 导入导出
+## 四、Webhook 推送
+
+把 feed 更新推送到任意 HTTP 端点。一个声明式 YAML 文件搞定所有目的地，无需 bot 命令。
+
+### 4.1 什么时候用
+
+- 想发到 Slack / ntfy / 飞书（Lark）/ 企业微信，但不想为每个再写一个完整 adapter
+- 想让 n8n / Zapier / 自己的后端接到 RSS 事件做二次处理（触发 CI、入库、转发等）
+- 想给个人手机推送最新文章（ntfy 自托管或 ntfy.sh）
+
+### 4.2 快速上手
+
+1. 把 `samples/webhooks.example.yaml` 复制到 `data/webhooks.yaml`
+2. 编辑文件，填你自己的目的地和订阅
+3. 重启 bot；启动日志会打印 `Webhook: ✓ enabled`
+
+删掉 `data/webhooks.yaml` 即可完全关闭该功能，不影响其他平台。
+
+### 4.3 配置文件结构
+
+```yaml
+destinations:
+  <name>:                            # 用户可读别名，订阅用它引用
+    url: <http endpoint>
+    format: generic | slack | ntfy | lark | wecom
+    secret: <可选, HMAC-SHA256 key>
+    headers:                         # 可选, 任意自定义 HTTP headers
+      Authorization: "Bearer xxx"
+    timeout_s: 10                    # 可选, 请求超时, 默认 10 s
+    translate: true                  # 可选, 是否对此目的地启用翻译
+    language: zh-CN                  # 可选, translate=true 时的目标语言
+
+subscriptions:
+  <name>:                            # 必须已在 destinations 里定义
+    - <feed_url>
+    - <feed_url>
+```
+
+**完整带注释的示例**：`samples/webhooks.example.yaml` —— Slack / ntfy / 飞书 / 企业微信 / n8n 五种目的地全覆盖。
+
+### 4.4 Payload 格式
+
+每种 `format` 生成不同的请求体，对应各自服务的 API 要求：
+
+| format | Content-Type | 结构 |
+|---|---|---|
+| `generic` | `application/json` | NewsFlow 自定义 JSON（见下） |
+| `slack` | `application/json` | Slack [Block Kit](https://api.slack.com/block-kit)，含 fallback text |
+| `ntfy` | `text/plain` | body 是摘要；标题 / 点击链接 / 附图走 HTTP headers（`Title` / `Click` / `Attach`，非 ASCII 用 RFC 2047 编码） |
+| `lark` | `application/json` | 飞书 / Lark post 卡片（`msg_type: "post"`） |
+| `wecom` | `application/json` | 企业微信群机器人 markdown（`msgtype: "markdown"`） |
+
+**generic 格式**（推荐给 n8n / Zapier / 自写端点）：
+
+```json
+{
+  "event": "feed.entry.new",
+  "timestamp": "2026-04-23T06:30:00+00:00",
+  "entry": {
+    "title": "原始标题",
+    "title_translated": "翻译后标题（可能为 null）",
+    "link": "https://example.com/article",
+    "summary": "正文摘要纯文本（HTML 已 strip）",
+    "summary_translated": "翻译后摘要（可能为 null）",
+    "source": "源名称",
+    "published_at": "2026-04-22T15:00:00+00:00",
+    "image_url": "https://example.com/cover.jpg"
+  }
+}
+```
+
+系统通知（例如 feed 被自动禁用的告警）结构不同：
+
+```json
+{
+  "event": "system.notification",
+  "timestamp": "...",
+  "text": "⚠️ The RSS feed ... has been auto-disabled ..."
+}
+```
+
+### 4.5 HMAC 签名
+
+destination 里设 `secret` 后，bot 会在每次请求加一个 header：
+
+```
+X-NewsFlow-Signature: sha256=<hex>
+```
+
+签名是 `HMAC-SHA256(secret, 请求 body 的原始字节)`。接收端用同一 secret 重算并比较，防止 URL 被截获后被任意第三方调用 —— 暴露在公网的 webhook endpoint 建议都启用。
+
+Python 验签示例：
+
+```python
+import hmac, hashlib
+
+def verify(body: bytes, header_value: str, secret: str) -> bool:
+    expected = "sha256=" + hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, header_value)
+```
+
+**关键点**：验签用的 `body` 必须是**收到的原始字节**（例如 FastAPI 里 `await request.body()`），不能是 `json.loads` 之后再 `json.dumps` 的结果 —— 空格、键顺序、编码任一不同都会让 HMAC 不匹配。
+
+### 4.6 数据模型与启动流程
+
+- 表：`webhook_destinations`（`name` 唯一 / `url` / `format` / `secret` / `headers` JSON / `timeout_s`）
+- 订阅：沿用现有 `Subscription` 表，`platform="webhook"`，`platform_channel_id=<destination name>`（不是 URL，避免 secret token 混进日志）
+- 启动序列：`alembic upgrade head` → 若 `webhooks.yaml` 存在则 `sync_webhooks()` 对比并更新 → 启动各 adapter
+
+**yaml → DB 协调规则**（见 `src/newsflow/services/webhook_sync.py`）：
+
+1. yaml 里新增的 destination / 订阅会被 **插入**
+2. yaml 里改动的 url / format / secret / headers / timeout 会被 **更新**
+3. yaml 里删除的 destination 会被 **删除**（连带其所有订阅）
+4. yaml 里第一次出现的 feed URL 会被 **自动 add_feed**（一次性网络抓取；失败则跳过并告警，不中断启动）
+5. 不在 yaml 里的 webhook 订阅（但在 DB 里）会被 **删除**
+
+所以工作流就是：改 yaml + 重启 bot。不用命令、不用 API。yaml 本身可以进 git，和订阅列表一起版本化管理。
+
+### 4.7 故障排查
+
+| 症状 | 可能原因 |
+|---|---|
+| 启动日志没看到 `Webhook: ✓ enabled` | `webhooks.yaml` 不在 `WEBHOOKS_CONFIG_PATH`（默认 `./data/webhooks.yaml`）；检查文件路径和权限 |
+| `webhooks.yaml is invalid; aborting startup` | YAML 语法错或字段不符合 schema；报错信息里会点出具体位置 |
+| 某 feed URL 没被订阅但没报错 | 首次自动 add_feed 失败（404 / 解析错 / SSRF 校验拒绝）；启动日志有 `webhook_sync: skipping <url>: <error>` |
+| 接收方收到 HTTP 200 但内容显示成 raw JSON | `format` 选错；比如 Slack webhook 收到 `generic` 格式会直接显示 `{"event": ...}` 字符串 |
+| 自己验签总是失败 | 见 4.5 "关键点" —— 必须用收到的原始字节，不是反序列化后的对象 |
+| 飞书 / 企业微信 URL 里含签名参数，发不出去 | 把完整 URL（含 `?key=...` 或签名参数）原样贴进 yaml；bot 不会重组 URL |
+| 改 yaml 后重启没变化 | 检查启动日志 `webhook_sync: N destination(s), M subscription(s)`；若数量不符，说明解析器没拿到最新文件 |
+
+### 4.8 扩展一个新 format
+
+比如要加 "Discord webhook"（Discord 有独立的 webhook URL，和 bot token 不同），在 `src/newsflow/adapters/webhook/formats.py` 加两个函数：
+
+```python
+def _to_discord(m: Message) -> WireRequest:
+    return _json({
+        "content": f"**{m.display_title}**\n{m.display_summary}\n{m.link}"
+    })
+
+def _to_discord_text(text: str) -> WireRequest:
+    return _json({"content": text})
+```
+
+然后在文件尾的 `_ENTRY_CONVERTERS` 和 `_TEXT_CONVERTERS` 两个 dict 里各加一行 `"discord": _to_discord` / `"discord": _to_discord_text`。完事。不需要改 adapter 主体、sync 逻辑、model 或 migration —— 只是往 dispatch 表里加了一种选项。
+
+---
+
+## 五、OPML 导入导出
 
 **用途**：从 Feedly / Reeder / NetNewsWire 搬家；备份订阅列表；在多个频道 / 实例间迁移。
 
@@ -395,7 +547,7 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 
 ---
 
-## 五、REST API
+## 六、REST API
 
 `.env` 里设 `API_ENABLED=true` 启用。
 
@@ -421,7 +573,7 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 
 ---
 
-## 六、高级部署与运维
+## 七、高级部署与运维
 
 ### 6.1 Compose Profiles
 
@@ -513,7 +665,7 @@ docker exec newsflow-bot ls -la /app/data/heartbeat/
 
 ---
 
-## 七、项目定位与设计理念
+## 八、项目定位与设计理念
 
 ### 7.1 目标场景
 
@@ -538,7 +690,7 @@ docker exec newsflow-bot ls -la /app/data/heartbeat/
 
 ---
 
-## 八、技术栈
+## 九、技术栈
 
 | 层 | 技术 | 选型理由 |
 |---|---|---|
@@ -559,7 +711,7 @@ docker exec newsflow-bot ls -la /app/data/heartbeat/
 
 ---
 
-## 九、架构总览
+## 十、架构总览
 
 ### 9.1 分层
 
@@ -670,7 +822,7 @@ dispatch_once():
 
 ---
 
-## 十、关键设计决策与"为什么"
+## 十一、关键设计决策与"为什么"
 
 读代码时可能会想"为什么这么写"——以下是那些不自明的选择：
 
@@ -854,7 +1006,7 @@ egress 策略 / VPS 网络边界作为第二层防御。
 
 ---
 
-## 十一、代码风格与约定
+## 十二、代码风格与约定
 
 ### 11.1 工具配置
 
@@ -946,7 +1098,7 @@ def _get_client(self):
 
 ---
 
-## 十二、开发环境搭建
+## 十三、开发环境搭建
 
 ### 12.1 安装
 
@@ -997,7 +1149,7 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 
 ---
 
-## 十三、日常开发流程
+## 十四、日常开发流程
 
 ### 13.1 改代码的标准流程
 
@@ -1074,7 +1226,7 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 
 ---
 
-## 十四、常见陷阱 / FAQ
+## 十五、常见陷阱 / FAQ
 
 ### 14.1 "第一次加了订阅但没收到消息"
 
@@ -1133,7 +1285,7 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 ---
 
-## 十五、贡献流程
+## 十六、贡献流程
 
 1. **Issue 先行**：非 trivial 改动先开 issue 讨论方向，避免白干。
 2. **小 PR**：一个 PR 一件事。三件事分三个 PR。
@@ -1160,7 +1312,7 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 ---
 
-## 十六、参考：项目文件速查
+## 十七、参考：项目文件速查
 
 ```
 NewsFlow-Bot/

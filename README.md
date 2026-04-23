@@ -32,6 +32,7 @@ An **RSS push backend you run on your own server**. Hand it a Discord or Telegra
 |---|---|
 | 📡 **RSS fetching** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap |
 | 🌐 **Multi-platform** | Discord slash commands + Telegram prefix commands in one process |
+| 🔌 **Generic webhook** | Push to Slack / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported |
 | 🌍 **Auto-translation** | DeepL / OpenAI / Google, two-tier cache (DB + memory/Redis) |
 | 🎯 **Keyword filter** | Per-subscription include/exclude; filtered entries skip translate |
 | 📰 **AI digest** | Optional LLM-generated daily / weekly briefings |
@@ -46,20 +47,20 @@ An **RSS push backend you run on your own server**. Hand it a Discord or Telegra
 ## 🏗️ Architecture at a glance
 
 ```
-             Single asyncio process
-   ┌─────────────────────────────────────────┐
-   │  Discord / Telegram adapter              │
-   │  Dispatch loop   ← fetch→translate→send  │
-   │  Cleanup loop    ← prune old entries     │
-   │  Digest loop     ← AI daily/weekly       │
-   │  Platform monitor ← heartbeat             │
-   └─────────────────────────────────────────┘
+                 Single asyncio process
+   ┌──────────────────────────────────────────────┐
+   │  Discord / Telegram / Webhook adapter        │
+   │  Dispatch loop   ← fetch→translate→send      │
+   │  Cleanup loop    ← prune old entries         │
+   │  Digest loop     ← AI daily/weekly           │
+   │  Platform monitor ← heartbeat                │
+   └──────────────────────────────────────────────┘
                       │
                       ▼
           SQLite file / Postgres (optional)
 ```
 
-Full layered breakdown and module responsibilities in [GUIDE.md §9](GUIDE.md#九架构总览).
+Full layered breakdown and module responsibilities in [GUIDE.md §10](GUIDE.md#十架构总览).
 
 ---
 
@@ -103,7 +104,7 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 | Python | 3.11 / 3.12 / 3.13 (3.14 not yet — `lxml` has no wheel) |
 | Memory | 256 MiB minimum, 512 MiB recommended |
 | Network | Outbound HTTPS 443 only |
-| Docker | 20.10+ with Compose v2 (or [systemd deployment](GUIDE.md#六高级部署与运维)) |
+| Docker | 20.10+ with Compose v2 (or [systemd deployment](GUIDE.md#七高级部署与运维)) |
 
 ---
 
@@ -129,6 +130,8 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 ```
 
 Full reference (30+ commands across both platforms): [GUIDE.md §1](GUIDE.md#一完整命令参考).
+
+**Webhook delivery** is output-only (no bot commands) — drop a `data/webhooks.yaml` in your config dir and restart; see [GUIDE.md §4](GUIDE.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
 
 ---
 
@@ -177,13 +180,13 @@ Your `.env` still has the placeholder or a typo. Fix and `docker compose restart
 Set `TRANSLATION_SYSTEM_PROMPT=` or `DIGEST_SYSTEM_PROMPT=` in `.env` to override the default prompts. Details: [GUIDE.md §3.3](GUIDE.md#33-自定义-ai-提示词).
 </details>
 
-More FAQ (DNS / translation not working / data reset / upgrade errors / …): [GUIDE.md §14](GUIDE.md#十四常见陷阱--faq).
+More FAQ (DNS / translation not working / data reset / upgrade errors / …): [GUIDE.md §15](GUIDE.md#十五常见陷阱--faq).
 
 ---
 
 ## 🤝 Contributing
 
-Architecture, layering rules, code style, extension points (adding a new platform / translation provider / API endpoint) are all in **[GUIDE.md §7-16](GUIDE.md#开发--架构)**.
+Architecture, layering rules, code style, extension points (adding a new platform / translation provider / API endpoint) are all in **[GUIDE.md §8-17](GUIDE.md#开发--架构)**.
 
 Fast dev loop:
 
@@ -191,7 +194,7 @@ Fast dev loop:
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 134 tests
+make test      # 178 tests
 make lint
 ```
 

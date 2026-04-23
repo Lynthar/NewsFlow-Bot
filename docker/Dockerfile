@@ -8,26 +8,34 @@ FROM python:3.11-slim as builder
 
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies (for lxml / cryptography / grpcio C extensions)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install poetry
-RUN pip install --no-cache-dir poetry==1.7.1
+# Install directly via pip, no poetry in the runtime toolchain.
+#
+# History: earlier revisions used `poetry export -f requirements.txt
+# --extras all` but hit poetry-plugin-export's dependency walker bug —
+# it picks protobuf 7.x even though google-cloud-translate requires
+# protobuf <7.0.0, making `--extras all` fail in resolution. The prior
+# Dockerfile hid the failure behind a silent `|| fallback-to-no-extras`
+# shim, shipping an image missing openai / deepl / redis / fastapi. pip's
+# own resolver handles the same dependency graph correctly (picks
+# protobuf 6.x), so we use it directly and skip poetry altogether at
+# build time.
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
 
-# Copy dependency files
-COPY pyproject.toml poetry.lock* ./
-
-# Export dependencies to requirements.txt
-# Include all optional dependencies for full functionality
-RUN poetry export -f requirements.txt --without-hashes --extras all -o requirements.txt || \
-    poetry export -f requirements.txt --without-hashes -o requirements.txt
-
-# Install dependencies to a virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install the project + every optional extra. Sanity-check on the next
+# line imports the critical optional packages; if any is missing the
+# build aborts here with a clear ModuleNotFoundError naming the culprit
+# instead of the bot limping along with broken digest / translation.
+RUN pip install --no-cache-dir ".[all]" \
+ && python -c "import openai, deepl, redis, fastapi, aiohttp, feedparser, sqlalchemy, yaml, defusedxml; print('build deps OK; openai=', openai.__version__)"
 
 
 # ============================================

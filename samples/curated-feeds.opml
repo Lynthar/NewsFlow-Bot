@@ -16,38 +16,30 @@
     <outline text="FT Opinion" title="FT Opinion" type="rss"
              xmlUrl="https://www.ft.com/opinion?format=rss"
              htmlUrl="https://www.ft.com/opinion"/>
-    <outline text="FT Emerging Markets" title="FT Emerging Markets" type="rss"
-             xmlUrl="https://www.ft.com/emerging-markets?format=rss"
-             htmlUrl="https://www.ft.com/emerging-markets"/>
-    <outline text="FT (custom list)" title="FT (custom list)" type="rss"
-             xmlUrl="https://www.ft.com/myft/following/83f62cc4-55d5-4efb-94d0-cd2680322216.rss"/>
-    <outline text="Reuters News First" title="Reuters News First" type="rss"
-             xmlUrl="https://www.reutersagency.com/feed/?best-types=reuters-news-first&amp;post_type=best"
-             htmlUrl="https://www.reutersagency.com"/>
-    <outline text="Reuters The Big Picture" title="Reuters The Big Picture" type="rss"
-             xmlUrl="https://www.reutersagency.com/feed/?best-types=the-big-picture&amp;post_type=best"
-             htmlUrl="https://www.reutersagency.com"/>
+    <outline text="FT Lex" title="FT Lex" type="rss"
+             xmlUrl="https://www.ft.com/lex?format=rss"
+             htmlUrl="https://www.ft.com/lex"/>
+    <outline text="FT China" title="FT China" type="rss"
+             xmlUrl="https://www.ft.com/china?format=rss"
+             htmlUrl="https://www.ft.com/china"/>
+    <outline text="Reuters (via Google News)" title="Reuters (via Google News)" type="rss"
+             xmlUrl="https://news.google.com/rss/search?q=site:reuters.com&amp;hl=en-US&amp;gl=US&amp;ceid=US:en"
+             htmlUrl="https://www.reuters.com"/>
+    <outline text="Al Jazeera English" title="Al Jazeera English" type="rss"
+             xmlUrl="https://www.aljazeera.com/xml/rss/all.xml"
+             htmlUrl="https://www.aljazeera.com"/>
     <outline text="The Atlantic" title="The Atlantic" type="rss"
              xmlUrl="https://www.theatlantic.com/feed/all/"
              htmlUrl="https://www.theatlantic.com"/>
     <outline text="Economist Leaders" title="Economist Leaders" type="rss"
              xmlUrl="https://www.economist.com/leaders/rss.xml"
              htmlUrl="https://www.economist.com/leaders"/>
-    <outline text="Economist Special Report" title="Economist Special Report" type="rss"
-             xmlUrl="https://www.economist.com/special-report/rss.xml"
-             htmlUrl="https://www.economist.com/special-report"/>
-    <outline text="The Economist Explains" title="The Economist Explains" type="rss"
-             xmlUrl="https://www.economist.com/the-economist-explains/rss.xml"
-             htmlUrl="https://www.economist.com/the-economist-explains"/>
     <outline text="NYT HomePage" title="NYT HomePage" type="rss"
              xmlUrl="https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"
              htmlUrl="https://www.nytimes.com"/>
     <outline text="NYT Lens" title="NYT Lens" type="rss"
              xmlUrl="https://rss.nytimes.com/services/xml/rss/nyt/Lens.xml"
              htmlUrl="https://www.nytimes.com/column/lens"/>
-    <outline text="NYT World" title="NYT World" type="rss"
-             xmlUrl="https://rss.nytimes.com/services/xml/rss/nyt/World.xml"
-             htmlUrl="https://www.nytimes.com/section/world"/>
     <outline text="Bloomberg Economics" title="Bloomberg Economics" type="rss"
              xmlUrl="https://feeds.bloomberg.com/economics/news.rss"
              htmlUrl="https://www.bloomberg.com/economics"/>

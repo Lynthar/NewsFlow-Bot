@@ -47,10 +47,6 @@ class Subscription(Base):
     # means no filter, all entries pass.
     filter_rule: Mapped[dict | None] = mapped_column(JSON)
 
-    # Tracking
-    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_entry_guid: Mapped[str | None] = mapped_column(String(2048))
-
     # Relationship
     feed: Mapped["Feed"] = relationship(back_populates="subscriptions")
 

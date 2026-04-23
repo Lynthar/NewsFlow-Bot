@@ -209,7 +209,7 @@ async def refresh_feed(
     if not result.success:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to refresh feed: {result.error}",
+            detail=f"Failed to refresh feed: {result.message}",
         )
 
     # Reload feed to get updated data

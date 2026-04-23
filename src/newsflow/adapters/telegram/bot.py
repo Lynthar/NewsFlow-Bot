@@ -106,10 +106,13 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await session.commit()
 
     # Deliver a preview entry in the background so the user sees content
-    # without waiting a full fetch interval.
+    # without waiting a full fetch interval. spawn() keeps a strong ref so
+    # the event loop can't GC the task mid-flight.
     if result.success and result.is_new and result.subscription:
-        asyncio.create_task(
-            get_dispatcher().schedule_preview(result.subscription.id)
+        dispatcher = get_dispatcher()
+        dispatcher.spawn(
+            dispatcher.schedule_preview(result.subscription.id),
+            name=f"preview:telegram:{result.subscription.id}",
         )
 
     if result.success:
@@ -1178,8 +1181,11 @@ class TelegramAdapter(BaseAdapter):
             parts.append(self._escape_html(summary))
             parts.append("")
 
+        # Link needs HTML-escape too: RSS URLs often contain `&` in query
+        # strings, which Telegram's HTML parser rejects as an invalid entity
+        # and fails the whole message send.
         parts.extend([
-            f"🔗 <a href=\"{message.link}\">Read more</a>",
+            f"🔗 <a href=\"{self._escape_html(message.link)}\">Read more</a>",
             f"📰 {self._escape_html(message.source)}",
         ])
 

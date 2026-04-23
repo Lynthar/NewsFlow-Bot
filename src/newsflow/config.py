@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -89,8 +89,9 @@ class Settings(BaseSettings):
     max_feeds_per_channel: int = 0
     max_entries_per_feed: int = 0
 
-    # Admin user IDs (platform-specific)
-    admin_user_ids: list[str] = []
+    # Admin user IDs (platform-specific). default_factory avoids the
+    # mutable-default warning pydantic v2 raises on bare `[]`.
+    admin_user_ids: list[str] = Field(default_factory=list)
 
     # ===== Derived properties =====
 

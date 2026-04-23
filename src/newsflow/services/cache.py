@@ -192,9 +192,20 @@ class RedisCache(CacheBackend):
             return False
 
     async def clear(self) -> None:
+        """Drop NewsFlow's cached keys only.
+
+        Keys follow the pattern `trans:*` (set by TranslationService._cache_key).
+        SCAN + DEL instead of FLUSHDB so we don't nuke the whole logical Redis
+        DB — users often share one DB across apps, and an accidental clear()
+        shouldn't wipe unrelated data.
+        """
         try:
             client = await self._get_client()
-            await client.flushdb()
+            # scan_iter is async in redis.asyncio and yields decoded str keys
+            # because we created the client with decode_responses=True.
+            keys: list[str] = [key async for key in client.scan_iter(match="trans:*")]
+            if keys:
+                await client.delete(*keys)
         except Exception as e:
             logger.exception(f"Redis clear error: {e}")
 

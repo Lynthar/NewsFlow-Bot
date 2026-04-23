@@ -2,7 +2,6 @@
 Feed service - Business logic for feed management.
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -174,11 +173,13 @@ class FeedService:
                 # Transitioned this call — notify subscribers in a separate
                 # session (theirs; ours isn't committed yet). Pass identity
                 # by value so the notify task doesn't need to re-read.
+                # spawn() holds a strong ref so the task isn't GC'd mid-run.
                 from newsflow.services.dispatcher import get_dispatcher
-                asyncio.create_task(
+                get_dispatcher().spawn(
                     get_dispatcher().notify_feed_deactivated(
                         feed.id, feed.url, feed.title
-                    )
+                    ),
+                    name=f"notify_feed_deactivated:{feed.id}",
                 )
             return FetchFeedResult(
                 success=False,
@@ -269,8 +270,10 @@ class FeedService:
                     f"Error applying fetch result for {feed.url}: {e}"
                 )
                 await self.repo.mark_feed_error(
-                feed.id, str(e), base_delay_seconds=self._backoff_base_seconds
-            )
+                    feed.id,
+                    str(e),
+                    base_delay_seconds=self._backoff_base_seconds,
+                )
                 results.append(
                     FetchFeedResult(
                         success=False,

@@ -51,11 +51,16 @@ def create_app():
         redoc_url="/redoc" if settings.log_level == "DEBUG" else None,
     )
 
-    # Add CORS middleware
+    # Add CORS middleware. allow_origins=["*"] with allow_credentials=True
+    # is invalid per the CORS spec — browsers drop credentials when the
+    # origin is a wildcard — so we keep the wildcard (the API is meant to
+    # be callable from anywhere in self-hosted mode) and leave credentials
+    # off. If a future deployment needs cookies/auth-headers cross-origin,
+    # pin allow_origins to a specific list and flip this back on.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

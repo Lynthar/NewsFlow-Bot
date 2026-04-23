@@ -32,9 +32,12 @@ test-cov:
 typecheck:
 	poetry run mypy src/
 
-# Lint code
+# Lint code. Runs both the rule-based lint and a format-diff check so
+# misformatted files (e.g. the feed_service.py 2026-04 indent slip) fail CI
+# instead of silently landing.
 lint:
 	poetry run ruff check src/
+	poetry run ruff format --check src/
 
 # Format code
 format:

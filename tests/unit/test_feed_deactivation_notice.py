@@ -40,6 +40,9 @@ async def test_apply_fetch_result_schedules_notify_on_deactivation(session, monk
         async def notify_feed_deactivated(self, feed_id, url, title):
             scheduled.append((feed_id, url, title))
 
+        def spawn(self, coro, *, name=None):
+            return asyncio.create_task(coro, name=name)
+
     stub = StubDispatcher()
     monkeypatch.setattr(
         "newsflow.services.dispatcher.get_dispatcher", lambda: stub
@@ -73,6 +76,9 @@ async def test_apply_fetch_result_does_not_notify_on_regular_error(session, monk
     class StubDispatcher:
         async def notify_feed_deactivated(self, *args):
             scheduled.append(args)
+
+        def spawn(self, coro, *, name=None):
+            return asyncio.create_task(coro, name=name)
 
     monkeypatch.setattr(
         "newsflow.services.dispatcher.get_dispatcher",

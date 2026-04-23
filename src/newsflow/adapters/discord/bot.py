@@ -233,10 +233,13 @@ class FeedCommands(commands.Cog):
             await session.commit()
 
         # Deliver a preview entry in the background so the user sees content
-        # without waiting a full fetch interval.
+        # without waiting a full fetch interval. spawn() keeps a strong ref
+        # so the event loop can't GC the task mid-flight.
         if result.success and result.is_new and result.subscription:
-            asyncio.create_task(
-                get_dispatcher().schedule_preview(result.subscription.id)
+            dispatcher = get_dispatcher()
+            dispatcher.spawn(
+                dispatcher.schedule_preview(result.subscription.id),
+                name=f"preview:discord:{result.subscription.id}",
             )
 
         if result.success:

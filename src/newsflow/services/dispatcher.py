@@ -82,6 +82,19 @@ class Dispatcher:
         self._ready_event = asyncio.Event()
         if not self._expected_platforms:
             self._ready_event.set()
+        # Strong refs for fire-and-forget background tasks. Without this the
+        # event loop only holds weak refs and a task can be GC'd mid-run. See
+        # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+        self._background_tasks: set[asyncio.Task] = set()
+
+    def spawn(self, coro, *, name: str | None = None) -> asyncio.Task:
+        """Schedule `coro` as a fire-and-forget task, held by a strong ref
+        until it completes. Use this instead of bare asyncio.create_task()
+        anywhere the return value would otherwise be discarded."""
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def register_adapter(self, platform: str, adapter: MessageSender) -> None:
         """Register a platform adapter for message sending."""
@@ -156,9 +169,16 @@ class Dispatcher:
                             session, sub, sub_repo
                         )
                         result.messages_sent += sent
-                    await session.commit()
                 else:
                     logger.debug("No new entries to dispatch")
+
+                # Always commit so per-feed metadata written by fetch_all_feeds
+                # (etag / last_modified / last_fetched_at / error_count /
+                # next_retry_at) persists even when every feed returned 304 or
+                # no new items. Without this the AsyncSession context manager
+                # rolls back on exit, silently defeating the ETag cache,
+                # exponential backoff, and the 10-errors auto-deactivate.
+                await session.commit()
 
             except Exception as e:
                 logger.exception(f"Dispatch error: {e}")

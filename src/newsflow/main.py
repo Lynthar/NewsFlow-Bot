@@ -191,12 +191,20 @@ async def main() -> None:
     # Windows' ProactorEventLoop, but Ctrl+C still surfaces as
     # KeyboardInterrupt out of asyncio.run() and is caught in cli(), so
     # dev-on-Windows still shuts down cleanly via that path.
+    #
+    # `_shutdown_tasks` holds strong refs to the shutdown tasks — the event
+    # loop only weak-refs bare create_task results and could GC ours mid-run.
     loop = asyncio.get_running_loop()
+    _shutdown_tasks: set[asyncio.Task] = set()
+
+    def _trigger_shutdown() -> None:
+        task = asyncio.create_task(shutdown(loop), name="shutdown")
+        _shutdown_tasks.add(task)
+        task.add_done_callback(_shutdown_tasks.discard)
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(
-                sig, lambda: asyncio.create_task(shutdown(loop))
-            )
+            loop.add_signal_handler(sig, _trigger_shutdown)
         except NotImplementedError:
             logger.debug(
                 f"Signal {sig.name} handler not supported on this platform"

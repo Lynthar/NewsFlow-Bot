@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from typing import Sequence
 from xml.etree import ElementTree as ET
 
+# defusedxml hardens the stdlib parser against billion-laughs / external-entity
+# attacks. Parsing is the only untrusted path (URL fetch + file upload); the
+# build_opml side generates XML from our own data so regular ET is fine there.
+from defusedxml.ElementTree import fromstring as _defused_fromstring
+
 
 @dataclass
 class OpmlEntry:
@@ -31,7 +36,7 @@ class OpmlParseError(ValueError):
 def parse_opml(content: str) -> list[OpmlEntry]:
     """Extract all RSS outlines (ones with an xmlUrl attribute) from OPML."""
     try:
-        root = ET.fromstring(content)
+        root = _defused_fromstring(content)
     except ET.ParseError as e:
         raise OpmlParseError(f"Malformed XML: {e}") from e
 

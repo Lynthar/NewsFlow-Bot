@@ -79,6 +79,8 @@ class Dispatcher:
             self._expected_platforms.add("discord")
         if self.settings.telegram_enabled:
             self._expected_platforms.add("telegram")
+        if self.settings.webhooks_enabled:
+            self._expected_platforms.add("webhook")
         self._ready_event = asyncio.Event()
         if not self._expected_platforms:
             self._ready_event.set()

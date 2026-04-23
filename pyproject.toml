@@ -35,6 +35,10 @@ lxml = "^5.0.0"
 # defusedxml protects the stdlib parser from billion-laughs etc.)
 defusedxml = "^0.7.1"
 
+# YAML for webhooks.yaml. Small (~80KB) and ubiquitous — kept as a core dep
+# rather than optional to avoid "why isn't my webhook working" confusion.
+pyyaml = "^6.0"
+
 # Scheduling
 apscheduler = "^3.10.0"
 

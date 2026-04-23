@@ -18,6 +18,7 @@ def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
     fake = MagicMock()
     fake.discord_enabled = platform == "discord"
     fake.telegram_enabled = platform == "telegram"
+    fake.webhooks_enabled = False
     fake.fetch_interval_minutes = 60
     fake.data_dir = MagicMock()
     with patch("newsflow.services.dispatcher.get_settings", return_value=fake):

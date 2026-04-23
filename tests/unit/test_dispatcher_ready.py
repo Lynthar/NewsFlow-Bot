@@ -6,10 +6,11 @@ from unittest.mock import MagicMock, patch
 from newsflow.services.dispatcher import Dispatcher
 
 
-def _dispatcher_with(*, discord: bool, telegram: bool) -> Dispatcher:
+def _dispatcher_with(*, discord: bool, telegram: bool, webhooks: bool = False) -> Dispatcher:
     fake = MagicMock()
     fake.discord_enabled = discord
     fake.telegram_enabled = telegram
+    fake.webhooks_enabled = webhooks
     fake.fetch_interval_minutes = 60
     with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
         return Dispatcher()

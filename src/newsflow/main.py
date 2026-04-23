@@ -87,6 +87,18 @@ async def start_telegram_bot(settings: Settings) -> None:
     await start_telegram(settings.telegram_token)
 
 
+async def start_webhook_adapter_task(settings: Settings) -> None:
+    """Start the webhook adapter if webhooks.yaml is present."""
+    if not settings.webhooks_enabled:
+        return
+
+    # Import here to avoid loading aiohttp/yaml eagerly when the feature is off.
+    from newsflow.adapters.webhook.bot import start_webhook
+
+    logging.info("Starting webhook adapter...")
+    await start_webhook()
+
+
 async def shutdown(loop: asyncio.AbstractEventLoop) -> None:
     """Graceful shutdown handler."""
     logging.info("Shutting down...")
@@ -165,6 +177,7 @@ async def main() -> None:
     logger.info("=" * 50)
     logger.info(f"  Discord:     {'✓ enabled' if settings.discord_enabled else '✗ disabled'}")
     logger.info(f"  Telegram:    {'✓ enabled' if settings.telegram_enabled else '✗ disabled'}")
+    logger.info(f"  Webhook:     {'✓ enabled' if settings.webhooks_enabled else '✗ disabled'}")
     logger.info(f"  Translation: {'✓ enabled' if settings.can_translate() else '✗ disabled'}")
     logger.info(f"  REST API:    {'✓ enabled' if settings.api_enabled else '✗ disabled'}")
     logger.info(f"  Fetch Interval: {settings.fetch_interval_minutes} minutes")
@@ -176,6 +189,23 @@ async def main() -> None:
     # Apply database migrations (creates schema on a fresh DB, evolves it
     # on an upgraded deploy).
     await upgrade_to_head()
+
+    # Reconcile webhook destinations + subscriptions from webhooks.yaml.
+    # Runs before services start so the first dispatch cycle sees a correct
+    # subscription set. Missing YAML file = feature disabled, so skip quietly.
+    if settings.webhooks_enabled:
+        from newsflow.services.webhook_sync import (
+            WebhookConfigError,
+            sync_webhooks,
+        )
+
+        try:
+            await sync_webhooks(settings.webhooks_config_path)
+        except WebhookConfigError as e:
+            logger.error(
+                f"webhooks.yaml is invalid; aborting startup. {e}"
+            )
+            sys.exit(1)
 
     # Initialize cache if configured
     if settings.cache_backend == "redis" and settings.redis_url:
@@ -219,6 +249,9 @@ async def main() -> None:
 
         if settings.telegram_enabled:
             tasks.append(start_telegram_bot(settings))
+
+        if settings.webhooks_enabled:
+            tasks.append(start_webhook_adapter_task(settings))
 
         if settings.api_enabled:
             tasks.append(start_api_server(settings))

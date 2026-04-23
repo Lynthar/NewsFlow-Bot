@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # Webhook adapter: enabled whenever the referenced YAML file exists.
+    # The file is both the source-of-truth (declarative — edit and restart)
+    # and the on/off switch: remove it to disable webhook delivery entirely.
+    webhooks_config_path: Path = Path("./data/webhooks.yaml")
+
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "console"
@@ -104,6 +109,16 @@ class Settings(BaseSettings):
     def telegram_enabled(self) -> bool:
         """Check if Telegram is enabled (token provided)."""
         return bool(self.telegram_token)
+
+    @property
+    def webhooks_enabled(self) -> bool:
+        """Webhook adapter is enabled iff a config file actually exists at
+        the configured path. Presence of the file is the opt-in — users who
+        don't want webhook delivery just don't create the file."""
+        try:
+            return self.webhooks_config_path.is_file()
+        except OSError:
+            return False
 
     @property
     def data_dir(self) -> Path:

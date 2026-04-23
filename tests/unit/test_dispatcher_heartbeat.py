@@ -11,6 +11,7 @@ def _dispatcher_with_data_dir(tmp_path) -> Dispatcher:
     fake = MagicMock()
     fake.discord_enabled = False
     fake.telegram_enabled = False
+    fake.webhooks_enabled = False
     fake.data_dir = tmp_path
     fake.fetch_interval_minutes = 60
     with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
@@ -37,6 +38,7 @@ def test_write_heartbeat_creates_missing_parent_dir(tmp_path):
     fake = MagicMock()
     fake.discord_enabled = False
     fake.telegram_enabled = False
+    fake.webhooks_enabled = False
     fake.data_dir = nested
     fake.fetch_interval_minutes = 60
     with patch("newsflow.services.dispatcher.get_settings", return_value=fake):

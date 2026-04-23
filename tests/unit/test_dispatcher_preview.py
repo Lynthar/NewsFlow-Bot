@@ -9,6 +9,7 @@ def _dispatcher() -> Dispatcher:
     fake = MagicMock()
     fake.discord_enabled = False
     fake.telegram_enabled = False
+    fake.webhooks_enabled = False
     fake.fetch_interval_minutes = 60
     with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
         return Dispatcher()

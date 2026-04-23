@@ -1,0 +1,82 @@
+# NewsFlow webhook configuration — declarative source-of-truth.
+#
+# Copy this file to `data/webhooks.yaml` (or whatever `WEBHOOKS_CONFIG_PATH`
+# points at) and edit. The bot reconciles the DB against this file on every
+# startup: added destinations/subscriptions are created, removed ones are
+# deleted. File absent → webhook delivery disabled entirely.
+#
+# Two sections:
+#   destinations: named HTTP endpoints to push to
+#   subscriptions: which feeds go to which destination
+#
+# Restart the bot to pick up changes.
+
+destinations:
+  # Slack incoming-webhook. `format: slack` produces block-kit payloads.
+  slack-engineering:
+    url: https://hooks.slack.com/services/TXXXXXXXX/BYYYYYYYY/zzzzzzzzzzzzzzzz
+    format: slack
+    # Optional per-destination defaults inherited by every sub pointing here.
+    translate: false        # don't call the translation API for Slack delivery
+    language: en            # ignored when translate=false
+
+  # ntfy.sh public broker (or your self-hosted instance). Title / Click / Tags
+  # map to ntfy's HTTP-header protocol.
+  ntfy-personal:
+    url: https://ntfy.sh/my-rss-topic-x9a2f
+    format: ntfy
+    translate: true
+    language: zh-CN
+
+  # Feishu / Lark group bot. `format: lark` builds a post-card payload.
+  feishu-team:
+    url: https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    format: lark
+    translate: true
+    language: zh-CN
+
+  # Work-WeChat (企业微信) group robot.
+  wecom-team:
+    url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    format: wecom
+    translate: true
+    language: zh-CN
+
+  # Generic canonical JSON — for n8n / Zapier / self-written receivers.
+  # Adds HMAC-SHA256 signing header so the receiver can verify the payload.
+  n8n-automation:
+    url: https://n8n.example.com/webhook/newsflow
+    format: generic
+    secret: "change-me-to-a-long-random-string"
+    # Extra HTTP headers (e.g. Bearer token, routing keys) are merged in
+    # before signing. Reserved: `X-NewsFlow-Signature` is set by the bot.
+    headers:
+      Authorization: "Bearer YOUR_N8N_TOKEN"
+      X-Source: newsflow
+    timeout_s: 15
+    translate: false
+
+# Which feeds go to which destination. Key = destination name; value = list
+# of feed URLs. A feed can appear under multiple destinations; each
+# (destination, feed) pair becomes one independent Subscription row.
+#
+# Feeds not already known to the bot get auto-added at startup (one network
+# round-trip per new feed). If add fails the entry is skipped with a warning
+# — the bot still starts.
+subscriptions:
+  slack-engineering:
+    - https://hnrss.org/frontpage
+    - https://rss.arstechnica.com/arstechnica/index
+
+  ntfy-personal:
+    - https://feeds.bbci.co.uk/news/rss.xml
+
+  feishu-team:
+    - https://36kr.com/feed
+
+  wecom-team:
+    - https://www.zhihu.com/rss
+
+  n8n-automation:
+    - https://news.ycombinator.com/rss
+    - https://lobste.rs/rss

@@ -6,6 +6,7 @@ from newsflow.models.base import Base, close_db, get_session, init_db
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
+from newsflow.models.webhook import WebhookDestination
 
 __all__ = [
     "Base",
@@ -14,6 +15,7 @@ __all__ = [
     "Subscription",
     "SentEntry",
     "ChannelDigest",
+    "WebhookDestination",
     "init_db",
     "close_db",
     "get_session",

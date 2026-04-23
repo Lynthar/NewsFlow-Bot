@@ -68,6 +68,7 @@ async def test_dispatch_once_commits_feed_metadata_when_no_new_entries(
     fake_settings = MagicMock()
     fake_settings.discord_enabled = False
     fake_settings.telegram_enabled = False
+    fake_settings.webhooks_enabled = False
     fake_settings.fetch_interval_minutes = 60
     fake_settings.data_dir = MagicMock()
     with patch(

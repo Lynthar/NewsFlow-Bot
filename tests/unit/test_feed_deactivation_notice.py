@@ -14,6 +14,7 @@ def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
     fake = MagicMock()
     fake.discord_enabled = platform == "discord"
     fake.telegram_enabled = platform == "telegram"
+    fake.webhooks_enabled = False
     fake.fetch_interval_minutes = 60
     # data_dir only needed for heartbeat — not used in notification path.
     fake.data_dir = MagicMock()

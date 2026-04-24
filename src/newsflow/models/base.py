@@ -14,16 +14,30 @@ from newsflow.config import get_settings
 
 
 @event.listens_for(Engine, "connect")
-def _set_sqlite_fk_pragma(dbapi_connection: Any, connection_record: Any) -> None:
-    """Enable SQLite foreign-key enforcement for every new connection.
+def _set_sqlite_pragmas(dbapi_connection: Any, connection_record: Any) -> None:
+    """Configure SQLite for safe, concurrent bot use. Applied per-connection
+    because SQLite's pragmas are connection-scoped (not database-scoped).
 
-    SQLite ships with FK checks OFF by default; `PRAGMA foreign_keys=ON`
-    has to be set per connection. Without it, `ON DELETE CASCADE` on our
-    FKs is silently ignored — deleting a Subscription leaves its SentEntry
-    rows behind, and subsequent /feed add races UNIQUE constraint errors
-    when seed_sent_entries tries to insert the same (sub_id, entry_id) pair.
+    - `foreign_keys=ON`: enforce FK constraints. SQLite ships with this
+      OFF by default, so `ON DELETE CASCADE` is silently ignored without
+      it — deleting a Subscription would orphan SentEntry rows and
+      subsequent /feed add races hit UNIQUE constraint errors when
+      seed_sent_entries tries to re-insert the same pair.
 
-    The check narrows to SQLite so non-SQLite backends (e.g. asyncpg) are
+    - `journal_mode=WAL`: Write-Ahead Logging. Readers and writers no
+      longer block each other — a reader sees a consistent snapshot
+      while a writer appends to the WAL file. Without this, a long
+      dispatch cycle holding its session open causes concurrent
+      commands (e.g. `/digest enable`) to raise
+      "database is locked". WAL persists per-DB-file, so once set
+      it's sticky across restarts.
+
+    - `synchronous=NORMAL`: under WAL, this is the safe sweet spot —
+      faster than FULL with the same durability guarantees across
+      application crashes (only an OS-level crash or power loss can
+      lose the last committed transaction, which for a bot is fine).
+
+    Narrows to SQLite so non-SQLite backends (asyncpg etc.) are
     unaffected.
     """
     if "sqlite" not in dbapi_connection.__class__.__module__.lower():
@@ -31,6 +45,8 @@ def _set_sqlite_fk_pragma(dbapi_connection: Any, connection_record: Any) -> None
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
     finally:
         cursor.close()
 
@@ -70,10 +86,20 @@ def get_engine():
     global _engine
     if _engine is None:
         settings = get_settings()
+        connect_args: dict[str, Any] = {}
+        if settings.database_url.startswith("sqlite"):
+            # aiosqlite's `timeout` maps to sqlite3's busy handler —
+            # if another writer holds the lock, wait up to 15s before
+            # raising OperationalError("database is locked"). Combined
+            # with WAL mode, this eliminates the bursty contention we
+            # saw when the dispatch loop's long session overlapped
+            # with interactive slash commands.
+            connect_args["timeout"] = 15
         _engine = create_async_engine(
             settings.database_url,
             echo=settings.log_level == "DEBUG",
             future=True,
+            connect_args=connect_args,
         )
     return _engine
 

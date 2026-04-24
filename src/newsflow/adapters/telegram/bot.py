@@ -18,7 +18,7 @@ from telegram.ext import (
     filters,
 )
 
-from newsflow.adapters.base import BaseAdapter, Message
+from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_keyword_csv
 from newsflow.core.timeutil import relative_time, time_until
@@ -1136,8 +1136,37 @@ class TelegramAdapter(BaseAdapter):
         _adapter = None
         logger.info("Telegram bot stopped")
 
+    @staticmethod
+    def _is_chat_gone(e: Exception) -> bool:
+        """True if a Telegram exception means the chat is permanently
+        unreachable — user deleted the chat, group was nuked, or the
+        bot was kicked/blocked. Matches conservatively so ambiguous
+        errors (flood wait, rate limit, parse error) don't accidentally
+        disable subscriptions.
+        """
+        from telegram.error import BadRequest, Forbidden
+        msg = str(e).lower()
+        if isinstance(e, BadRequest):
+            # "Chat not found" = chat id invalid or deleted.
+            # "PEER_ID_INVALID" = same, newer MTProto phrasing.
+            return "chat not found" in msg or "peer_id_invalid" in msg
+        if isinstance(e, Forbidden):
+            # Standard phrasings from Bot API:
+            #   "Forbidden: bot was kicked from the supergroup chat"
+            #   "Forbidden: bot was blocked by the user"
+            #   "Forbidden: bot is not a member of the channel chat"
+            return (
+                "was kicked" in msg
+                or "was blocked" in msg
+                or "is not a member" in msg
+            )
+        return False
+
     async def send_message(self, channel_id: str, message: Message) -> bool:
-        """Send a message to a Telegram chat."""
+        """Send a message to a Telegram chat. Raises ChannelGoneError
+        when the chat is permanently unreachable (deleted, bot kicked,
+        bot blocked); transient errors return False so the next
+        dispatch cycle retries."""
         if not self.app:
             return False
 
@@ -1151,11 +1180,14 @@ class TelegramAdapter(BaseAdapter):
             )
             return True
         except Exception as e:
+            if self._is_chat_gone(e):
+                raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send message to {channel_id}: {e}")
             return False
 
     async def send_text(self, channel_id: str, text: str) -> bool:
-        """Send plain text to a Telegram chat."""
+        """Send plain text to a Telegram chat. See send_message for
+        the ChannelGoneError contract."""
         if not self.app:
             return False
 
@@ -1166,6 +1198,8 @@ class TelegramAdapter(BaseAdapter):
             )
             return True
         except Exception as e:
+            if self._is_chat_gone(e):
+                raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send text to {channel_id}: {e}")
             return False
 
@@ -1193,6 +1227,8 @@ class TelegramAdapter(BaseAdapter):
                 text=text,
             )
         except Exception as e:
+            if self._is_chat_gone(e):
+                raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send text to {channel_id}: {e}")
             return False, None
 

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.adapters.base import Message
+from newsflow.adapters.base import ChannelGoneError, Message
 from newsflow.config import get_settings
 from newsflow.core.content_processor import (
     MAX_SUMMARY_LENGTH,
@@ -279,6 +279,40 @@ class Dispatcher:
                 # buckets; Telegram AIORateLimiter); this is just a nudge to
                 # avoid bursty spikes when many entries are due at once.
                 await asyncio.sleep(0.1)
+
+            except ChannelGoneError as e:
+                # Channel is permanently unreachable. Deactivate every
+                # active subscription for it (not just this one — a
+                # channel usually has many feeds) and disable any
+                # digest config so no further API calls burn on this
+                # dead destination. The outer dispatch_once commit
+                # persists the UPDATE. Idempotent: the WHERE
+                # is_active=True clause no-ops on repeated calls in
+                # the same cycle.
+                from newsflow.repositories.digest_repository import (
+                    ChannelDigestRepository,
+                )
+
+                subs_flipped = await sub_repo.deactivate_channel(
+                    subscription.platform, subscription.platform_channel_id
+                )
+                digest_repo = ChannelDigestRepository(session)
+                digests_flipped = await digest_repo.disable_for_channel(
+                    subscription.platform, subscription.platform_channel_id
+                )
+                # Log once per channel (only when we actually flipped
+                # rows — subsequent subs in the same cycle no-op).
+                if subs_flipped or digests_flipped:
+                    logger.warning(
+                        f"Channel {subscription.platform}/"
+                        f"{subscription.platform_channel_id} is gone "
+                        f"({e.reason or 'unreachable'}); deactivated "
+                        f"{subs_flipped} subscription(s) and "
+                        f"{digests_flipped} digest config(s)"
+                    )
+                # Stop processing remaining entries for this sub — the
+                # channel is dead, further attempts would just re-raise.
+                return sent_count
 
             except Exception as e:
                 logger.exception(f"Error sending entry {entry.id}: {e}")
@@ -738,6 +772,44 @@ class Dispatcher:
                     logger.info(
                         f"Delivered digest to {config.platform}/"
                         f"{config.platform_channel_id} ({chunks_sent} chunks)"
+                    )
+            except ChannelGoneError as e:
+                # Digest target channel is gone. Disable the digest config
+                # AND any remaining active subs pointing at this channel
+                # (the feed dispatch path handles its own, but this tick
+                # might run BEFORE the next feed dispatch visits those
+                # subs, so we shortcut). Fresh session per channel, so
+                # its own commit is independent of other channels.
+                from newsflow.repositories.subscription_repository import (
+                    SubscriptionRepository,
+                )
+
+                try:
+                    async with session_factory() as cleanup_session:
+                        sub_repo = SubscriptionRepository(cleanup_session)
+                        subs_flipped = await sub_repo.deactivate_channel(
+                            config.platform, config.platform_channel_id
+                        )
+                        cleanup_digest_repo = ChannelDigestRepository(
+                            cleanup_session
+                        )
+                        digests_flipped = (
+                            await cleanup_digest_repo.disable_for_channel(
+                                config.platform, config.platform_channel_id
+                            )
+                        )
+                        await cleanup_session.commit()
+                    logger.warning(
+                        f"Digest channel {config.platform}/"
+                        f"{config.platform_channel_id} is gone "
+                        f"({e.reason or 'unreachable'}); deactivated "
+                        f"{subs_flipped} subscription(s) and "
+                        f"{digests_flipped} digest config(s)"
+                    )
+                except Exception:
+                    logger.exception(
+                        f"Failed to clean up gone channel "
+                        f"{config.platform}/{config.platform_channel_id}"
                     )
             except Exception:
                 logger.exception(

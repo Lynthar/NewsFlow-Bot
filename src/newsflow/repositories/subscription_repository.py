@@ -210,6 +210,34 @@ class SubscriptionRepository:
         )
         return result.rowcount > 0
 
+    async def deactivate_channel(
+        self,
+        platform: str,
+        channel_id: str,
+    ) -> int:
+        """Bulk-deactivate every active subscription for a channel.
+
+        Called by the dispatcher when the adapter raises
+        ChannelGoneError — the channel is permanently unreachable
+        (deleted, bot kicked), so keeping subs active just burns API
+        calls every dispatch cycle. Rows are retained so a future
+        `/feed resume` can bring them back if the channel reappears
+        (unlikely for Discord since snowflake ids are never reused,
+        but harmless as a safety net). Returns the number of rows
+        flipped — zero means an earlier caller in the same cycle
+        already handled this channel.
+        """
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+                Subscription.is_active == True,  # noqa: E712
+            )
+            .values(is_active=False)
+        )
+        return result.rowcount
+
     async def activate_subscription(
         self,
         platform: str,

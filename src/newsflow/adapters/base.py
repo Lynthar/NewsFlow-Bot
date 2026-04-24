@@ -9,6 +9,35 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
+class ChannelGoneError(Exception):
+    """Adapter signals that the target channel is permanently gone.
+
+    Raised by adapter send methods when the platform returns a
+    deterministic "this channel doesn't exist" response — e.g.
+    Discord 404 NotFound (channel deleted, or bot removed from the
+    guild), Telegram "Chat not found" BadRequest or
+    "bot was kicked" Forbidden. The dispatcher catches this and
+    auto-deactivates all subscriptions for
+    (platform, platform_channel_id), plus disables any ChannelDigest
+    configured for that channel.
+
+    Distinct from transient failures (permission revoked, rate limit,
+    network error) which remain as False returns / logged warnings —
+    those states might recover on their own, so we leave the
+    subscription alive and let the next dispatch cycle retry.
+    """
+
+    def __init__(self, channel_id: str, reason: str = "") -> None:
+        msg = (
+            f"channel {channel_id} is gone: {reason}"
+            if reason
+            else f"channel {channel_id} is gone"
+        )
+        super().__init__(msg)
+        self.channel_id = channel_id
+        self.reason = reason
+
+
 @dataclass
 class Message:
     """

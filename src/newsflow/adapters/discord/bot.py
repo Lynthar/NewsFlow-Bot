@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from newsflow.adapters.base import BaseAdapter, Message
+from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_keyword_csv
 from newsflow.core.timeutil import relative_time, time_until
@@ -1138,7 +1138,14 @@ class DiscordAdapter(BaseAdapter):
         )
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
-        """Send a message to a Discord channel."""
+        """Send a message to a Discord channel.
+
+        Raises ChannelGoneError when the channel no longer exists
+        (deleted by guild owner, or bot was removed from the guild —
+        both surface as HTTP 404). Transient problems (403 Forbidden,
+        network, rate-limit) still return False so the next dispatch
+        cycle can retry.
+        """
         try:
             channel = self.bot.get_channel(int(channel_id))
             if not channel:
@@ -1152,6 +1159,8 @@ class DiscordAdapter(BaseAdapter):
             await channel.send(embed=embed)
             return True
 
+        except discord.NotFound as e:
+            raise ChannelGoneError(channel_id, reason=str(e)) from e
         except discord.Forbidden:
             logger.warning(f"No permission to send to channel {channel_id}")
             return False
@@ -1160,7 +1169,8 @@ class DiscordAdapter(BaseAdapter):
             return False
 
     async def send_text(self, channel_id: str, text: str) -> bool:
-        """Send plain text to a Discord channel."""
+        """Send plain text to a Discord channel. Raises ChannelGoneError
+        when the channel no longer exists — see send_message."""
         try:
             channel = self.bot.get_channel(int(channel_id))
             if not channel:
@@ -1172,6 +1182,8 @@ class DiscordAdapter(BaseAdapter):
             await channel.send(text)
             return True
 
+        except discord.NotFound as e:
+            raise ChannelGoneError(channel_id, reason=str(e)) from e
         except Exception as e:
             logger.exception(f"Failed to send text to {channel_id}: {e}")
             return False
@@ -1199,6 +1211,8 @@ class DiscordAdapter(BaseAdapter):
                 return False, None
 
             msg = await channel.send(text)
+        except discord.NotFound as e:
+            raise ChannelGoneError(channel_id, reason=str(e)) from e
         except discord.Forbidden:
             logger.warning(f"No permission to send to channel {channel_id}")
             return False, None

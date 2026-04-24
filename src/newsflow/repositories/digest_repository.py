@@ -63,6 +63,29 @@ class ChannelDigestRepository:
         )
         return result.scalars().all()
 
+    async def disable_for_channel(
+        self, platform: str, channel_id: str
+    ) -> int:
+        """Flip enabled=False on the digest config for this channel.
+
+        Paired with SubscriptionRepository.deactivate_channel — when
+        the dispatcher detects a channel is permanently gone, neither
+        feed delivery nor digest delivery should keep hitting the
+        adapter for it. The row is retained so `/digest enable` can
+        reuse it later if the channel somehow comes back (or a fresh
+        channel id replaces it). Returns rowcount.
+        """
+        result = await self.session.execute(
+            update(ChannelDigest)
+            .where(
+                ChannelDigest.platform == platform,
+                ChannelDigest.platform_channel_id == channel_id,
+                ChannelDigest.enabled == True,  # noqa: E712
+            )
+            .values(enabled=False)
+        )
+        return result.rowcount
+
     async def mark_delivered(
         self,
         digest_id: int,

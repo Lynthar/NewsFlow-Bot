@@ -64,5 +64,11 @@
     <outline text="EFF Updates" title="EFF Updates" type="rss"
              xmlUrl="https://www.eff.org/rss/updates.xml"
              htmlUrl="https://www.eff.org"/>
+    <outline text="Hacker News Front Page" title="Hacker News Front Page" type="rss"
+             xmlUrl="https://hnrss.org/frontpage"
+             htmlUrl="https://news.ycombinator.com"/>
+    <outline text="Rest of World" title="Rest of World" type="rss"
+             xmlUrl="https://restofworld.org/feed/latest/"
+             htmlUrl="https://restofworld.org"/>
   </body>
 </opml>

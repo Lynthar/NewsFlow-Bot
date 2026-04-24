@@ -18,6 +18,7 @@ from newsflow.config import get_settings
 from newsflow.core.content_processor import (
     MAX_SUMMARY_LENGTH,
     clean_html,
+    dedup_summary,
     get_source_name,
     truncate_text,
 )
@@ -351,6 +352,11 @@ class Dispatcher:
         raw_body = entry.content or entry.summary or ""
         plain_summary, _images = clean_html(raw_body)
         plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
+        # Drop summaries that merely echo the title — common in Google
+        # News wrappers ("Title  Source") and headline-only feeds. With
+        # dedup done BEFORE translation, we also skip an API call on the
+        # redundant text. See content_processor.dedup_summary for rules.
+        plain_summary = dedup_summary(entry.title, plain_summary)
 
         title_translated = entry.title_translated
         summary_translated = entry.summary_translated

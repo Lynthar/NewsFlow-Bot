@@ -133,6 +133,48 @@ def truncate_text(text: str, max_length: int, suffix: str = "...") -> str:
     return truncated.rstrip() + suffix
 
 
+def dedup_summary(title: str, summary: str) -> str:
+    """Return "" if `summary` substantively duplicates `title`.
+
+    Many aggregator / headline-only feeds repeat the headline as the
+    description with no extra information — Google News RSS is the
+    canonical example (`<description>` is "<a>Title</a>&nbsp;Source"
+    which HTML-strips to just `Title Source`). Showing both title and
+    this quasi-duplicate summary doubles the visual noise without
+    adding information.
+
+    The heuristic catches:
+      - exact match (after lowercase + whitespace normalization)
+      - title-prefix with only trivial trailing content (<30 chars of
+        source attribution / punctuation / ellipsis, e.g.
+        "Fed cuts rates  - Reuters")
+
+    Real summaries that extend the title with new content are kept.
+    """
+    if not summary or not title:
+        return summary
+
+    norm_title = " ".join(title.lower().split())
+    norm_summary = " ".join(summary.lower().split())
+    if not norm_title or not norm_summary:
+        return summary
+
+    if norm_summary == norm_title:
+        return ""
+
+    # Summary starts with title — strip title prefix and see what's left.
+    # If only a few chars of punctuation / source name remain, it's
+    # not a real summary. Threshold 30 chars chosen so "Fed cuts - CNBC
+    # 3 hours ago" (~25 chars after strip) gets dropped but
+    # "Fed cuts to stave off inflation risk" (~35 chars) stays.
+    if norm_summary.startswith(norm_title):
+        remainder = norm_summary[len(norm_title):].strip(" -—…|·,.")
+        if len(remainder) < 30:
+            return ""
+
+    return summary
+
+
 def get_source_name(url: str, language: str = "en") -> str:
     """
     Get human-readable source name from URL.

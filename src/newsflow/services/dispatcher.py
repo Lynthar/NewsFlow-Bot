@@ -610,12 +610,29 @@ class Dispatcher:
                         )
                         continue
 
+                    # Optionally prepend a visible header + platform-
+                    # appropriate mention so the digest doesn't get
+                    # buried under the news stream. On Discord `@here`
+                    # pings online members provided the bot has the
+                    # "Mention Everyone" permission; other platforms
+                    # just get the header text (Telegram groups notify
+                    # by default anyway, no mention token needed).
+                    if self.settings.digest_mention_on_delivery:
+                        if config.platform == "discord":
+                            digest_text = (
+                                "@here 📰 **Digest**\n\n" + result.text
+                            )
+                        else:
+                            digest_text = "📰 **Digest**\n\n" + result.text
+                    else:
+                        digest_text = result.text
+
                     # Deliver. Discord text messages cap at ~2000 chars;
                     # Telegram at 4096. Use 1900 to be safe for both.
                     chunks_sent = await self._send_text_split(
                         adapter,
                         config.platform_channel_id,
-                        result.text,
+                        digest_text,
                         chunk_size=1900,
                     )
                     if chunks_sent == 0:

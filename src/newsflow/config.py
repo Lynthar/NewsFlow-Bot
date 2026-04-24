@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     # Override the built-in digest system prompt. Supports {window} and
     # {lang} placeholders. None → use default.
     digest_system_prompt: str | None = None
+    # When true, dispatcher prepends a visible header (and an `@here`
+    # mention on Discord) so scheduled digests cut through a noisy news
+    # channel. Default off — existing deploys don't start pinging users
+    # after an upgrade. On Discord the bot needs the "Mention Everyone"
+    # permission in the target channel for @here to actually notify;
+    # without it the token appears as literal text but doesn't ping.
+    digest_mention_on_delivery: bool = False
 
     # API service (disabled by default)
     api_enabled: bool = False

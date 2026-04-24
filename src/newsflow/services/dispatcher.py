@@ -574,10 +574,15 @@ class Dispatcher:
 
     @staticmethod
     def _chunk_text(text: str, chunk_size: int) -> list[str]:
-        """Split `text` on paragraph boundaries so each chunk is
-        ≤ chunk_size characters. A single paragraph longer than
-        chunk_size emerges as its own oversize chunk (unchanged from
-        prior behavior — callers were already tolerating that)."""
+        """Split `text` so each chunk is ≤ chunk_size characters.
+
+        Tries paragraph (`\\n\\n`) boundaries first, then line (`\\n`)
+        boundaries for any paragraph that still exceeds chunk_size, then
+        a hard character-count slice as last resort. The hard-slice
+        fallback exists because Discord rejects content > 4000 chars
+        (error 50035) — a long LLM-generated paragraph without blank
+        lines would otherwise fail the whole digest delivery.
+        """
         if len(text) <= chunk_size:
             return [text]
 
@@ -592,7 +597,47 @@ class Dispatcher:
                 current = prospective
         if current:
             chunks.append(current)
-        return chunks
+
+        # Second pass: any chunk that's still > chunk_size (single
+        # paragraph without blank lines) gets broken further.
+        final: list[str] = []
+        for chunk in chunks:
+            if len(chunk) <= chunk_size:
+                final.append(chunk)
+            else:
+                final.extend(Dispatcher._hard_split(chunk, chunk_size))
+        return final
+
+    @staticmethod
+    def _hard_split(text: str, chunk_size: int) -> list[str]:
+        """Break an oversized chunk on single-newline boundaries, then
+        by hard character count. Only called when paragraph splitting
+        already failed to get below chunk_size."""
+        if len(text) <= chunk_size:
+            return [text]
+
+        pieces: list[str] = []
+        current = ""
+        for line in text.split("\n"):
+            prospective = (current + "\n" + line) if current else line
+            if len(prospective) > chunk_size and current:
+                pieces.append(current)
+                current = line
+            else:
+                current = prospective
+        if current:
+            pieces.append(current)
+
+        out: list[str] = []
+        for piece in pieces:
+            if len(piece) <= chunk_size:
+                out.append(piece)
+            else:
+                # Last resort: slice by characters. Rare — only when a
+                # single line (no \n, no \n\n) exceeds chunk_size.
+                for i in range(0, len(piece), chunk_size):
+                    out.append(piece[i : i + chunk_size])
+        return out
 
     async def deliver_digest(
         self,
@@ -718,22 +763,32 @@ class Dispatcher:
                 continue
 
             # Fresh session per channel so one failure doesn't poison others.
+            # Split into three phases so the session is not held across the
+            # LLM call and Discord IO — those are the slow parts and were
+            # causing mark_delivered UPDATEs to collide with the dispatch
+            # loop's long write transaction (SQLITE_BUSY).
             try:
+                # Phase 1: load config + generate digest text.
                 async with session_factory() as session:
+                    from newsflow.repositories.digest_repository import (
+                        ChannelDigestRepository,
+                    )
                     service = DigestService(session, summarizer)
-                    service.repo = type(service.repo)(session)  # bind to this session
-                    # Re-fetch config in this session's identity map to update it.
+                    service.repo = ChannelDigestRepository(session)
                     fresh_config = await service.repo.get(
                         config.platform, config.platform_channel_id
                     )
                     if fresh_config is None:
                         continue
 
+                    config_id = fresh_config.id
+                    prior_pin_id = fresh_config.last_pinned_message_id
+
                     result = await service.generate(fresh_config, now=now)
                     if result is None:
                         # No articles in window; still mark delivered so we
                         # don't keep re-firing this slot.
-                        await service.repo.mark_delivered(fresh_config.id, now)
+                        await service.repo.mark_delivered(config_id, now)
                         await session.commit()
                         continue
 
@@ -749,30 +804,52 @@ class Dispatcher:
                         result.text, config.platform
                     )
 
-                    # Deliver. Discord text messages cap at ~2000 chars;
-                    # Telegram at 4096. Use 1900 to be safe for both.
-                    chunks_sent, new_pin_id = await self.deliver_digest(
-                        adapter,
-                        config.platform_channel_id,
-                        digest_text,
-                        chunk_size=1900,
-                        prior_pin_id=fresh_config.last_pinned_message_id,
+                # Phase 2: deliver to platform (no session held — Discord /
+                # Telegram IO can take several seconds; holding a pooled
+                # connection through that just invites lock contention).
+                # Deliver. Discord text messages cap at ~2000 chars;
+                # Telegram at 4096. Use 1900 to be safe for both.
+                chunks_sent, new_pin_id = await self.deliver_digest(
+                    adapter,
+                    config.platform_channel_id,
+                    digest_text,
+                    chunk_size=1900,
+                    prior_pin_id=prior_pin_id,
+                )
+                if chunks_sent == 0:
+                    logger.warning(
+                        f"Digest generated but send failed for "
+                        f"{config.platform}/{config.platform_channel_id}"
                     )
-                    if chunks_sent == 0:
-                        logger.warning(
-                            f"Digest generated but send failed for "
-                            f"{config.platform}/{config.platform_channel_id}"
-                        )
-                        continue
+                    continue
 
-                    await service.repo.mark_delivered(
-                        fresh_config.id, now, pinned_message_id=new_pin_id
+                # Phase 3: persist delivery mark in a short session. If
+                # the UPDATE still fails under lock pressure, the digest
+                # already landed in the channel — log and move on; the
+                # next tick's is_due() check will notice the stale mark
+                # and may re-fire, which is preferable to crashing the
+                # loop iteration.
+                try:
+                    async with session_factory() as session:
+                        from newsflow.repositories.digest_repository import (
+                            ChannelDigestRepository,
+                        )
+                        repo = ChannelDigestRepository(session)
+                        await repo.mark_delivered(
+                            config_id, now, pinned_message_id=new_pin_id
+                        )
+                        await session.commit()
+                except Exception:
+                    logger.exception(
+                        f"mark_delivered failed for {config.platform}/"
+                        f"{config.platform_channel_id}; digest was "
+                        f"delivered ({chunks_sent} chunks) but state is stale"
                     )
-                    await session.commit()
-                    logger.info(
-                        f"Delivered digest to {config.platform}/"
-                        f"{config.platform_channel_id} ({chunks_sent} chunks)"
-                    )
+
+                logger.info(
+                    f"Delivered digest to {config.platform}/"
+                    f"{config.platform_channel_id} ({chunks_sent} chunks)"
+                )
             except ChannelGoneError as e:
                 # Digest target channel is gone. Disable the digest config
                 # AND any remaining active subs pointing at this channel

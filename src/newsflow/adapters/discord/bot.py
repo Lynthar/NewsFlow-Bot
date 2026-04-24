@@ -1046,6 +1046,13 @@ class DigestCommands(commands.Cog):
             return
 
         session_factory = get_session_factory()
+
+        # Session 1: load config + generate digest text. Closes before
+        # Discord IO so we're not holding a pooled connection across a
+        # multi-second network round-trip. Capture scalar fields we
+        # need later — ORM attribute access after session close is
+        # fine here (expire_on_commit=False) but being explicit avoids
+        # subtle detached-instance bugs.
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
             config = await repo.get(
@@ -1058,50 +1065,79 @@ class DigestCommands(commands.Cog):
                 )
                 return
 
+            config_id = config.id
+            prior_pin_id = config.last_pinned_message_id
+
             service = DigestService(session, summarizer)
             now = datetime.now(timezone.utc)
             result = await service.generate(config, now=now)
 
-            if result is None:
-                await interaction.followup.send(
-                    "No articles in the current window — nothing to summarize.",
-                    ephemeral=True,
-                )
-                return
-            if not result.success:
-                await interaction.followup.send(
-                    f"❌ Digest generation failed: {result.error}",
-                    ephemeral=True,
-                )
-                return
-
-            # Post into the channel (not ephemeral — this IS the digest).
-            dispatcher = get_dispatcher()
-            adapter = dispatcher._adapters.get("discord")
-            if adapter is None:
-                await interaction.followup.send(
-                    "Discord adapter not registered yet — try again.",
-                    ephemeral=True,
-                )
-                return
-
-            chunks, new_pin_id = await dispatcher.deliver_digest(
-                adapter,
-                str(interaction.channel_id),
-                dispatcher.apply_digest_header(result.text, "discord"),
-                chunk_size=1900,
-                prior_pin_id=config.last_pinned_message_id,
+        if result is None:
+            await interaction.followup.send(
+                "No articles in the current window — nothing to summarize.",
+                ephemeral=True,
             )
-            if chunks:
+            return
+        if not result.success:
+            await interaction.followup.send(
+                f"❌ Digest generation failed: {result.error}",
+                ephemeral=True,
+            )
+            return
+
+        # Post into the channel (not ephemeral — this IS the digest).
+        dispatcher = get_dispatcher()
+        adapter = dispatcher._adapters.get("discord")
+        if adapter is None:
+            await interaction.followup.send(
+                "Discord adapter not registered yet — try again.",
+                ephemeral=True,
+            )
+            return
+
+        chunks, new_pin_id = await dispatcher.deliver_digest(
+            adapter,
+            str(interaction.channel_id),
+            dispatcher.apply_digest_header(result.text, "discord"),
+            chunk_size=1900,
+            prior_pin_id=prior_pin_id,
+        )
+
+        if chunks == 0:
+            await interaction.followup.send(
+                "❌ Digest generated but delivery failed.",
+                ephemeral=True,
+            )
+            return
+
+        # Session 2: persist delivery mark. Kept separate + tiny so it
+        # doesn't contend with the dispatch loop's long write
+        # transaction. If the UPDATE still fails under lock pressure,
+        # the digest is already in the channel — surface a warning to
+        # the user rather than letting the interaction die with "the
+        # application did not respond".
+        mark_failed = False
+        try:
+            async with session_factory() as session:
+                repo = ChannelDigestRepository(session)
                 await repo.mark_delivered(
-                    config.id, now, pinned_message_id=new_pin_id
+                    config_id, now, pinned_message_id=new_pin_id
                 )
                 await session.commit()
+        except Exception:
+            logger.exception(
+                "digest_now: mark_delivered failed; digest was delivered "
+                "but last_delivered_at/last_pinned_message_id are stale"
+            )
+            mark_failed = True
 
-        await interaction.followup.send(
-            f"✅ Digest delivered ({chunks} message{'s' if chunks != 1 else ''}).",
-            ephemeral=True,
-        )
+        msg = f"✅ Digest delivered ({chunks} message{'s' if chunks != 1 else ''})."
+        if mark_failed:
+            msg += (
+                " ⚠️ Could not update delivery record (DB was busy). "
+                "The scheduler may re-fire this slot."
+            )
+        await interaction.followup.send(msg, ephemeral=True)
 
 
 class DiscordAdapter(BaseAdapter):

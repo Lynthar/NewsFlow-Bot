@@ -246,3 +246,46 @@ async def test_unpin_exception_is_swallowed():
 
     assert sent == 1
     assert pin_id == "msg-new"
+
+
+# ===== _chunk_text oversize-paragraph fallback =====
+
+
+def test_chunk_text_splits_oversized_paragraph_on_newlines():
+    """A single paragraph (no \\n\\n) longer than chunk_size must be
+    broken further on \\n boundaries — previously it was emitted whole
+    and could trip Discord's 4000-char content limit."""
+    lines = ["line " + str(i) + " " + "x" * 40 for i in range(20)]
+    text = "\n".join(lines)  # no \n\n — one paragraph
+    assert len(text) > 200
+
+    chunks = Dispatcher._chunk_text(text, 200)
+
+    assert len(chunks) >= 2
+    assert all(len(c) <= 200 for c in chunks), (
+        f"oversize chunk slipped through: {[len(c) for c in chunks]}"
+    )
+
+
+def test_chunk_text_hard_slices_single_long_line():
+    """One line with no \\n and no \\n\\n that exceeds chunk_size must
+    still be capped by a hard character-count slice — the absolute
+    last-resort path."""
+    text = "A" * 5000  # no newlines at all
+
+    chunks = Dispatcher._chunk_text(text, 1900)
+
+    assert all(len(c) <= 1900 for c in chunks)
+    assert "".join(chunks) == text  # no data loss
+
+
+def test_chunk_text_preserves_paragraph_splitting_when_fits():
+    """Regression guard: normal paragraph-boundary splitting must
+    still work (no regression from the hard-split fallback)."""
+    paragraphs = ["P" + str(i) * 40 for i in range(6)]
+    text = "\n\n".join(paragraphs)
+
+    chunks = Dispatcher._chunk_text(text, 80)
+
+    assert len(chunks) >= 2
+    assert all(len(c) <= 80 for c in chunks)

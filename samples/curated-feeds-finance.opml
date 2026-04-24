@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>NewsFlow curated — finance / business / markets / economy</title>
+  </head>
+  <body>
+    <outline text="WSJ US Business" title="WSJ US Business" type="rss"
+             xmlUrl="https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml"
+             htmlUrl="https://www.wsj.com/news/business"/>
+    <outline text="WSJ Opinion" title="WSJ Opinion" type="rss"
+             xmlUrl="https://feeds.a.dj.com/rss/RSSOpinion.xml"
+             htmlUrl="https://www.wsj.com/news/opinion"/>
+    <outline text="FT Opinion" title="FT Opinion" type="rss"
+             xmlUrl="https://www.ft.com/opinion?format=rss"
+             htmlUrl="https://www.ft.com/opinion"/>
+    <outline text="FT Lex" title="FT Lex" type="rss"
+             xmlUrl="https://www.ft.com/lex?format=rss"
+             htmlUrl="https://www.ft.com/lex"/>
+    <outline text="Bloomberg Economics" title="Bloomberg Economics" type="rss"
+             xmlUrl="https://feeds.bloomberg.com/economics/news.rss"
+             htmlUrl="https://www.bloomberg.com/economics"/>
+    <outline text="Bloomberg View" title="Bloomberg View" type="rss"
+             xmlUrl="https://feeds.bloomberg.com/bview/news.rss"
+             htmlUrl="https://www.bloomberg.com/opinion"/>
+    <outline text="Bloomberg Industries" title="Bloomberg Industries" type="rss"
+             xmlUrl="https://feeds.bloomberg.com/industries/news.rss"
+             htmlUrl="https://www.bloomberg.com/industries"/>
+  </body>
+</opml>

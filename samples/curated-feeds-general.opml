@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>NewsFlow curated — general news &amp; humanities/society</title>
+  </head>
+  <body>
+    <outline text="Reuters (via Google News)" title="Reuters (via Google News)" type="rss"
+             xmlUrl="https://news.google.com/rss/search?q=site:reuters.com&amp;hl=en-US&amp;gl=US&amp;ceid=US:en"
+             htmlUrl="https://www.reuters.com"/>
+    <outline text="Al Jazeera English" title="Al Jazeera English" type="rss"
+             xmlUrl="https://www.aljazeera.com/xml/rss/all.xml"
+             htmlUrl="https://www.aljazeera.com"/>
+    <outline text="NYT HomePage" title="NYT HomePage" type="rss"
+             xmlUrl="https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"
+             htmlUrl="https://www.nytimes.com"/>
+    <outline text="NYT Lens" title="NYT Lens" type="rss"
+             xmlUrl="https://rss.nytimes.com/services/xml/rss/nyt/Lens.xml"
+             htmlUrl="https://www.nytimes.com/column/lens"/>
+    <outline text="The Atlantic" title="The Atlantic" type="rss"
+             xmlUrl="https://www.theatlantic.com/feed/all/"
+             htmlUrl="https://www.theatlantic.com"/>
+    <outline text="Foreign Affairs" title="Foreign Affairs" type="rss"
+             xmlUrl="https://www.foreignaffairs.com/rss.xml"
+             htmlUrl="https://www.foreignaffairs.com"/>
+    <outline text="Economist Leaders" title="Economist Leaders" type="rss"
+             xmlUrl="https://www.economist.com/leaders/rss.xml"
+             htmlUrl="https://www.economist.com/leaders"/>
+    <outline text="FT China" title="FT China" type="rss"
+             xmlUrl="https://www.ft.com/china?format=rss"
+             htmlUrl="https://www.ft.com/china"/>
+    <outline text="The Conversation" title="The Conversation" type="rss"
+             xmlUrl="https://theconversation.com/global/home-page.atom"
+             htmlUrl="https://theconversation.com/global"/>
+    <outline text="Nautilus" title="Nautilus" type="rss"
+             xmlUrl="https://nautil.us/feed/"
+             htmlUrl="https://nautil.us"/>
+    <outline text="Longreads" title="Longreads" type="rss"
+             xmlUrl="https://longreads.com/feed"
+             htmlUrl="https://longreads.com"/>
+  </body>
+</opml>

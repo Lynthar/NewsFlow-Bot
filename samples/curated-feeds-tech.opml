@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>NewsFlow curated — tech / internet / computing / privacy</title>
+  </head>
+  <body>
+    <outline text="Hacker News (100+ points)" title="Hacker News (100+ points)" type="rss"
+             xmlUrl="https://hnrss.org/frontpage?points=100"
+             htmlUrl="https://news.ycombinator.com"/>
+    <outline text="Cloudflare Blog" title="Cloudflare Blog" type="rss"
+             xmlUrl="https://blog.cloudflare.com/rss"
+             htmlUrl="https://blog.cloudflare.com"/>
+    <outline text="EFF Updates" title="EFF Updates" type="rss"
+             xmlUrl="https://www.eff.org/rss/updates.xml"
+             htmlUrl="https://www.eff.org"/>
+    <outline text="Rest of World" title="Rest of World" type="rss"
+             xmlUrl="https://restofworld.org/feed/latest/"
+             htmlUrl="https://restofworld.org"/>
+  </body>
+</opml>

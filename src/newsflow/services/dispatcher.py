@@ -40,12 +40,24 @@ logger = logging.getLogger(__name__)
 class MessageSender(Protocol):
     """Protocol for message sending. Adapters supply send_message (for
     structured feed entries), send_text (for system notifications like
-    feed-auto-disabled notices), and is_connected (for HEALTHCHECK)."""
+    feed-auto-disabled notices), send_text_pinned + unpin_message (for
+    digest auto-pin — default implementations on BaseAdapter degrade to
+    send-without-pin), and is_connected (for HEALTHCHECK)."""
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
         ...
 
     async def send_text(self, channel_id: str, text: str) -> bool:
+        ...
+
+    async def send_text_pinned(
+        self, channel_id: str, text: str
+    ) -> tuple[bool, str | None]:
+        ...
+
+    async def unpin_message(
+        self, channel_id: str, message_id: str
+    ) -> bool:
         ...
 
     def is_connected(self) -> bool:
@@ -517,9 +529,23 @@ class Dispatcher:
         """Split long text on paragraph boundaries and send in chunks.
         Returns the number of successfully-sent chunks.
         """
+        chunks = self._chunk_text(text, chunk_size)
+        sent = 0
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                await asyncio.sleep(0.1)  # small smoothing
+            if await adapter.send_text(channel_id, chunk):
+                sent += 1
+        return sent
+
+    @staticmethod
+    def _chunk_text(text: str, chunk_size: int) -> list[str]:
+        """Split `text` on paragraph boundaries so each chunk is
+        ≤ chunk_size characters. A single paragraph longer than
+        chunk_size emerges as its own oversize chunk (unchanged from
+        prior behavior — callers were already tolerating that)."""
         if len(text) <= chunk_size:
-            ok = await adapter.send_text(channel_id, text)
-            return 1 if ok else 0
+            return [text]
 
         chunks: list[str] = []
         current = ""
@@ -532,14 +558,68 @@ class Dispatcher:
                 current = prospective
         if current:
             chunks.append(current)
+        return chunks
 
-        sent = 0
-        for i, chunk in enumerate(chunks):
-            if i > 0:
-                await asyncio.sleep(0.1)  # small smoothing
+    async def deliver_digest(
+        self,
+        adapter: "MessageSender",
+        channel_id: str,
+        text: str,
+        *,
+        chunk_size: int,
+        prior_pin_id: str | None,
+    ) -> tuple[int, str | None]:
+        """Deliver a digest: send `text` (splitting on paragraphs if it
+        exceeds `chunk_size`), pin the first chunk, and unpin the prior
+        digest's pin when a new pin takes its place.
+
+        Auto-pin is best-effort: if the adapter / channel doesn't allow
+        pinning, the send still counts as a successful delivery. The
+        old pin is left alone in that case so the channel retains
+        *some* pinned digest rather than none — the caller will retry
+        unpinning on the next delivery.
+
+        Returns (chunks_sent, new_pin_id):
+          - chunks_sent: total chunks that reached the channel. 0 means
+            the whole delivery failed; caller must not mark delivered.
+          - new_pin_id: platform message id of the freshly-pinned
+            digest, or None if pinning was skipped / failed. Caller
+            passes this straight to `mark_delivered(pinned_message_id=)`
+            — None preserves the prior stored pin id so the next
+            delivery can still try to unpin it.
+        """
+        if not text:
+            return 0, None
+
+        chunks = self._chunk_text(text, chunk_size)
+        if not chunks:
+            return 0, None
+
+        sent_first, new_pin_id = await adapter.send_text_pinned(
+            channel_id, chunks[0]
+        )
+        if not sent_first:
+            return 0, None
+        chunks_sent = 1
+
+        for chunk in chunks[1:]:
+            await asyncio.sleep(0.1)  # smoothing, mirrors _send_text_split
             if await adapter.send_text(channel_id, chunk):
-                sent += 1
-        return sent
+                chunks_sent += 1
+
+        # Only unpin the prior digest if a new pin actually took its
+        # place — otherwise leaving the old pin preserves continuity
+        # (better to see last week's pinned digest than nothing).
+        if prior_pin_id and new_pin_id and prior_pin_id != new_pin_id:
+            try:
+                await adapter.unpin_message(channel_id, prior_pin_id)
+            except Exception:
+                logger.debug(
+                    f"Unpin of prior digest {prior_pin_id} in "
+                    f"{channel_id} raised; leaving stale pin in place"
+                )
+
+        return chunks_sent, new_pin_id
 
     async def run_digest_loop(
         self, check_interval_seconds: int | None = None
@@ -637,11 +717,12 @@ class Dispatcher:
 
                     # Deliver. Discord text messages cap at ~2000 chars;
                     # Telegram at 4096. Use 1900 to be safe for both.
-                    chunks_sent = await self._send_text_split(
+                    chunks_sent, new_pin_id = await self.deliver_digest(
                         adapter,
                         config.platform_channel_id,
                         digest_text,
                         chunk_size=1900,
+                        prior_pin_id=fresh_config.last_pinned_message_id,
                     )
                     if chunks_sent == 0:
                         logger.warning(
@@ -650,7 +731,9 @@ class Dispatcher:
                         )
                         continue
 
-                    await service.repo.mark_delivered(fresh_config.id, now)
+                    await service.repo.mark_delivered(
+                        fresh_config.id, now, pinned_message_id=new_pin_id
+                    )
                     await session.commit()
                     logger.info(
                         f"Delivered digest to {config.platform}/"

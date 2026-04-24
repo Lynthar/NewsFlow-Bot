@@ -1085,14 +1085,17 @@ class DigestCommands(commands.Cog):
                 )
                 return
 
-            chunks = await dispatcher._send_text_split(
+            chunks, new_pin_id = await dispatcher.deliver_digest(
                 adapter,
                 str(interaction.channel_id),
                 dispatcher.apply_digest_header(result.text, "discord"),
                 chunk_size=1900,
+                prior_pin_id=config.last_pinned_message_id,
             )
             if chunks:
-                await repo.mark_delivered(config.id, now)
+                await repo.mark_delivered(
+                    config.id, now, pinned_message_id=new_pin_id
+                )
                 await session.commit()
 
         await interaction.followup.send(
@@ -1171,6 +1174,79 @@ class DiscordAdapter(BaseAdapter):
 
         except Exception as e:
             logger.exception(f"Failed to send text to {channel_id}: {e}")
+            return False
+
+    async def send_text_pinned(
+        self, channel_id: str, text: str
+    ) -> tuple[bool, str | None]:
+        """Send text and pin the resulting message. Respects the
+        `digest_auto_pin` setting: when disabled, this is equivalent to
+        `send_text` (sends, doesn't pin, returns `(sent, None)`).
+
+        Pin failures degrade to "sent but not pinned" — the digest still
+        reaches the channel. Permissions and the Discord 50-pin cap are
+        the common reasons for a pin to fail.
+        """
+        if not get_settings().digest_auto_pin:
+            sent = await self.send_text(channel_id, text)
+            return sent, None
+
+        try:
+            channel = self.bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            if not channel or not isinstance(channel, discord.TextChannel):
+                return False, None
+
+            msg = await channel.send(text)
+        except discord.Forbidden:
+            logger.warning(f"No permission to send to channel {channel_id}")
+            return False, None
+        except Exception as e:
+            logger.exception(f"Failed to send text to {channel_id}: {e}")
+            return False, None
+
+        try:
+            await msg.pin()
+            return True, str(msg.id)
+        except discord.Forbidden:
+            logger.warning(
+                f"Cannot pin in channel {channel_id}: bot needs "
+                f"'Manage Messages' permission"
+            )
+            return True, None
+        except discord.HTTPException as e:
+            # Most common: 30003 = max pins reached (50 per channel).
+            logger.warning(f"Pin failed in channel {channel_id}: {e}")
+            return True, None
+
+    async def unpin_message(
+        self, channel_id: str, message_id: str
+    ) -> bool:
+        """Unpin a previously-pinned message. Treats NotFound as success
+        (the message is no longer around to unpin — goal achieved)."""
+        try:
+            channel = self.bot.get_channel(int(channel_id))
+            if not channel:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            if not channel or not isinstance(channel, discord.TextChannel):
+                return False
+            msg = await channel.fetch_message(int(message_id))
+            await msg.unpin()
+            return True
+        except discord.NotFound:
+            return True
+        except discord.Forbidden:
+            logger.warning(
+                f"Cannot unpin in channel {channel_id}: bot needs "
+                f"'Manage Messages' permission"
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                f"Unpin failed for message {message_id} in "
+                f"{channel_id}: {e}"
+            )
             return False
 
     def _create_embed(self, message: Message) -> discord.Embed:

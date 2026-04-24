@@ -488,14 +488,17 @@ async def digest_command(
                     "Telegram adapter not registered yet — try again."
                 )
                 return
-            chunks = await dispatcher._send_text_split(
+            chunks, new_pin_id = await dispatcher.deliver_digest(
                 adapter,
                 chat_id,
                 dispatcher.apply_digest_header(result.text, "telegram"),
                 chunk_size=3800,
+                prior_pin_id=config.last_pinned_message_id,
             )
             if chunks:
-                await repo.mark_delivered(config.id, now)
+                await repo.mark_delivered(
+                    config.id, now, pinned_message_id=new_pin_id
+                )
                 await session.commit()
         return
 
@@ -1164,6 +1167,67 @@ class TelegramAdapter(BaseAdapter):
             return True
         except Exception as e:
             logger.exception(f"Failed to send text to {channel_id}: {e}")
+            return False
+
+    async def send_text_pinned(
+        self, channel_id: str, text: str
+    ) -> tuple[bool, str | None]:
+        """Send text and pin the resulting message. Respects the
+        `digest_auto_pin` setting — when disabled, equivalent to
+        `send_text` (no pin, returns `(sent, None)`).
+
+        Pin is silent (`disable_notification=True`) to avoid stacking a
+        "bot pinned a message" system alert on top of the digest header
+        itself. Pin failures degrade to "sent but not pinned": the
+        digest still delivers, old pin (if any) stays in place.
+        """
+        if not self.app:
+            return False, None
+        if not get_settings().digest_auto_pin:
+            sent = await self.send_text(channel_id, text)
+            return sent, None
+
+        try:
+            msg = await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=text,
+            )
+        except Exception as e:
+            logger.exception(f"Failed to send text to {channel_id}: {e}")
+            return False, None
+
+        try:
+            await self.app.bot.pin_chat_message(
+                chat_id=int(channel_id),
+                message_id=msg.message_id,
+                disable_notification=True,
+            )
+            return True, str(msg.message_id)
+        except Exception as e:
+            # Most common: BadRequest "not enough rights to pin", or the
+            # bot isn't an admin in a group. Don't fail the delivery.
+            logger.warning(f"Telegram pin failed in {channel_id}: {e}")
+            return True, None
+
+    async def unpin_message(
+        self, channel_id: str, message_id: str
+    ) -> bool:
+        """Unpin a specific message. Returns False on error; the caller
+        should treat that as "old pin might still be there" and move on.
+        """
+        if not self.app:
+            return False
+        try:
+            await self.app.bot.unpin_chat_message(
+                chat_id=int(channel_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.warning(
+                f"Telegram unpin failed for message {message_id} in "
+                f"{channel_id}: {e}"
+            )
             return False
 
     def _format_message(self, message: Message) -> str:

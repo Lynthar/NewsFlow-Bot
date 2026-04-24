@@ -106,6 +106,46 @@ class BaseAdapter(ABC):
         """
         pass
 
+    async def send_text_pinned(
+        self,
+        channel_id: str,
+        text: str,
+    ) -> tuple[bool, str | None]:
+        """Send a plain text message and pin it to the channel.
+
+        Returns (sent, message_id):
+          - (True, "<id>") — sent and pinned; `message_id` is the
+            platform's id for the new message (opaque string).
+          - (True, None) — sent but pin failed or was skipped (missing
+            permission, platform pin-cap, or adapter doesn't support
+            pinning). Caller treats the send as successful.
+          - (False, None) — send failed entirely.
+
+        Default implementation degrades to a plain `send_text` with no
+        pin — safe for webhook / any adapter that doesn't override.
+        Platform adapters override to implement real pinning.
+        """
+        sent = await self.send_text(channel_id, text)
+        return sent, None
+
+    async def unpin_message(
+        self,
+        channel_id: str,
+        message_id: str,
+    ) -> bool:
+        """Unpin a previously-pinned message.
+
+        Returns True if the message is no longer pinned (including the
+        case where it was already missing / already unpinned). Returns
+        False on permission errors or when the adapter doesn't support
+        pinning. Pure best-effort — callers must not fail the broader
+        operation on a False return.
+
+        Default implementation is a no-op returning False so webhook /
+        unimplemented adapters don't accidentally claim success.
+        """
+        return False
+
     async def on_ready(self) -> None:
         """Called when the adapter is ready and connected."""
         pass

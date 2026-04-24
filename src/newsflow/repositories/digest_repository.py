@@ -64,12 +64,28 @@ class ChannelDigestRepository:
         return result.scalars().all()
 
     async def mark_delivered(
-        self, digest_id: int, at: datetime
+        self,
+        digest_id: int,
+        at: datetime,
+        *,
+        pinned_message_id: str | None = None,
     ) -> None:
+        """Record that a digest was delivered at `at`.
+
+        `pinned_message_id` is kwarg-only and only overwrites the stored
+        pin id when non-None. That way, a delivery where send succeeded
+        but pinning failed keeps the previous pin id in place so the
+        next delivery can still try to unpin it. Callers that pinned
+        successfully pass the new message id; callers that never
+        attempt pinning (or whose pin failed) leave the arg at None.
+        """
+        values: dict = {"last_delivered_at": at}
+        if pinned_message_id is not None:
+            values["last_pinned_message_id"] = pinned_message_id
         await self.session.execute(
             update(ChannelDigest)
             .where(ChannelDigest.id == digest_id)
-            .values(last_delivered_at=at)
+            .values(**values)
         )
 
     async def get_channel_articles(

@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     # permission in the target channel for @here to actually notify;
     # without it the token appears as literal text but doesn't ping.
     digest_mention_on_delivery: bool = False
+    # When true, each digest delivery pins its first chunk to the channel
+    # and unpins the previous digest's pin, so the channel's pin list
+    # stays at "newest digest only" and users can jump back to it from
+    # the pin icon. Default off — requires "Manage Messages" on Discord /
+    # admin rights on Telegram. Pin failures (missing permission, 50-pin
+    # cap) degrade gracefully: the digest still delivers, the old pin
+    # stays put, and a warning is logged. Silent no-op on webhook.
+    digest_auto_pin: bool = False
 
     # API service (disabled by default)
     api_enabled: bool = False

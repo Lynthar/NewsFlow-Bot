@@ -42,6 +42,13 @@ class ChannelDigest(Base):
     last_delivered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # Platform message id of the currently-pinned digest (if auto-pin is
+    # enabled and the adapter supports it). Next delivery unpins this one
+    # before pinning the new digest, so the channel's pin list stays at
+    # "newest digest only". NULL when no digest has been pinned yet, or
+    # when the adapter doesn't support pinning. Stored as a string because
+    # Discord / Telegram / future platforms use different id formats.
+    last_pinned_message_id: Mapped[str | None] = mapped_column(String(64))
 
     __table_args__ = (
         # One config per (platform, channel)

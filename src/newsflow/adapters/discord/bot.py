@@ -1088,7 +1088,7 @@ class DigestCommands(commands.Cog):
             chunks = await dispatcher._send_text_split(
                 adapter,
                 str(interaction.channel_id),
-                result.text,
+                dispatcher.apply_digest_header(result.text, "discord"),
                 chunk_size=1900,
             )
             if chunks:

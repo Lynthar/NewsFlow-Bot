@@ -490,6 +490,27 @@ class Dispatcher:
                 f"Preview dispatch failed for subscription {subscription_id}"
             )
 
+    def apply_digest_header(self, text: str, platform: str) -> str:
+        """Prepend a visible header + platform-appropriate mention to
+        digest text when DIGEST_MENTION_ON_DELIVERY is enabled.
+
+        Shared between the scheduled digest path (`_tick_digests`) and
+        the manual `/digest now` handlers in both Discord and Telegram
+        adapters, so either trigger produces the same delivery shape.
+        Without this shim the 3 paths had drifted — mention only fired
+        on scheduled runs, not on manual test runs.
+
+        Discord gets `@here` (requires bot "Mention Everyone" perm to
+        actually notify). Telegram / webhook just get the visible
+        header — no mention token since those platforms' notification
+        model differs.
+        """
+        if not self.settings.digest_mention_on_delivery:
+            return text
+        if platform == "discord":
+            return "@here 📰 **Digest**\n\n" + text
+        return "📰 **Digest**\n\n" + text
+
     async def _send_text_split(
         self, adapter: "MessageSender", channel_id: str, text: str, chunk_size: int
     ) -> int:
@@ -610,22 +631,9 @@ class Dispatcher:
                         )
                         continue
 
-                    # Optionally prepend a visible header + platform-
-                    # appropriate mention so the digest doesn't get
-                    # buried under the news stream. On Discord `@here`
-                    # pings online members provided the bot has the
-                    # "Mention Everyone" permission; other platforms
-                    # just get the header text (Telegram groups notify
-                    # by default anyway, no mention token needed).
-                    if self.settings.digest_mention_on_delivery:
-                        if config.platform == "discord":
-                            digest_text = (
-                                "@here 📰 **Digest**\n\n" + result.text
-                            )
-                        else:
-                            digest_text = "📰 **Digest**\n\n" + result.text
-                    else:
-                        digest_text = result.text
+                    digest_text = self.apply_digest_header(
+                        result.text, config.platform
+                    )
 
                     # Deliver. Discord text messages cap at ~2000 chars;
                     # Telegram at 4096. Use 1900 to be safe for both.

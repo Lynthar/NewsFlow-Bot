@@ -489,7 +489,10 @@ async def digest_command(
                 )
                 return
             chunks = await dispatcher._send_text_split(
-                adapter, chat_id, result.text, chunk_size=3800,
+                adapter,
+                chat_id,
+                dispatcher.apply_digest_header(result.text, "telegram"),
+                chunk_size=3800,
             )
             if chunks:
                 await repo.mark_delivered(config.id, now)

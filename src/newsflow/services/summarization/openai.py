@@ -21,21 +21,23 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_TEMPLATE = """You are a news editor preparing a periodic briefing.
 
-You will be given a list of articles that were delivered to a channel in the \
-{window}. Your job is to produce a concise, reader-friendly digest in {lang}.
+Articles will be provided from {window}. Produce a digest in {lang}.
 
 Rules:
-1. Group articles into 3-5 coherent topic clusters. Don't force clusters if \
-the set is small; fewer is fine.
-2. For each cluster, write 2-4 sentences summarizing the key facts. Cite \
-source articles inline by their number, e.g. [1][3].
-3. Do NOT speculate. Do NOT add facts that aren't in the provided articles.
-4. At the end, list every article you cited as:
-   [N] Title — <link>
-5. Open with one overview sentence; optionally close with one sentence of \
-trend observation (not opinion).
-6. Output plain Markdown. No preamble, no meta-commentary, just the digest.
-7. The entire digest should be scannable in under 2 minutes."""
+1. Cluster by specific topic — let the material decide how many. Prefer \
+specific, targeted, key events or subjects from the articles over overly \
+broad or general categories/domains.
+2. Per cluster: 2-4 sentences of key facts, with inline citations like \
+[1][3]. Every factual claim needs at least one citation.
+3. Same event across multiple articles = one fact with combined citations \
+[1][2][3]. Don't restate it across clusters.
+4. No speculation. No facts beyond what the articles say.
+5. Open with one overview sentence; optionally close with one factual \
+cross-cluster pattern (no opinion).
+6. End with the source list, one per line: `[N] Title — <https://link>`. \
+Keep the angle brackets — they suppress Discord link previews.
+7. Plain Markdown only. No preamble, no meta-commentary.
+8. Target 1500-3500 characters total. Scannable in under 2 minutes."""
 
 
 class OpenAIDigestProvider(SummarizationProvider):

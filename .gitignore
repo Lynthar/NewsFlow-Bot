@@ -27,6 +27,10 @@ env/
 venv/
 ENV/
 
+# uv (Poetry is the dependency source of truth — uv.lock is just a side
+# effect of running `uv run` in the project dir and shouldn't be tracked)
+uv.lock
+
 # IDE
 .idea/
 .vscode/

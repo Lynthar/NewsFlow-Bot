@@ -82,9 +82,15 @@ def create_translation_service(
     # Use provided cache or global cache
     cache_backend = cache or get_cache()
 
+    # Honor the user's configured TTL. Without this the service
+    # silently used the base.py default regardless of what they
+    # set in .env — same number today (7 days) but the setting
+    # is the documented knob, so it should actually take effect.
+    settings = get_settings()
     service = TranslationService(
         provider=provider,
         cache=cache_backend,
+        cache_ttl=settings.translation_cache_ttl_days * 86400,
     )
 
     logger.info(

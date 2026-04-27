@@ -294,6 +294,98 @@ async def test_dispatch_channel_gone_second_call_is_idempotent(session):
     assert all(s.is_active is False for s in all_subs.scalars().all())
 
 
+async def test_dead_channels_set_skips_remaining_subs(session):
+    """Once a channel surfaces as gone, the dead_channels set is
+    populated so the caller can skip remaining subs without burning
+    more adapter calls. Verifies the second call short-circuits
+    BEFORE adapter.send_message is invoked."""
+    d = _dispatcher()
+
+    feed_a = Feed(url="https://a/rss", is_active=True, error_count=0)
+    feed_b = Feed(url="https://b/rss", is_active=True, error_count=0)
+    session.add_all([feed_a, feed_b])
+    await session.flush()
+
+    sub_a = Subscription(
+        platform="discord", platform_user_id="u",
+        platform_channel_id="DEAD", feed_id=feed_a.id,
+        is_active=True, translate=False,
+    )
+    sub_b = Subscription(
+        platform="discord", platform_user_id="u",
+        platform_channel_id="DEAD", feed_id=feed_b.id,
+        is_active=True, translate=False,
+    )
+    session.add_all([sub_a, sub_b])
+    await session.flush()
+    for feed in (feed_a, feed_b):
+        session.add(
+            FeedEntry(
+                feed_id=feed.id, guid=f"g{feed.id}", title="T",
+                link=f"https://{feed.id}/a",
+                published_at=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        )
+    await session.commit()
+
+    adapter = MagicMock()
+    adapter.send_message = AsyncMock(side_effect=ChannelGoneError("DEAD"))
+    adapter.is_connected = MagicMock(return_value=True)
+    d._adapters["discord"] = adapter
+
+    sub_repo = SubscriptionRepository(session)
+    dead: set[tuple[str, str]] = set()
+
+    # First sub: send_message raises, handler populates dead_channels.
+    await d._dispatch_to_subscription(
+        session, sub_a, sub_repo, dead_channels=dead
+    )
+    assert ("discord", "DEAD") in dead
+    assert adapter.send_message.await_count == 1
+
+    # Caller is responsible for the skip check (mirrors dispatch_once).
+    if (sub_b.platform, sub_b.platform_channel_id) in dead:
+        skipped = True
+    else:
+        skipped = False
+        await d._dispatch_to_subscription(
+            session, sub_b, sub_repo, dead_channels=dead
+        )
+
+    assert skipped is True
+    # Adapter was NOT called a second time.
+    assert adapter.send_message.await_count == 1
+
+
+async def test_dispatch_to_subscription_without_dead_channels_arg_still_works(
+    session,
+):
+    """Backward-compat: callers that don't pass dead_channels (preview
+    path, existing tests) keep the original behavior — handler runs to
+    completion, no kwarg required."""
+    d = _dispatcher()
+
+    sub = await _seed_sub_with_entry(session, channel_id="DEAD")
+
+    adapter = MagicMock()
+    adapter.send_message = AsyncMock(
+        side_effect=ChannelGoneError("DEAD", reason="404")
+    )
+    adapter.is_connected = MagicMock(return_value=True)
+    d._adapters["discord"] = adapter
+
+    sub_repo = SubscriptionRepository(session)
+    # Positional 3-arg call (the historic shape). Must not raise.
+    sent = await d._dispatch_to_subscription(session, sub, sub_repo)
+    await session.commit()
+
+    assert sent == 0
+    refreshed = await session.execute(
+        select(Subscription).where(Subscription.id == sub.id)
+    )
+    assert refreshed.scalar_one().is_active is False
+
+
 async def test_dispatch_channel_gone_other_channel_unaffected(session):
     """A dead channel's cleanup must not disable a healthy channel's
     subs or digest."""

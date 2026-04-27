@@ -179,9 +179,24 @@ class Dispatcher:
                 if new_entries:
                     sub_repo = SubscriptionRepository(session)
                     subscriptions = await sub_repo.get_all_active_subscriptions()
+                    # Channels that surfaced as gone earlier in THIS cycle.
+                    # The first ChannelGoneError already flipped every sub
+                    # for the channel via deactivate_channel, but the
+                    # cached `subscriptions` list still holds the rest with
+                    # is_active=True (not refreshed). Skipping them here
+                    # avoids N-1 doomed adapter calls + N-1 redundant no-op
+                    # UPDATEs per dead channel per cycle. Next cycle's
+                    # get_all_active_subscriptions filters them out at the
+                    # source.
+                    dead_channels: set[tuple[str, str]] = set()
                     for sub in subscriptions:
+                        if (sub.platform, sub.platform_channel_id) in dead_channels:
+                            continue
                         sent = await self._dispatch_to_subscription(
-                            session, sub, sub_repo
+                            session,
+                            sub,
+                            sub_repo,
+                            dead_channels=dead_channels,
                         )
                         result.messages_sent += sent
                 else:
@@ -210,9 +225,18 @@ class Dispatcher:
         session: AsyncSession,
         subscription: Subscription,
         sub_repo: SubscriptionRepository,
+        *,
+        dead_channels: set[tuple[str, str]] | None = None,
     ) -> int:
         """
         Dispatch new entries to a single subscription.
+
+        Args:
+            dead_channels: optional set the caller uses to skip remaining
+                subs for a channel once any sub on it has surfaced as
+                gone. Updated in-place when this call hits ChannelGoneError.
+                None for one-shot callers (e.g. the preview path) where
+                the cycle-wide skip semantics don't apply.
 
         Returns:
             Number of messages sent
@@ -300,8 +324,16 @@ class Dispatcher:
                 digests_flipped = await digest_repo.disable_for_channel(
                     subscription.platform, subscription.platform_channel_id
                 )
-                # Log once per channel (only when we actually flipped
-                # rows — subsequent subs in the same cycle no-op).
+                # Tell dispatch_once to skip remaining cached subs that
+                # target the same channel — see the comment there. This
+                # is what guarantees the warning below fires exactly
+                # once per channel per cycle now; the rowcount check is
+                # still kept as defense-in-depth for callers that don't
+                # pass the set (preview path).
+                if dead_channels is not None:
+                    dead_channels.add(
+                        (subscription.platform, subscription.platform_channel_id)
+                    )
                 if subs_flipped or digests_flipped:
                     logger.warning(
                         f"Channel {subscription.platform}/"

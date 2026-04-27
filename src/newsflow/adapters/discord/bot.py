@@ -1301,10 +1301,21 @@ class DiscordAdapter(BaseAdapter):
 
     def _create_embed(self, message: Message) -> discord.Embed:
         """Create a Discord embed from a Message."""
+        # SQLite + aiosqlite drops tzinfo on read even for
+        # DateTime(timezone=True) columns, so message.published_at
+        # (sourced from FeedEntry.published_at) can come back naive
+        # despite always being written as aware UTC. discord.py's
+        # Embed setter calls .astimezone() on naive values, which
+        # interprets them as the host's local time — on a non-UTC
+        # host the displayed embed timestamp would shift by the host
+        # offset. Pin to UTC explicitly. No-op on UTC hosts (prod).
+        ts = message.published_at or datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
         embed = discord.Embed(
             description=f"[{message.display_title}]({message.link})",
             color=discord.Color.blue(),
-            timestamp=message.published_at or datetime.now(timezone.utc),
+            timestamp=ts,
         )
 
         # Add summary

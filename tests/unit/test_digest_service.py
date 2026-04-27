@@ -92,6 +92,18 @@ def test_is_due_unknown_schedule_returns_false():
     assert is_due(config, _utc(2026, 4, 22, 9)) is False
 
 
+def test_is_due_handles_naive_last_delivered_at():
+    # SQLite + aiosqlite drops tzinfo on read for DateTime(timezone=True).
+    # is_due() must not crash with TypeError (offset-naive vs offset-aware)
+    # — that bug stalled the entire digest tick after the first delivery.
+    naive = datetime(2026, 4, 21, 9, 0)  # no tzinfo
+    config = _cfg(
+        schedule="daily", delivery_hour_utc=9, last_delivered_at=naive
+    )
+    assert is_due(config, _utc(2026, 4, 22, 9, 0)) is True
+    assert is_due(config, _utc(2026, 4, 21, 9, 30)) is False
+
+
 # ===== DigestService.generate =====
 
 

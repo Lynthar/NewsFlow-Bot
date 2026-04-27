@@ -60,7 +60,13 @@ def is_due(config: ChannelDigest, now: datetime) -> bool:
         return False
 
     if config.last_delivered_at is not None:
-        elapsed = now - config.last_delivered_at
+        # SQLite + aiosqlite drops tzinfo on read even though the column
+        # is DateTime(timezone=True). Treat naive values as UTC so the
+        # subtraction below doesn't blow up the whole digest tick.
+        last = config.last_delivered_at
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        elapsed = now - last
         if elapsed < dedupe:
             return False
 
@@ -79,9 +85,14 @@ def _time_window_desc(
         if config.schedule == "weekly":
             return now - timedelta(days=7), "the past 7 days"
         return now - timedelta(hours=24), "the past 24 hours"
+    # See is_due() — SQLite drops tzinfo on read; re-attach UTC so
+    # downstream comparisons stay consistent.
+    last = config.last_delivered_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
     if config.schedule == "weekly":
-        return config.last_delivered_at, "the past week"
-    return config.last_delivered_at, "the past day"
+        return last, "the past week"
+    return last, "the past day"
 
 
 class DigestService:

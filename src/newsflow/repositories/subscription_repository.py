@@ -3,13 +3,14 @@ Subscription repository for database operations.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from newsflow.config import get_settings
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import SentEntry, Subscription
 
@@ -375,7 +376,14 @@ class SubscriptionRepository:
         """
         Get entries that haven't been sent to this subscription.
 
-        Returns FeedEntry objects that are not in SentEntry for this subscription.
+        Returns FeedEntry objects that are not in SentEntry for this
+        subscription. Entries whose `published_at` is older than
+        `settings.max_entry_publish_age_days` are filtered out so that
+        feeds re-serving their archive (or cleanup-then-rediscovered
+        entries that get re-ingested as "new") don't push ancient
+        articles to users. `published_at IS NULL` always passes — some
+        feeds don't carry a date and we'd rather deliver than silently
+        drop. `max_entry_publish_age_days = 0` disables the filter.
         """
         from newsflow.models.feed import FeedEntry
 
@@ -390,12 +398,24 @@ class SubscriptionRepository:
             .scalar_subquery()
         )
 
+        conditions = [
+            FeedEntry.feed_id == subscription.feed_id,
+            FeedEntry.id.not_in(sent_subquery),
+        ]
+
+        max_age_days = get_settings().max_entry_publish_age_days
+        if max_age_days > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+            conditions.append(
+                or_(
+                    FeedEntry.published_at.is_(None),
+                    FeedEntry.published_at >= cutoff,
+                )
+            )
+
         result = await self.session.execute(
             select(FeedEntry)
-            .where(
-                FeedEntry.feed_id == subscription.feed_id,
-                FeedEntry.id.not_in(sent_subquery),
-            )
+            .where(*conditions)
             .order_by(FeedEntry.published_at.desc().nullslast())
             .limit(limit)
         )

@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     cleanup_interval_hours: int = 24
     entry_retention_days: int = 7
 
+    # Cap on how old (by published_at) an entry can be and still get
+    # dispatched. Stops feeds that re-serve their archive — or that get
+    # cleanup-then-rediscovered — from pushing year-old articles to users.
+    # NULL published_at always passes (some feeds don't carry a date).
+    # 0 disables the filter.
+    max_entry_publish_age_days: int = 14
+
     # Cache (memory by default, Redis optional)
     cache_backend: Literal["memory", "redis"] = "memory"
     redis_url: str | None = None
@@ -158,6 +165,15 @@ class Settings(BaseSettings):
     def validate_retention_days(cls, v: int) -> int:
         if v < 1:
             raise ValueError("entry_retention_days must be at least 1")
+        return v
+
+    @field_validator("max_entry_publish_age_days")
+    @classmethod
+    def validate_max_publish_age(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                "max_entry_publish_age_days must be >= 0 (0 disables the filter)"
+            )
         return v
 
     def validate_minimal_config(self) -> bool:

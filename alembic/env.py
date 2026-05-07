@@ -8,7 +8,6 @@ metadata from `newsflow.models.base.Base` so autogenerate sees everything.
 """
 
 import asyncio
-from logging.config import fileConfig
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -28,12 +27,13 @@ config = context.config
 # Override the placeholder URL from alembic.ini with the real runtime URL.
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-if config.config_file_name:
-    # disable_existing_loggers=False is critical: without it fileConfig()
-    # silently disables every logger created before this point — including
-    # main.py's `__main__` logger and all newsflow.* loggers — so the rest
-    # of startup runs in total log silence and dispatch errors disappear.
-    fileConfig(config.config_file_name, disable_existing_loggers=False)
+# Deliberately NOT calling logging.config.fileConfig(alembic.ini) here.
+# main.py has already configured the root logger; fileConfig — even with
+# disable_existing_loggers=False — would replace the root logger's
+# handler and level with alembic.ini's [logger_root] (level=WARNING),
+# silently dropping every INFO log emitted after upgrade_to_head() runs.
+# alembic's own loggers (`alembic.runtime.migration`, etc.) still propagate
+# to the root logger and print under main.py's format.
 
 target_metadata = Base.metadata
 

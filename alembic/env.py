@@ -29,7 +29,11 @@ config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 if config.config_file_name:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False is critical: without it fileConfig()
+    # silently disables every logger created before this point — including
+    # main.py's `__main__` logger and all newsflow.* loggers — so the rest
+    # of startup runs in total log silence and dispatch errors disappear.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

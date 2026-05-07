@@ -257,6 +257,46 @@ class SubscriptionRepository:
         )
         return result.rowcount > 0
 
+    async def set_silent(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_id: int,
+        silent: bool,
+    ) -> bool:
+        """Toggle silent mode on a single subscription. Returns True if a
+        row was actually updated, False if no matching subscription exists."""
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+                Subscription.feed_id == feed_id,
+            )
+            .values(silent=silent)
+        )
+        return result.rowcount > 0
+
+    async def set_channel_silent(
+        self,
+        platform: str,
+        channel_id: str,
+        silent: bool,
+    ) -> int:
+        """Bulk-toggle silent on every subscription in a channel. Returns
+        the number of rows whose state actually flipped (rows already in
+        the target state are not counted, thanks to the != predicate)."""
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+                Subscription.silent != silent,
+            )
+            .values(silent=silent)
+        )
+        return result.rowcount
+
     async def delete_subscription(
         self,
         platform: str,

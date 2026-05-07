@@ -345,3 +345,66 @@ async def test_import_opml_reports_parse_errors(session):
     assert result.added == []
     assert len(result.failed) == 1
     assert result.failed[0][0] == "<opml>"
+
+
+async def test_set_feed_silent_toggles(session):
+    sub = await _seed_sub(session)
+    svc = SubscriptionService(session)
+
+    result = await svc.set_feed_silent(
+        platform="discord", channel_id="c1", feed_url=FEED_URL, silent=True,
+    )
+
+    assert result.success is True
+    await session.refresh(sub)
+    assert sub.silent is True
+
+
+async def test_set_feed_silent_unknown_feed_fails(session):
+    svc = SubscriptionService(session)
+    result = await svc.set_feed_silent(
+        platform="discord",
+        channel_id="c1",
+        feed_url="https://nope.example/feed",
+        silent=True,
+    )
+    assert result.success is False
+    assert "not found" in result.message.lower()
+
+
+async def test_set_channel_silent_bulk_toggles(session):
+    """All subs in channel get flipped; result.message reports the count."""
+    feed_a = Feed(url="https://example.com/a")
+    feed_b = Feed(url="https://example.com/b")
+    session.add_all([feed_a, feed_b])
+    await session.flush()
+    for f in (feed_a, feed_b):
+        session.add(
+            Subscription(
+                platform="discord",
+                platform_user_id="u",
+                platform_channel_id="c1",
+                feed_id=f.id,
+                is_active=True,
+            )
+        )
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.set_channel_silent(
+        platform="discord", channel_id="c1", silent=True
+    )
+
+    assert result.success is True
+    assert "2 subscription" in result.message
+
+
+async def test_set_channel_silent_no_op_when_already_in_state(session):
+    """Empty channel (or all-already-target) returns success with the
+    'already silent=...' message instead of flipping anything."""
+    svc = SubscriptionService(session)
+    result = await svc.set_channel_silent(
+        platform="discord", channel_id="empty", silent=True
+    )
+    assert result.success is True
+    assert "already" in result.message.lower()

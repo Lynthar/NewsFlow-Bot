@@ -442,6 +442,66 @@ class SubscriptionService:
             return None
         return FilterRule.from_json(sub.filter_rule)
 
+    async def set_feed_silent(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        silent: bool,
+    ) -> SubscriptionActionResult:
+        """Toggle silent mode on a single subscription. Silent subs don't
+        push instant messages to the channel, but their entries still flow
+        into the digest pipeline."""
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(
+                success=False, message="Feed not found"
+            )
+        updated = await self.sub_repo.set_silent(
+            platform=platform,
+            channel_id=channel_id,
+            feed_id=feed.id,
+            silent=silent,
+        )
+        if not updated:
+            return SubscriptionActionResult(
+                success=False, message="Subscription not found"
+            )
+        state = "on" if silent else "off"
+        logger.info(
+            f"Silent {state}: {platform}/{channel_id} × {feed_url}"
+        )
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Silent mode {state} for {feed.title or feed_url}",
+        )
+
+    async def set_channel_silent(
+        self,
+        platform: str,
+        channel_id: str,
+        silent: bool,
+    ) -> SubscriptionActionResult:
+        """Bulk-toggle silent on every subscription in this channel. Reports
+        how many rows actually changed; zero is fine (channel already in
+        the target state, or empty channel)."""
+        flipped = await self.sub_repo.set_channel_silent(
+            platform=platform, channel_id=channel_id, silent=silent
+        )
+        state = "on" if silent else "off"
+        logger.info(
+            f"Channel silent {state}: {platform}/{channel_id} ({flipped} flipped)"
+        )
+        if flipped == 0:
+            return SubscriptionActionResult(
+                success=True,
+                message=f"All subscriptions already silent={state}",
+            )
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Silent {state} on {flipped} subscription(s)",
+        )
+
     async def set_feed_translate(
         self,
         platform: str,

@@ -227,6 +227,7 @@ class Dispatcher:
         sub_repo: SubscriptionRepository,
         *,
         dead_channels: set[tuple[str, str]] | None = None,
+        bypass_silent: bool = False,
     ) -> int:
         """
         Dispatch new entries to a single subscription.
@@ -237,6 +238,10 @@ class Dispatcher:
                 gone. Updated in-place when this call hits ChannelGoneError.
                 None for one-shot callers (e.g. the preview path) where
                 the cycle-wide skip semantics don't apply.
+            bypass_silent: when True, ignore the subscription's `silent`
+                flag and deliver normally. Used by the post-subscribe
+                preview path so the user always sees one confirmation
+                article, even on silent subscriptions.
 
         Returns:
             Number of messages sent
@@ -276,6 +281,23 @@ class Dispatcher:
                             f"{subscription.platform}/{subscription.platform_channel_id}"
                         )
                         continue
+
+                # Silent mode: no instant push, but mark the entry as sent
+                # (was_filtered=False) so the digest pipeline picks it up
+                # via SentEntry. Skipped translation here too — digest
+                # uses the original title/summary, no API spend wasted.
+                # bypass_silent=True comes from the preview path so the
+                # user gets one confirmation article on subscribe.
+                if subscription.silent and not bypass_silent:
+                    await sub_repo.mark_entry_sent(
+                        subscription.id, entry.id, was_filtered=False
+                    )
+                    logger.debug(
+                        f"Entry {entry.id} silenced for "
+                        f"{subscription.platform}/{subscription.platform_channel_id} "
+                        f"(digest will pick it up)"
+                    )
+                    continue
 
                 # Create message (with translation if enabled)
                 message = await self._create_message(entry, subscription, session)
@@ -506,7 +528,12 @@ class Dispatcher:
                 )
                 return 0
 
-            sent = await self._dispatch_to_subscription(session, sub, sub_repo)
+            # bypass_silent: a freshly-subscribed silent channel should
+            # still see one confirmation article so the user knows the
+            # subscription took. Subsequent dispatch cycles honor silent.
+            sent = await self._dispatch_to_subscription(
+                session, sub, sub_repo, bypass_silent=True
+            )
             await session.commit()
             return sent
 

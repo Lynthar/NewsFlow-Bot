@@ -53,10 +53,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "(or just upload an .opml file to this chat)\n\n"
         "<b>Settings (channel-wide):</b>\n"
         "/language &lt;code&gt; — Default translation language\n"
-        "/translate &lt;on/off&gt; — Default translation toggle\n\n"
+        "/translate &lt;on/off&gt; — Default translation toggle\n"
+        "/silent &lt;on/off&gt; — Channel-wide silent (digest-only)\n\n"
         "<b>Settings (per-feed overrides):</b>\n"
         "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
         "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
+        "/setsilent &lt;url&gt; &lt;on/off&gt; — Per-feed silent\n"
         "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
         "<b>AI Digest:</b>\n"
         "/digest show — Show current digest config\n"
@@ -170,6 +172,8 @@ def _sub_status_chip(sub: Subscription) -> str | None:
         return "🛑 auto-disabled"
     if feed.error_count > 0:
         return f"⚠️ {feed.error_count} errors, retry {time_until(feed.next_retry_at)}"
+    if sub.silent:
+        return "🔇 silent (digest only)"
     return None
 
 
@@ -768,6 +772,70 @@ async def settrans_command(
     )
 
 
+async def silent_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /silent <on|off> — channel-wide silent mode toggle.
+
+    Silent channels don't get instant feed pushes, but entries still flow
+    into the digest pipeline. Use /setsilent <url> for per-feed control.
+    """
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /silent <on|off>\n\n"
+            "Channel-wide: silences every feed in this chat. Entries still "
+            "go into the digest. Use /setsilent <url> <on|off> for one feed."
+        )
+        return
+
+    enabled = context.args[0].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    chat_id = str(update.effective_chat.id)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.set_channel_silent(
+            platform="telegram", channel_id=chat_id, silent=enabled
+        )
+        await session.commit()
+
+    prefix = "✅" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+    )
+
+
+async def setsilent_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle /setsilent <url> <on|off> — per-feed silent toggle."""
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "Usage: /setsilent <rss_url> <on|off>\n"
+            "Example: /setsilent https://example.com/feed on\n\n"
+            "Silent feeds don't push instant messages but still feed the "
+            "digest. Use /silent for the channel-wide toggle."
+        )
+        return
+
+    url = context.args[0]
+    enabled = context.args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    chat_id = str(update.effective_chat.id)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.set_feed_silent(
+            platform="telegram", channel_id=chat_id, feed_url=url, silent=enabled
+        )
+        await session.commit()
+
+    prefix = "✅" if result.success else "❌"
+    await update.message.reply_text(
+        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
+    )
+
+
 async def export_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1098,6 +1166,8 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("translate", translate_command))
         self.app.add_handler(CommandHandler("setlang", setlang_command))
         self.app.add_handler(CommandHandler("settrans", settrans_command))
+        self.app.add_handler(CommandHandler("silent", silent_command))
+        self.app.add_handler(CommandHandler("setsilent", setsilent_command))
         self.app.add_handler(CommandHandler("filter", filter_command))
         self.app.add_handler(CommandHandler("digest", digest_command))
         self.app.add_handler(CommandHandler("import", import_command))

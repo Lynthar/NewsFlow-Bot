@@ -221,6 +221,70 @@ async def test_unsent_zero_disables_age_filter(session):
     assert unsent[0].guid == "ancient"
 
 
+async def test_set_silent_flips_single_subscription(session):
+    feed = await _make_feed_with_entries(session, 0)
+    sub = await _make_subscription(session, feed.id)
+    repo = SubscriptionRepository(session)
+
+    assert sub.silent is False  # default
+
+    flipped = await repo.set_silent(
+        platform=sub.platform,
+        channel_id=sub.platform_channel_id,
+        feed_id=feed.id,
+        silent=True,
+    )
+    assert flipped is True
+
+    await session.refresh(sub)
+    assert sub.silent is True
+
+
+async def test_set_silent_returns_false_when_no_match(session):
+    repo = SubscriptionRepository(session)
+    flipped = await repo.set_silent(
+        platform="discord", channel_id="nope", feed_id=999, silent=True
+    )
+    assert flipped is False
+
+
+async def test_set_channel_silent_flips_only_changed_rows(session):
+    """Bulk-toggle skips rows already in the target state. A channel where
+    one sub is already silent and another isn't should report flipped=1."""
+    feed_a = Feed(url="https://example.com/a")
+    feed_b = Feed(url="https://example.com/b")
+    session.add_all([feed_a, feed_b])
+    await session.flush()
+
+    already_silent = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="chan",
+        feed_id=feed_a.id,
+        silent=True,
+    )
+    not_silent = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="chan",
+        feed_id=feed_b.id,
+        silent=False,
+    )
+    session.add_all([already_silent, not_silent])
+    await session.flush()
+
+    repo = SubscriptionRepository(session)
+    flipped = await repo.set_channel_silent(
+        platform="discord", channel_id="chan", silent=True
+    )
+    assert flipped == 1
+
+    await session.refresh(already_silent)
+    await session.refresh(not_silent)
+    assert already_silent.silent is True
+    assert not_silent.silent is True
+
+
 async def test_unsent_age_filter_boundary(session):
     """Entry just inside the cutoff passes; just outside is filtered.
     Uses a 14-day cap with ±0.1 day from the boundary so we're nowhere

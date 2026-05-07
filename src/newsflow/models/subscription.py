@@ -35,6 +35,12 @@ class Subscription(Base):
 
     # User preferences
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Silent mode: don't push instant feed messages to the channel, but
+    # still record SentEntry rows so the digest pipeline picks the entries
+    # up. Used by channels that only want periodic AI-generated summaries.
+    # The post-subscribe preview path bypasses this flag (one preview
+    # always goes through so the user sees the subscription confirmed).
+    silent: Mapped[bool] = mapped_column(Boolean, default=False)
     translate: Mapped[bool] = mapped_column(Boolean, default=True)
     target_language: Mapped[str] = mapped_column(String(10), default="zh-CN")
 

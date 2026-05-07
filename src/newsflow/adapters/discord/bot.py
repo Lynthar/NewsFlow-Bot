@@ -29,8 +29,10 @@ LIST_PAGE_SIZE = 20
 def _sub_status_chip(sub: Subscription) -> str | None:
     """Return a one-line status chip when the sub needs user attention, else None.
 
-    Priority: user-paused > feed auto-disabled > feed errored. Healthy subs
-    get no chip to keep the list uncluttered.
+    Priority: user-paused > feed auto-disabled > feed errored > silent.
+    Faults outrank silent because they're actionable; silent is a
+    deliberate user choice and only worth showing when nothing else is.
+    Healthy non-silent subs get no chip to keep the list uncluttered.
     """
     feed = sub.feed
     if not sub.is_active:
@@ -39,6 +41,8 @@ def _sub_status_chip(sub: Subscription) -> str | None:
         return "🛑 auto-disabled (too many errors)"
     if feed.error_count > 0:
         return f"⚠️ {feed.error_count} errors, retry {time_until(feed.next_retry_at)}"
+    if sub.silent:
+        return "🔇 silent (digest only)"
     return None
 
 
@@ -389,6 +393,36 @@ class FeedCommands(commands.Cog):
             title="Resumed" if result.success else "Failed to Resume",
             description=result.message,
             color=discord.Color.green() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="silent",
+        description="Don't push instant messages for this feed; entries still flow into the digest",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL",
+        enabled="True = silent (digest only), False = back to instant push",
+    )
+    async def feed_silent(
+        self, interaction: discord.Interaction, url: str, enabled: bool
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.set_feed_silent(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+                silent=enabled,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Silent Mode Updated" if result.success else "Failed to Update",
+            description=result.message,
+            color=discord.Color.blurple() if result.success else discord.Color.red(),
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -798,6 +832,35 @@ class SettingsCommands(commands.Cog):
                 color=discord.Color.orange(),
             )
 
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @settings_group.command(
+        name="silent",
+        description="Channel-wide: silence (digest-only) or unsilence every feed in this channel",
+    )
+    @app_commands.describe(
+        enabled="True = digest only (no instant push), False = instant push enabled",
+    )
+    async def settings_silent(
+        self, interaction: discord.Interaction, enabled: bool
+    ) -> None:
+        """Bulk-toggle silent on every subscription in this channel."""
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.set_channel_silent(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                silent=enabled,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Silent Mode Updated" if result.success else "Failed to Update",
+            description=result.message,
+            color=discord.Color.blurple() if result.success else discord.Color.red(),
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="status", description="Show bot status")

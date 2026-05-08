@@ -961,16 +961,22 @@ class Dispatcher:
                     f"{config.platform}/{config.platform_channel_id}"
                 )
 
-    async def run_cleanup_loop(self) -> None:
+    async def run_cleanup_loop(
+        self, heartbeat_tick_seconds: int = 300
+    ) -> None:
         """Periodically delete old feed entries and sent-entry records.
 
-        Runs forever on `settings.cleanup_interval_hours`. FeedEntry rows
-        older than `entry_retention_days` are deleted. SentEntry rows
-        older than `sent_entry_retention_days` are deleted — retention
-        on SentEntry must be much longer because it's the dedupe signal:
-        if SentEntry is dropped while the source feed still serves the
-        same GUID, the next fetch creates a fresh FeedEntry and dispatch
-        will re-deliver. Two retention windows, two DELETEs.
+        Cleanup work runs every `settings.cleanup_interval_hours` (default
+        24h). FeedEntry rows older than `entry_retention_days` are
+        deleted; SentEntry rows older than `sent_entry_retention_days`
+        are deleted (much longer because it's the dedupe signal).
+
+        Heartbeat is touched every `heartbeat_tick_seconds` (default 5
+        min), independent of the cleanup cadence. The Dockerfile
+        HEALTHCHECK fails any heartbeat file older than 120 min, and
+        the natural 24h cleanup interval would otherwise leave this
+        heartbeat stale and the container marked unhealthy. Splitting
+        the two cadences keeps "loop alive" and "do work" decoupled.
         """
         interval_seconds = self.settings.cleanup_interval_hours * 3600
         entry_retention_days = self.settings.entry_retention_days
@@ -979,37 +985,48 @@ class Dispatcher:
         logger.info(
             f"Starting cleanup loop (every {self.settings.cleanup_interval_hours}h, "
             f"entry retention {entry_retention_days}d, "
-            f"sent-entry retention {sent_retention_days}d)"
+            f"sent-entry retention {sent_retention_days}d, "
+            f"heartbeat tick {heartbeat_tick_seconds}s)"
         )
 
         # Delay first run so startup logs stay clean and DB is definitely up.
         await asyncio.sleep(60)
 
+        # Monotonic clock — system time changes (NTP) must not skew our
+        # cleanup cadence.
+        loop = asyncio.get_running_loop()
+        next_cleanup_at = loop.time()  # first tick runs cleanup immediately
+
         while True:
-            try:
-                session_factory = get_session_factory()
-                async with session_factory() as session:
-                    feed_repo = FeedRepository(session)
-                    sub_repo = SubscriptionRepository(session)
+            if loop.time() >= next_cleanup_at:
+                try:
+                    session_factory = get_session_factory()
+                    async with session_factory() as session:
+                        feed_repo = FeedRepository(session)
+                        sub_repo = SubscriptionRepository(session)
 
-                    entries_deleted = await feed_repo.cleanup_old_entries(
-                        entry_retention_days
-                    )
-                    sent_deleted = await sub_repo.cleanup_old_sent_entries(
-                        sent_retention_days
-                    )
-                    await session.commit()
+                        entries_deleted = await feed_repo.cleanup_old_entries(
+                            entry_retention_days
+                        )
+                        sent_deleted = await sub_repo.cleanup_old_sent_entries(
+                            sent_retention_days
+                        )
+                        await session.commit()
 
-                    logger.info(
-                        f"Cleanup: deleted {entries_deleted} old entries, "
-                        f"{sent_deleted} old sent records"
-                    )
-            except Exception:
-                logger.exception("Cleanup loop error")
+                        logger.info(
+                            f"Cleanup: deleted {entries_deleted} old entries, "
+                            f"{sent_deleted} old sent records"
+                        )
+                except Exception:
+                    logger.exception("Cleanup loop error")
+                # Always advance the next-run pointer, even on error —
+                # avoids a tight retry loop under persistent lock pressure.
+                next_cleanup_at = loop.time() + interval_seconds
 
-            # Mark cleanup alive regardless of whether the iteration did work.
+            # Touch heartbeat every tick so HEALTHCHECK doesn't flag this
+            # task as stale during the long sleep between cleanup runs.
             self._write_heartbeat("cleanup")
-            await asyncio.sleep(interval_seconds)
+            await asyncio.sleep(heartbeat_tick_seconds)
 
     async def run_dispatch_loop(self, interval_minutes: int | None = None) -> None:
         """

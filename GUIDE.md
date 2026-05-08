@@ -69,6 +69,19 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 匹配行为：**title + summary 合并、大小写不敏感、子串匹配**。`include` 需要"至少包含一个"，`exclude` 需要"一个都不包含"，两者叠加评估。
 
+**静默 / 日报模式**
+
+| 命令 | 说明 |
+|---|---|
+| `/feed silent <url> <bool>` | 单订阅静默：不推即时消息，但条目仍进日报 |
+| `/settings silent <on\|off>` | 频道级批量静默：一次切换本频道所有订阅 |
+
+行为：静默订阅**不**调用 `send_message`，但仍写 `SentEntry(was_filtered=False)`，所以日报照常吃这些条目（关键词过滤拦掉的还是 `was_filtered=True`，不进日报）。开了 silent 后**首次** `/add` 仍会发一条预览，给用户确认订阅成功；后续按 silent 投递。`/feed list` 用 🔇 chip 标识静默订阅。
+
+**频道继承**：`/add` 新订阅时，若本频道**所有现有 active 订阅**都是 silent，新订阅自动继承 silent；否则默认 false。配合典型工作流是：先订阅几个 feed → 觉得太吵 → `/settings silent on` → 之后 `/add` 加新 feed 自动 silent。
+
+**已知限制（空频道场景）**：在**空频道**先 `/settings silent on`（无订阅可翻转）然后 `/add`，由于没有任何现有订阅可参考，第一个新订阅默认 **non-silent**。绕开方法：先 `/add` 一个 feed → `/settings silent on` 翻转那一个 → 后续 `/add` 即可继承。这是当前轻量实现的取舍——没有为"空频道偏好"单独建表。
+
 **OPML**
 
 | 命令 | 说明 |
@@ -121,6 +134,15 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `/filter <url>` | 显示当前过滤规则 |
 | `/filter <url> clear` | 移除过滤 |
 | `/filter <url> include=a,b exclude=c,d` | 设置过滤（两字段都可选） |
+
+**静默 / 日报模式**
+
+| 命令 | 说明 |
+|---|---|
+| `/silent <on\|off>` | 频道级批量静默 |
+| `/setsilent <url> <on\|off>` | 单订阅静默（覆盖频道默认） |
+
+语义同 Discord 的静默模式（见上）：静默订阅不推即时消息，但条目仍进日报；首次 `/add` 仍发一条预览。
 
 **OPML**
 

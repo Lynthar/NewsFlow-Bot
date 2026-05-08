@@ -107,6 +107,7 @@ class SubscriptionRepository:
         guild_id: str | None = None,
         translate: bool = True,
         target_language: str = "zh-CN",
+        silent: bool = False,
     ) -> Subscription:
         """Create a new subscription."""
         subscription = Subscription(
@@ -117,6 +118,7 @@ class SubscriptionRepository:
             feed_id=feed_id,
             translate=translate,
             target_language=target_language,
+            silent=silent,
         )
         self.session.add(subscription)
         await self.session.flush()
@@ -130,9 +132,14 @@ class SubscriptionRepository:
         channel_id: str,
         feed_id: int,
         guild_id: str | None = None,
+        silent: bool = False,
     ) -> tuple[Subscription, bool]:
         """
         Get existing subscription or create new one.
+
+        `silent` is applied only when a new subscription is created. An
+        existing subscription's silent state is preserved (re-subscribing
+        won't silently flip it back).
 
         Returns:
             Tuple of (subscription, created)
@@ -151,6 +158,7 @@ class SubscriptionRepository:
             channel_id=channel_id,
             feed_id=feed_id,
             guild_id=guild_id,
+            silent=silent,
         )
         return subscription, True
 

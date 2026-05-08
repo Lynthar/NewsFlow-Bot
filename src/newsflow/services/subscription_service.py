@@ -121,6 +121,17 @@ class SubscriptionService:
 
         feed = add_result.feed
 
+        # Inherit silent from the channel: if every existing active
+        # subscription in this channel is silent, treat the channel as
+        # a silent channel and silence the new sub too. Empty channel
+        # returns False — we don't persist a channel-level silent
+        # preference yet, so the very first /add in an empty channel
+        # always defaults to non-silent regardless of any prior
+        # `/silent on` (see GUIDE.md).
+        inherit_silent = await self._channel_silent_default(
+            platform, channel_id
+        )
+
         # Create subscription
         subscription, created = await self.sub_repo.get_or_create_subscription(
             platform=platform,
@@ -128,6 +139,7 @@ class SubscriptionService:
             channel_id=channel_id,
             feed_id=feed.id,
             guild_id=guild_id,
+            silent=inherit_silent,
         )
 
         if not created:
@@ -151,16 +163,37 @@ class SubscriptionService:
 
         logger.info(
             f"New subscription: {platform}/{channel_id} -> {feed_url} "
-            f"(seeded {seeded} back-catalog entries as sent; 1 kept for preview)"
+            f"(seeded {seeded} back-catalog entries as sent; 1 kept for preview"
+            f"{'; silent inherited' if inherit_silent else ''})"
         )
+
+        message = f"Subscribed to {feed.title or feed_url}"
+        if inherit_silent:
+            message += " (silent mode inherited from channel)"
 
         return SubscribeResult(
             success=True,
             subscription=subscription,
             feed=feed,
-            message=f"Subscribed to {feed.title or feed_url}",
+            message=message,
             is_new=True,
         )
+
+    async def _channel_silent_default(
+        self, platform: str, channel_id: str
+    ) -> bool:
+        """Return True iff every existing active subscription in this
+        channel is silent. Empty channel returns False — subscribers
+        starting from an empty channel get a non-silent first sub even
+        if they ran `/silent on` first; documented in GUIDE.md as a
+        known limitation of the lightweight inheritance scheme.
+        """
+        subs = await self.sub_repo.get_channel_subscriptions(
+            platform, channel_id
+        )
+        if not subs:
+            return False
+        return all(s.silent for s in subs)
 
     async def unsubscribe(
         self,

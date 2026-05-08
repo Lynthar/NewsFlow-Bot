@@ -248,6 +248,54 @@ async def test_set_silent_returns_false_when_no_match(session):
     assert flipped is False
 
 
+async def test_get_or_create_subscription_applies_silent_to_new(session):
+    feed = Feed(url="https://example.com/a")
+    session.add(feed)
+    await session.flush()
+
+    repo = SubscriptionRepository(session)
+    sub, created = await repo.get_or_create_subscription(
+        platform="discord",
+        user_id="u",
+        channel_id="c",
+        feed_id=feed.id,
+        silent=True,
+    )
+
+    assert created is True
+    assert sub.silent is True
+
+
+async def test_get_or_create_subscription_preserves_silent_on_existing(session):
+    """Re-subscribing must NOT silently flip an existing sub's silent
+    state — only fresh creates apply the caller's silent argument."""
+    feed = Feed(url="https://example.com/a")
+    session.add(feed)
+    await session.flush()
+    existing = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+        silent=True,
+    )
+    session.add(existing)
+    await session.flush()
+
+    repo = SubscriptionRepository(session)
+    sub, created = await repo.get_or_create_subscription(
+        platform="discord",
+        user_id="u",
+        channel_id="c",
+        feed_id=feed.id,
+        silent=False,  # caller passes False; existing was True
+    )
+
+    assert created is False
+    assert sub.silent is True  # preserved
+
+
 async def test_set_channel_silent_flips_only_changed_rows(session):
     """Bulk-toggle skips rows already in the target state. A channel where
     one sub is already silent and another isn't should report flipped=1."""

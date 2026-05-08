@@ -408,3 +408,90 @@ async def test_set_channel_silent_no_op_when_already_in_state(session):
     )
     assert result.success is True
     assert "already" in result.message.lower()
+
+
+# ===== silent inheritance on subscribe =====
+
+
+async def test_channel_silent_default_empty_channel(session):
+    """Empty channel → False. Documented limitation: a lone /silent on
+    on an empty channel doesn't carry over to the first /add."""
+    svc = SubscriptionService(session)
+    assert await svc._channel_silent_default("discord", "empty") is False
+
+
+async def test_channel_silent_default_all_silent(session):
+    feed_a = Feed(url="https://example.com/a")
+    feed_b = Feed(url="https://example.com/b")
+    session.add_all([feed_a, feed_b])
+    await session.flush()
+    for f in (feed_a, feed_b):
+        session.add(
+            Subscription(
+                platform="discord",
+                platform_user_id="u",
+                platform_channel_id="c1",
+                feed_id=f.id,
+                is_active=True,
+                silent=True,
+            )
+        )
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    assert await svc._channel_silent_default("discord", "c1") is True
+
+
+async def test_channel_silent_default_mixed_returns_false(session):
+    """Even one non-silent sub in the channel disables inheritance."""
+    feed_a = Feed(url="https://example.com/a")
+    feed_b = Feed(url="https://example.com/b")
+    session.add_all([feed_a, feed_b])
+    await session.flush()
+    session.add(
+        Subscription(
+            platform="discord",
+            platform_user_id="u",
+            platform_channel_id="c1",
+            feed_id=feed_a.id,
+            is_active=True,
+            silent=True,
+        )
+    )
+    session.add(
+        Subscription(
+            platform="discord",
+            platform_user_id="u",
+            platform_channel_id="c1",
+            feed_id=feed_b.id,
+            is_active=True,
+            silent=False,
+        )
+    )
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    assert await svc._channel_silent_default("discord", "c1") is False
+
+
+async def test_channel_silent_default_paused_subs_excluded(session):
+    """Paused (is_active=False) subs don't participate in the check —
+    `get_channel_subscriptions` already filters them out, so a channel
+    with only paused subs is treated as empty (returns False)."""
+    feed = Feed(url="https://example.com/a")
+    session.add(feed)
+    await session.flush()
+    session.add(
+        Subscription(
+            platform="discord",
+            platform_user_id="u",
+            platform_channel_id="c1",
+            feed_id=feed.id,
+            is_active=False,  # paused
+            silent=True,
+        )
+    )
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    assert await svc._channel_silent_default("discord", "c1") is False

@@ -83,20 +83,25 @@ class SentEntry(Base):
     """
     Tracks which entries have been sent to which channels.
 
-    This prevents duplicate sends and allows for proper cleanup.
+    Identified by (feed_id, guid) instead of an FK to FeedEntry.id, so
+    cleanup of FeedEntry rows doesn't drop the dedupe signal. If a feed
+    re-serves the same GUID after its FeedEntry has been cleaned up,
+    the new ingestion creates a new FeedEntry row but the SentEntry for
+    that (subscription, feed, guid) tuple still exists, so dispatch
+    recognizes the article as already-seen and skips it.
     """
 
     __tablename__ = "sent_entries"
 
-    # Which subscription
+    # Which subscription. CASCADE so unsubscribing wipes its SentEntry.
     subscription_id: Mapped[int] = mapped_column(
         ForeignKey("subscriptions.id", ondelete="CASCADE")
     )
 
-    # Which entry
-    entry_id: Mapped[int] = mapped_column(
-        ForeignKey("feed_entries.id", ondelete="CASCADE")
-    )
+    # Which entry — natural key (feed_id + guid). No FK to feed_entries:
+    # the whole point is that this row outlives FeedEntry cleanup.
+    feed_id: Mapped[int] = mapped_column()
+    guid: Mapped[str] = mapped_column(String(2048), nullable=False)
 
     # When processed (either sent or dropped by filter)
     sent_at: Mapped[datetime] = mapped_column(
@@ -112,9 +117,10 @@ class SentEntry(Base):
     # Indexes
     __table_args__ = (
         Index(
-            "ix_sent_entries_subscription_entry",
+            "ix_sent_entries_sub_feed_guid",
             "subscription_id",
-            "entry_id",
+            "feed_id",
+            "guid",
             unique=True,
         ),
         Index("ix_sent_entries_sent_at", "sent_at"),

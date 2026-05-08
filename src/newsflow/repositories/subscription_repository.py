@@ -342,13 +342,15 @@ class SubscriptionRepository:
     async def is_entry_sent(
         self,
         subscription_id: int,
-        entry_id: int,
+        feed_id: int,
+        guid: str,
     ) -> bool:
-        """Check if an entry has been sent to a subscription."""
+        """Check if a (feed, guid) pair has been sent to a subscription."""
         result = await self.session.execute(
             select(SentEntry).where(
                 SentEntry.subscription_id == subscription_id,
-                SentEntry.entry_id == entry_id,
+                SentEntry.feed_id == feed_id,
+                SentEntry.guid == guid,
             )
         )
         return result.scalar_one_or_none() is not None
@@ -356,10 +358,16 @@ class SubscriptionRepository:
     async def mark_entry_sent(
         self,
         subscription_id: int,
-        entry_id: int,
+        feed_id: int,
+        guid: str,
         was_filtered: bool = False,
     ) -> SentEntry:
-        """Record that a subscription has processed an entry.
+        """Record that a subscription has processed a (feed, guid) pair.
+
+        Identifying by (feed_id, guid) rather than FeedEntry.id is the
+        whole point of the post-2026-05-08 schema: the dedupe signal
+        survives FeedEntry cleanup, so re-ingestion of the same guid
+        doesn't re-deliver to channels that already saw it.
 
         `was_filtered=True` means the entry matched the subscription's
         filter rule out and was NOT actually delivered — we still persist
@@ -367,7 +375,8 @@ class SubscriptionRepository:
         """
         sent = SentEntry(
             subscription_id=subscription_id,
-            entry_id=entry_id,
+            feed_id=feed_id,
+            guid=guid,
             was_filtered=was_filtered,
         )
         self.session.add(sent)
@@ -391,7 +400,7 @@ class SubscriptionRepository:
         from newsflow.models.feed import FeedEntry
 
         stmt = (
-            select(FeedEntry.id)
+            select(FeedEntry.guid)
             .where(FeedEntry.feed_id == feed_id)
             .order_by(
                 FeedEntry.published_at.desc().nullslast(),
@@ -402,19 +411,23 @@ class SubscriptionRepository:
             stmt = stmt.offset(keep_latest)
 
         result = await self.session.execute(stmt)
-        entry_ids = result.scalars().all()
+        guids = result.scalars().all()
 
-        if not entry_ids:
+        if not guids:
             return 0
 
         self.session.add_all(
             [
-                SentEntry(subscription_id=subscription_id, entry_id=entry_id)
-                for entry_id in entry_ids
+                SentEntry(
+                    subscription_id=subscription_id,
+                    feed_id=feed_id,
+                    guid=guid,
+                )
+                for guid in guids
             ]
         )
         await self.session.flush()
-        return len(entry_ids)
+        return len(guids)
 
     async def get_unsent_entries_for_subscription(
         self,
@@ -424,11 +437,10 @@ class SubscriptionRepository:
         """
         Get entries that haven't been sent to this subscription.
 
-        Returns FeedEntry objects that are not in SentEntry for this
-        subscription. Entries whose `published_at` is older than
-        `settings.max_entry_publish_age_days` are filtered out so that
-        feeds re-serving their archive (or cleanup-then-rediscovered
-        entries that get re-ingested as "new") don't push ancient
+        Returns FeedEntry objects whose (feed_id, guid) does NOT appear
+        in SentEntry for this subscription. Entries whose `published_at`
+        is older than `settings.max_entry_publish_age_days` are filtered
+        out so that feeds re-serving their archive don't push ancient
         articles to users. `published_at IS NULL` always passes — some
         feeds don't carry a date and we'd rather deliver than silently
         drop. `max_entry_publish_age_days = 0` disables the filter.
@@ -439,16 +451,22 @@ class SubscriptionRepository:
         if not subscription:
             return []
 
-        # Subquery for sent entry IDs
-        sent_subquery = (
-            select(SentEntry.entry_id)
-            .where(SentEntry.subscription_id == subscription_id)
-            .scalar_subquery()
+        # NOT EXISTS join: rows in feed_entries with no matching SentEntry
+        # for this subscription on (feed_id, guid). NOT EXISTS rather
+        # than NOT IN to avoid the well-known NULL-in-list trap.
+        sent_exists = (
+            select(SentEntry.id)
+            .where(
+                SentEntry.subscription_id == subscription_id,
+                SentEntry.feed_id == FeedEntry.feed_id,
+                SentEntry.guid == FeedEntry.guid,
+            )
+            .exists()
         )
 
         conditions = [
             FeedEntry.feed_id == subscription.feed_id,
-            FeedEntry.id.not_in(sent_subquery),
+            ~sent_exists,
         ]
 
         max_age_days = get_settings().max_entry_publish_age_days

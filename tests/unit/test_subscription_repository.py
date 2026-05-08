@@ -333,6 +333,77 @@ async def test_set_channel_silent_flips_only_changed_rows(session):
     assert not_silent.silent is True
 
 
+async def test_cleanup_rediscover_no_longer_redelivers(session):
+    """End-to-end regression for the 2026-05-08 SentEntry schema change.
+
+    Before: cleanup deleted FeedEntry -> CASCADE deleted SentEntry ->
+    next fetch re-created FeedEntry (same guid, new id) -> dispatcher
+    saw no SentEntry match and re-delivered to channels that already
+    saw the article.
+
+    After: SentEntry is keyed on (feed_id, guid), no FK to FeedEntry.
+    Same scenario: SentEntry survives FeedEntry cleanup, re-ingestion
+    is recognized as already-seen, dispatch returns no unsent entries.
+    """
+    feed = Feed(url="https://example.com/feed")
+    session.add(feed)
+    await session.flush()
+
+    entry = FeedEntry(
+        feed_id=feed.id,
+        guid="reborn",
+        title="Article",
+        link="https://example.com/a",
+        published_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    session.add(entry)
+    await session.flush()
+
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+    )
+    session.add(sub)
+    await session.flush()
+
+    repo = SubscriptionRepository(session)
+
+    # Step 1: dispatch sends + marks the entry sent.
+    await repo.mark_entry_sent(
+        subscription_id=sub.id,
+        feed_id=feed.id,
+        guid="reborn",
+        was_filtered=False,
+    )
+
+    # Step 2: cleanup deletes the FeedEntry (aged out by created_at).
+    await session.delete(entry)
+    await session.flush()
+
+    # Step 3: source feed re-serves the same guid; fetch creates a
+    # fresh FeedEntry row. (SQLite may re-use rowids — that's fine, the
+    # whole point of the new schema is that dedupe doesn't depend on
+    # FeedEntry.id at all.)
+    reborn = FeedEntry(
+        feed_id=feed.id,
+        guid="reborn",
+        title="Article",
+        link="https://example.com/a",
+        published_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    session.add(reborn)
+    await session.flush()
+
+    # Step 4: dispatcher asks for unsent entries — must come back empty
+    # because SentEntry still has the (feed_id, guid) signal regardless
+    # of which FeedEntry.id the new row got.
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    assert list(unsent) == []
+
+
 async def test_unsent_age_filter_boundary(session):
     """Entry just inside the cutoff passes; just outside is filtered.
     Uses a 14-day cap with ±0.1 day from the boundary so we're nowhere

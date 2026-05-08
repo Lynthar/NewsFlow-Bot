@@ -85,7 +85,8 @@ async def test_silent_subscription_marks_sent_without_delivery(session):
         )
     ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].entry_id == entry.id
+    assert rows[0].feed_id == entry.feed_id
+    assert rows[0].guid == entry.guid
     assert rows[0].was_filtered is False
 
 
@@ -204,6 +205,6 @@ async def test_silent_respects_keyword_filter(session):
             select(SentEntry).where(SentEntry.subscription_id == sub.id)
         )
     ).scalars().all()
-    by_id = {r.entry_id: r for r in rows}
-    assert by_id[pythony.id].was_filtered is False  # silent path
-    assert by_id[jsy.id].was_filtered is True       # filter path
+    by_guid = {r.guid: r for r in rows}
+    assert by_guid[pythony.guid].was_filtered is False  # silent path
+    assert by_guid[jsy.guid].was_filtered is True       # filter path

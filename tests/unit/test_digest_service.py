@@ -142,7 +142,8 @@ async def _seed_channel_with_entries(session, n_entries: int, delivered: bool = 
             session.add(
                 SentEntry(
                     subscription_id=sub.id,
-                    entry_id=entry.id,
+                    feed_id=entry.feed_id,
+                    guid=entry.guid,
                     sent_at=now - timedelta(hours=n_entries - i),
                     was_filtered=False,
                 )
@@ -271,11 +272,15 @@ async def test_digest_generate_excludes_filtered_by_default(session):
     await session.flush()
     session.add_all([
         SentEntry(
-            subscription_id=sub.id, entry_id=sent_entry.id,
+            subscription_id=sub.id,
+            feed_id=sent_entry.feed_id,
+            guid=sent_entry.guid,
             sent_at=now - timedelta(hours=1), was_filtered=False,
         ),
         SentEntry(
-            subscription_id=sub.id, entry_id=filtered_entry.id,
+            subscription_id=sub.id,
+            feed_id=filtered_entry.feed_id,
+            guid=filtered_entry.guid,
             sent_at=now - timedelta(hours=2), was_filtered=True,
         ),
     ])
@@ -334,11 +339,11 @@ async def test_digest_generate_includes_filtered_when_configured(session):
     await session.flush()
     session.add_all([
         SentEntry(
-            subscription_id=sub.id, entry_id=a.id,
+            subscription_id=sub.id, feed_id=a.feed_id, guid=a.guid,
             sent_at=now - timedelta(hours=1), was_filtered=False,
         ),
         SentEntry(
-            subscription_id=sub.id, entry_id=b.id,
+            subscription_id=sub.id, feed_id=b.feed_id, guid=b.guid,
             sent_at=now - timedelta(hours=2), was_filtered=True,
         ),
     ])

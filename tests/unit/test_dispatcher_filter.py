@@ -70,19 +70,13 @@ async def test_filter_drops_non_matching_entry(session):
     assert adapter.send_message.await_count == 1
 
     # Both entries have SentEntry rows, but b is was_filtered=True.
+    # Post-2026-05-08 schema: SentEntry stores guid directly, no FK to FeedEntry.
     rows = (
         await session.execute(
             select(SentEntry).where(SentEntry.subscription_id == sub.id)
         )
     ).scalars().all()
-    by_guid = {}
-    for row in rows:
-        entry = (
-            await session.execute(
-                select(FeedEntry).where(FeedEntry.id == row.entry_id)
-            )
-        ).scalar_one()
-        by_guid[entry.guid] = row
+    by_guid = {row.guid: row for row in rows}
 
     assert set(by_guid.keys()) == {"a", "b"}
     assert by_guid["a"].was_filtered is False

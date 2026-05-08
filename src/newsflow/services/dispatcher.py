@@ -274,7 +274,10 @@ class Dispatcher:
                     haystack = f"{entry.title} {entry.summary or ''}"
                     if not filter_rule.matches(haystack):
                         await sub_repo.mark_entry_sent(
-                            subscription.id, entry.id, was_filtered=True
+                            subscription.id,
+                            entry.feed_id,
+                            entry.guid,
+                            was_filtered=True,
                         )
                         logger.debug(
                             f"Entry {entry.id} filtered out for "
@@ -290,7 +293,10 @@ class Dispatcher:
                 # user gets one confirmation article on subscribe.
                 if subscription.silent and not bypass_silent:
                     await sub_repo.mark_entry_sent(
-                        subscription.id, entry.id, was_filtered=False
+                        subscription.id,
+                        entry.feed_id,
+                        entry.guid,
+                        was_filtered=False,
                     )
                     logger.debug(
                         f"Entry {entry.id} silenced for "
@@ -310,7 +316,9 @@ class Dispatcher:
 
                 if success:
                     # Mark as sent
-                    await sub_repo.mark_entry_sent(subscription.id, entry.id)
+                    await sub_repo.mark_entry_sent(
+                        subscription.id, entry.feed_id, entry.guid
+                    )
                     sent_count += 1
                     logger.debug(
                         f"Sent entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
@@ -956,15 +964,22 @@ class Dispatcher:
     async def run_cleanup_loop(self) -> None:
         """Periodically delete old feed entries and sent-entry records.
 
-        Runs forever on `settings.cleanup_interval_hours`, deleting anything
-        older than `settings.entry_retention_days`.
+        Runs forever on `settings.cleanup_interval_hours`. FeedEntry rows
+        older than `entry_retention_days` are deleted. SentEntry rows
+        older than `sent_entry_retention_days` are deleted — retention
+        on SentEntry must be much longer because it's the dedupe signal:
+        if SentEntry is dropped while the source feed still serves the
+        same GUID, the next fetch creates a fresh FeedEntry and dispatch
+        will re-deliver. Two retention windows, two DELETEs.
         """
         interval_seconds = self.settings.cleanup_interval_hours * 3600
-        retention_days = self.settings.entry_retention_days
+        entry_retention_days = self.settings.entry_retention_days
+        sent_retention_days = self.settings.sent_entry_retention_days
 
         logger.info(
             f"Starting cleanup loop (every {self.settings.cleanup_interval_hours}h, "
-            f"retaining {retention_days} days)"
+            f"entry retention {entry_retention_days}d, "
+            f"sent-entry retention {sent_retention_days}d)"
         )
 
         # Delay first run so startup logs stay clean and DB is definitely up.
@@ -977,8 +992,12 @@ class Dispatcher:
                     feed_repo = FeedRepository(session)
                     sub_repo = SubscriptionRepository(session)
 
-                    entries_deleted = await feed_repo.cleanup_old_entries(retention_days)
-                    sent_deleted = await sub_repo.cleanup_old_sent_entries(retention_days)
+                    entries_deleted = await feed_repo.cleanup_old_entries(
+                        entry_retention_days
+                    )
+                    sent_deleted = await sub_repo.cleanup_old_sent_entries(
+                        sent_retention_days
+                    )
                     await session.commit()
 
                     logger.info(

@@ -122,7 +122,16 @@ class ChannelDigestRepository:
         limit: int,
     ) -> Sequence[FeedEntry]:
         """All FeedEntries sent to this channel in (since, until]. `limit`
-        caps by the *most recent* N."""
+        caps by the *most recent* N.
+
+        SentEntry → FeedEntry is matched on (feed_id, guid) since the
+        2026-05-08 schema migration. INNER JOIN means SentEntry rows
+        whose underlying FeedEntry has been cleaned up (their content is
+        gone) won't appear in digests — acceptable: digest windows are
+        normally <= 7d while FeedEntry retention is also 7d, so they
+        line up. A SentEntry without its FeedEntry is just a dedupe
+        signal with no body to summarize.
+        """
         conditions = [
             Subscription.platform == platform,
             Subscription.platform_channel_id == channel_id,
@@ -134,7 +143,11 @@ class ChannelDigestRepository:
 
         stmt = (
             select(FeedEntry)
-            .join(SentEntry, SentEntry.entry_id == FeedEntry.id)
+            .join(
+                SentEntry,
+                (SentEntry.feed_id == FeedEntry.feed_id)
+                & (SentEntry.guid == FeedEntry.guid),
+            )
             .join(
                 Subscription, Subscription.id == SentEntry.subscription_id
             )

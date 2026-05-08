@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     # 0 disables the filter.
     max_entry_publish_age_days: int = 14
 
+    # SentEntry rows are the dedupe signal — they record "this channel
+    # already saw this (feed_id, guid) pair", so cleanup of the
+    # FeedEntry doesn't trigger re-delivery. Retention here must be
+    # *much longer* than `entry_retention_days`: if SentEntry is dropped
+    # while the source feed still serves the same GUID, the next fetch
+    # re-creates a FeedEntry and the dispatcher will deliver again.
+    # Default 90 days is generous; storage cost is tiny (one row per
+    # entry per subscription, with subscription_id+feed_id+guid index).
+    sent_entry_retention_days: int = 90
+
     # Cache (memory by default, Redis optional)
     cache_backend: Literal["memory", "redis"] = "memory"
     redis_url: str | None = None
@@ -174,6 +184,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "max_entry_publish_age_days must be >= 0 (0 disables the filter)"
             )
+        return v
+
+    @field_validator("sent_entry_retention_days")
+    @classmethod
+    def validate_sent_entry_retention(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("sent_entry_retention_days must be at least 1")
         return v
 
     def validate_minimal_config(self) -> bool:

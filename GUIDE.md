@@ -212,7 +212,9 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 |---|---|---|
 | `FETCH_INTERVAL_MINUTES` | `60` | 抓取循环间隔 |
 | `CLEANUP_INTERVAL_HOURS` | `24` | 清理循环间隔 |
-| `ENTRY_RETENTION_DAYS` | `7` | 保留多少天的 FeedEntry |
+| `ENTRY_RETENTION_DAYS` | `7` | 保留多少天的 FeedEntry（按 `created_at`）|
+| `SENT_ENTRY_RETENTION_DAYS` | `90` | 保留多少天的 `SentEntry`（去重信号；必须远长于 `ENTRY_RETENTION_DAYS`，否则源 feed 重新 serve 同 GUID 会被当作新条目重复推送）|
+| `MAX_ENTRY_PUBLISH_AGE_DAYS` | `14` | dispatch 时跳过 `published_at` 早于此值的条目，防止 feed 突然吐 archive 老文章。`published_at IS NULL` 总是放行；`0` = 禁用此过滤 |
 
 ### 2.5 缓存
 
@@ -901,16 +903,20 @@ dispatch_once():
    ├─▶ SubscriptionRepository.get_all_active_subscriptions()
    │
    ├─▶ for each subscription:
-   │   ├─ get_unsent_entries_for_subscription()（用 SentEntry 去重）
+   │   ├─ get_unsent_entries_for_subscription()
+   │   │   （用 (feed_id, guid) NOT EXISTS 去重 + published_at 过滤）
    │   ├─ 每条 entry：
+   │   │   ├─ filter_rule 命中？ → mark_entry_sent(was_filtered=True) 跳过
+   │   │   ├─ subscription.silent? → mark_entry_sent(was_filtered=False) 跳过 send
    │   │   ├─ 按订阅语言走翻译（两层缓存：DB cache → memory/Redis → provider）
    │   │   ├─ adapter.send_message()（平台库内部限流）
-   │   │   └─ 成功 → mark_entry_sent() 插入 SentEntry
+   │   │   └─ 成功 → mark_entry_sent(was_filtered=False) 插入 SentEntry
    │   │   └─ 失败 → 不标记，下轮重试
    │   └─ 每条间 smoothing sleep 0.1s
    │
    ├─▶ commit session
-   └─▶ touch data/.heartbeat（HEALTHCHECK 用）
+   └─▶ touch data/heartbeat/dispatch（HEALTHCHECK 用；
+       cleanup / digest / discord 各自独立心跳文件）
 ```
 
 ---
@@ -1041,8 +1047,9 @@ job 持久化、cron 语法、线程池等能力都用不上 —— 删了，简
 - 过滤评估是纯字符串子串匹配，~微秒级，对 dispatch 循环几乎零开销
 
 被过滤掉的条目仍会写 `SentEntry{was_filtered=True}`，**防止下一轮重新评估同一条**。
-`get_unsent_entries_for_subscription` 的 `NOT IN SentEntry` 过滤把两类都挡在外。
-统计时可以区分 "实际推送" vs "被过滤"。
+`get_unsent_entries_for_subscription` 用 `NOT EXISTS` 子查询比对 `(feed_id, guid)`，
+"实际推送过的"（was_filtered=False）和"被过滤的"（was_filtered=True）都挡在外。
+统计时可以根据 `was_filtered` 列区分 "实际推送" vs "被过滤"。
 
 ### 11.10 为什么 Digest 看原文而不是翻译缓存？
 
@@ -1096,6 +1103,28 @@ egress 策略 / VPS 网络边界作为第二层防御。
 
 - 容器 `--network` 限制到没有内网路由的网络命名空间
 - 或者在 firewall / iptables 层拦截到私网段的出站
+
+### 11.14 为什么 `SentEntry` 用 `(feed_id, guid)` 而不是 FK 到 `FeedEntry.id`？
+
+老 schema：`SentEntry.entry_id` FK 到 `feed_entries.id`，`ondelete=CASCADE`。
+当 `cleanup_old_entries` 删除某个 `FeedEntry` 时（按 `created_at < cutoff`），
+所有指向它的 `SentEntry` 也被级联删除——**去重信号丢失**。下次 fetch
+源 feed 仍 serve 同样的 GUID（archive feed 常见），`create_entries_bulk`
+的 `(feed_id, guid)` 唯一索引检查发现 GUID 已不在表里 → 创建新
+`FeedEntry`（id 不同，但 GUID 相同）。`get_unsent_entries_for_subscription`
+看不到对应 SentEntry → 视为未发送 → 重新推送给所有订阅。
+
+现 schema：`SentEntry` 用 `(subscription_id, feed_id, guid)` 自然键，
+**不再 FK 到 FeedEntry.id**。CASCADE FK 只保留在 `subscription_id`
+（unsubscribe 时仍然干净清扫该订阅的 SentEntry）。
+
+配套两处：
+- `SENT_ENTRY_RETENTION_DAYS`（默认 90，独立于 `ENTRY_RETENTION_DAYS=7`）：
+  必须远长于 entry retention，不然信号自己被定期 cleanup 删掉，又会
+  踩同样的坑
+- 启动时 alembic 迁移 (`b9c2e7a5d3f4`)：从老 `entry_id` JOIN 回填
+  `(feed_id, guid)`，孤儿 SentEntry（entry_id 找不到对应 FeedEntry，
+  老 CASCADE 下不该出现但万一有）会被丢弃
 
 ---
 
@@ -1359,8 +1388,10 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 ### 15.5 "我要删一条 feed 的所有数据"
 
-直接删 `Feed` 行。`FeedEntry` 和 `Subscription` 有 `ondelete="CASCADE"`，
-`SentEntry` 又 cascade 自 `FeedEntry` / `Subscription`。一条 SQL 清到底。
+直接删 `Feed` 行。`FeedEntry` 和 `Subscription` 有 `ondelete="CASCADE"`
+指向 `feeds.id`，`SentEntry` cascade 自 `Subscription`（不再 cascade 自
+`FeedEntry`——见 §11 对 `SentEntry` 用 `(feed_id, guid)` 自然键的说明）。
+一条 `DELETE FROM feeds WHERE id=?` 沿链清掉 FeedEntry / Subscription / SentEntry。
 
 ### 15.6 "翻译结果怎么强制刷新？"
 

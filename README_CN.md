@@ -39,6 +39,7 @@
 | 📋 **OPML 导入导出** | 从 Feedly / Reeder 搬家；仓库带 23 源预置清单 |
 | 🔁 **指数退避** | 源失效自动拉长重试；10 次连续失败自动停订并通知 |
 | ⏸ **暂停 / 恢复** | 临时不收推送又不删订阅 |
+| 🔇 **静默（仅日报）** | 跳过即时推送但条目仍喂给日报——给只想看汇总的频道 |
 | 🩺 **健康可视** | `/feed status` 查健康、错误、最近文章；容器 HEALTHCHECK 集成 |
 | 🐳 **Docker 就绪** | 一条 compose 启动；alembic 自动迁移 |
 
@@ -194,7 +195,7 @@ DIGEST_MODEL=gpt-5.4-mini                # 日报用的模型
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 178 个测试
+make test      # 252 个测试
 make lint
 ```
 

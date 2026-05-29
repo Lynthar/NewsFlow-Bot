@@ -1250,8 +1250,11 @@ class DiscordAdapter(BaseAdapter):
             if not channel:
                 channel = await self.bot.fetch_channel(int(channel_id))
 
-            if not channel or not isinstance(channel, discord.TextChannel):
-                logger.warning(f"Channel {channel_id} not found or not a text channel")
+            if not channel or not isinstance(channel, discord.abc.Messageable):
+                logger.warning(
+                    f"Channel {channel_id} not found or not messageable "
+                    f"(type={type(channel).__name__})"
+                )
                 return False
 
             embed = self._create_embed(message)
@@ -1275,7 +1278,7 @@ class DiscordAdapter(BaseAdapter):
             if not channel:
                 channel = await self.bot.fetch_channel(int(channel_id))
 
-            if not channel or not isinstance(channel, discord.TextChannel):
+            if not channel or not isinstance(channel, discord.abc.Messageable):
                 return False
 
             await channel.send(text)
@@ -1306,7 +1309,7 @@ class DiscordAdapter(BaseAdapter):
             channel = self.bot.get_channel(int(channel_id))
             if not channel:
                 channel = await self.bot.fetch_channel(int(channel_id))
-            if not channel or not isinstance(channel, discord.TextChannel):
+            if not channel or not isinstance(channel, discord.abc.Messageable):
                 return False, None
 
             msg = await channel.send(text)
@@ -1342,7 +1345,7 @@ class DiscordAdapter(BaseAdapter):
             channel = self.bot.get_channel(int(channel_id))
             if not channel:
                 channel = await self.bot.fetch_channel(int(channel_id))
-            if not channel or not isinstance(channel, discord.TextChannel):
+            if not channel or not isinstance(channel, discord.abc.Messageable):
                 return False
             msg = await channel.fetch_message(int(message_id))
             await msg.unpin()

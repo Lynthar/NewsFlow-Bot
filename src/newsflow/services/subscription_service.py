@@ -637,22 +637,6 @@ class SubscriptionService:
             subscription_id, limit
         )
 
-    async def mark_entry_sent(
-        self,
-        subscription_id: int,
-        entry_id: int,
-    ) -> None:
-        """Mark an entry as sent to a subscription."""
-        await self.sub_repo.mark_entry_sent(subscription_id, entry_id)
-
-    async def is_entry_sent(
-        self,
-        subscription_id: int,
-        entry_id: int,
-    ) -> bool:
-        """Check if an entry has been sent to a subscription."""
-        return await self.sub_repo.is_entry_sent(subscription_id, entry_id)
-
     async def get_all_active_subscriptions(self) -> Sequence[Subscription]:
         """Get all active subscriptions."""
         return await self.sub_repo.get_all_active_subscriptions()

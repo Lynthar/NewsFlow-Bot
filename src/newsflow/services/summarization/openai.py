@@ -49,6 +49,7 @@ class OpenAIDigestProvider(SummarizationProvider):
         model: str,
         base_url: str | None = None,
         system_prompt_template: str | None = None,
+        max_input_chars: int = 300,
     ) -> None:
         self.api_key = api_key
         self.model = model
@@ -56,6 +57,7 @@ class OpenAIDigestProvider(SummarizationProvider):
         self.system_prompt_template = (
             system_prompt_template or SYSTEM_PROMPT_TEMPLATE
         )
+        self.max_input_chars = max_input_chars
         self._client: Any = None
 
     @property
@@ -79,10 +81,11 @@ class OpenAIDigestProvider(SummarizationProvider):
 
     def _format_articles(self, articles: Sequence[DigestArticle]) -> str:
         lines = []
+        limit = max(8, self.max_input_chars)
         for idx, art in enumerate(articles, start=1):
             summary = art.summary.replace("\n", " ").strip()
-            if len(summary) > 240:
-                summary = summary[:237] + "..."
+            if len(summary) > limit:
+                summary = summary[: limit - 3] + "..."
             published = (
                 art.published_at.strftime("%Y-%m-%d %H:%M")
                 if art.published_at

@@ -62,3 +62,48 @@ async def test_create_entries_bulk_dedup_is_per_feed(session):
 
     assert len(created) == 1
     assert created[0].feed_id == feed_b.id
+
+
+async def test_create_entries_bulk_dedups_within_batch(session):
+    """Two entries sharing a guid in ONE fetch must not both be inserted.
+
+    Without in-batch dedup the second row violates the (feed_id, guid)
+    unique index on flush, raising IntegrityError that poisons the whole
+    dispatch session. The first occurrence wins; the duplicate is dropped.
+    """
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+
+    created = await repo.create_entries_bulk(
+        feed.id,
+        [
+            {"guid": "dup", "title": "first", "link": "https://x/1"},
+            {"guid": "dup", "title": "second", "link": "https://x/2"},
+            {"guid": "c", "title": "C", "link": "https://x/c"},
+        ],
+    )
+
+    assert [e.guid for e in created] == ["dup", "c"]
+    assert next(e for e in created if e.guid == "dup").title == "first"
+
+    # The flush succeeded and the row is persisted (no IntegrityError).
+    again = await repo.create_entries_bulk(
+        feed.id, [{"guid": "dup", "title": "third", "link": "https://x/3"}]
+    )
+    assert again == []
+
+
+async def test_create_entries_bulk_degenerate_fallback_guids(session):
+    """Entries with identical degenerate fallback guids (e.g. "-") don't crash."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+
+    created = await repo.create_entries_bulk(
+        feed.id,
+        [
+            {"guid": "-", "title": "Untitled", "link": "https://example.com/feed"},
+            {"guid": "-", "title": "Untitled", "link": "https://example.com/feed"},
+        ],
+    )
+
+    assert len(created) == 1

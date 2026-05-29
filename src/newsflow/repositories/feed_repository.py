@@ -221,21 +221,34 @@ class FeedRepository:
         )
         existing_guids = set(result.scalars().all())
 
-        new_entries = [
-            FeedEntry(
-                feed_id=feed_id,
-                guid=data["guid"],
-                title=data["title"],
-                link=data["link"],
-                summary=data.get("summary"),
-                content=data.get("content"),
-                author=data.get("author"),
-                published_at=data.get("published_at"),
-                image_url=data.get("image_url"),
+        # Deduplicate within this batch as well as against the DB. A single
+        # fetch can return the same guid twice — either legitimately, or via
+        # the degenerate `"{title}-{published}"` guid fallback in
+        # FeedFetcher._parse_entry when entries carry no id/guid/link. Inserting
+        # both rows would violate the (feed_id, guid) unique index on flush, and
+        # that IntegrityError would poison the shared session for the rest of
+        # the dispatch cycle (every other feed's metadata/backoff updates and
+        # pending SentEntry writes would be rolled back).
+        seen: set[str] = set()
+        new_entries: list[FeedEntry] = []
+        for data in entries_data:
+            guid = data["guid"]
+            if guid in existing_guids or guid in seen:
+                continue
+            seen.add(guid)
+            new_entries.append(
+                FeedEntry(
+                    feed_id=feed_id,
+                    guid=guid,
+                    title=data["title"],
+                    link=data["link"],
+                    summary=data.get("summary"),
+                    content=data.get("content"),
+                    author=data.get("author"),
+                    published_at=data.get("published_at"),
+                    image_url=data.get("image_url"),
+                )
             )
-            for data in entries_data
-            if data["guid"] not in existing_guids
-        ]
 
         if new_entries:
             self.session.add_all(new_entries)

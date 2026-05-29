@@ -776,9 +776,6 @@ class Dispatcher:
         itself is cheap; the is_due() check only fires heavy work (LLM +
         send) when a channel actually matches its schedule slot.
         """
-        from newsflow.services.digest_service import DigestService, is_due
-        from newsflow.services.summarization import get_summarizer
-
         interval = check_interval_seconds or (
             self.settings.digest_check_interval_minutes * 60
         )

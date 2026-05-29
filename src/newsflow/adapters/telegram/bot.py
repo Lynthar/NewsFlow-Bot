@@ -902,6 +902,8 @@ async def import_command(
 
     File-upload imports are handled by import_document below.
     """
+    if update.message is None:
+        return
     if not context.args:
         await update.message.reply_text(
             "Usage: /import &lt;url&gt;\n\n"
@@ -911,7 +913,10 @@ async def import_command(
         return
 
     url = context.args[0]
+    from urllib.parse import urljoin
+
     from newsflow.core import get_fetcher
+    from newsflow.core.feed_fetcher import MAX_REDIRECTS, REDIRECT_STATUSES
     from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
 
     try:
@@ -920,22 +925,51 @@ async def import_command(
         await update.message.reply_text(f"❌ Rejected URL: {e}")
         return
 
+    # Follow redirects manually, re-validating each hop, so a redirect can't
+    # smuggle the OPML fetch into a private address — the same SSRF guard the
+    # core feed fetcher applies.
     try:
         fetcher = get_fetcher()
         client = await fetcher._get_session()
-        async with client.get(url) as response:
-            if response.status != 200:
-                await update.message.reply_text(
-                    f"❌ Failed to fetch OPML: HTTP {response.status}"
-                )
-                return
-            data = await response.content.read(1024 * 1024 + 1)
-            if len(data) > 1024 * 1024:
-                await update.message.reply_text(
-                    "❌ OPML file too large (1 MB cap)"
-                )
-                return
-            content = data.decode("utf-8", errors="replace")
+        current = url
+        content = None
+        for _hop in range(MAX_REDIRECTS + 1):
+            async with client.get(current, allow_redirects=False) as response:
+                if response.status in REDIRECT_STATUSES:
+                    location = response.headers.get("Location")
+                    if not location:
+                        await update.message.reply_text(
+                            f"❌ Failed to fetch OPML: HTTP {response.status} "
+                            "redirect without Location"
+                        )
+                        return
+                    current = urljoin(current, location)
+                    try:
+                        validate_feed_url(current)
+                    except InvalidFeedURLError as e:
+                        await update.message.reply_text(
+                            f"❌ Rejected redirect target: {e}"
+                        )
+                        return
+                    continue
+                if response.status != 200:
+                    await update.message.reply_text(
+                        f"❌ Failed to fetch OPML: HTTP {response.status}"
+                    )
+                    return
+                data = await response.content.read(1024 * 1024 + 1)
+                if len(data) > 1024 * 1024:
+                    await update.message.reply_text(
+                        "❌ OPML file too large (1 MB cap)"
+                    )
+                    return
+                content = data.decode("utf-8", errors="replace")
+                break
+        else:
+            await update.message.reply_text(
+                "❌ Failed to fetch OPML: too many redirects"
+            )
+            return
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to fetch OPML: {e}")
         return
@@ -1225,10 +1259,12 @@ class TelegramAdapter(BaseAdapter):
             #   "Forbidden: bot was kicked from the supergroup chat"
             #   "Forbidden: bot was blocked by the user"
             #   "Forbidden: bot is not a member of the channel chat"
+            #   "Forbidden: user is deactivated"  (account deleted)
             return (
                 "was kicked" in msg
                 or "was blocked" in msg
                 or "is not a member" in msg
+                or "is deactivated" in msg
             )
         return False
 

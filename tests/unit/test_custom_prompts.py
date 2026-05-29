@@ -99,6 +99,24 @@ async def test_translation_auto_detect_source():
     assert "auto-detect" in sent
 
 
+async def test_translation_empty_content_returns_failure():
+    """A None/empty completion (reasoning model, refusal) must not crash on
+    .strip() and must not be cached as a blank translation."""
+    p = OpenAITranslationProvider(api_key="x", model="m")
+
+    fake_resp = MagicMock()
+    fake_resp.choices = [MagicMock()]
+    fake_resp.choices[0].message.content = None
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
+    p._client = fake_client
+
+    result = await p.translate("hi", target_lang="zh-CN", source_lang="en")
+
+    assert result.success is False
+    assert result.translated_text == ""
+
+
 # ===== Digest =====
 
 
@@ -169,6 +187,33 @@ async def test_digest_broken_template_falls_back_to_default():
     assert "{missing_key}" not in sent_system
     # Default prompt mentions "news editor"
     assert "editor" in sent_system.lower()
+
+
+async def test_digest_truncates_summary_to_max_input_chars():
+    """Per-article summaries are truncated to the configured max_input_chars
+    before being fed to the LLM prompt."""
+    p = OpenAIDigestProvider(api_key="x", model="m", max_input_chars=20)
+
+    fake_resp = MagicMock()
+    fake_resp.choices = [MagicMock()]
+    fake_resp.choices[0].message.content = "digest"
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(return_value=fake_resp)
+    p._client = fake_client
+
+    article = DigestArticle(
+        title="T", summary="x" * 100, link="https://x", source="X",
+        published_at=None,
+    )
+    await p.generate_digest(
+        [article], language="en", time_window_desc="past day"
+    )
+
+    user_prompt = fake_client.chat.completions.create.await_args.kwargs[
+        "messages"
+    ][1]["content"]
+    assert ("x" * 17 + "...") in user_prompt  # 20-char cap => 17 + "..."
+    assert "x" * 21 not in user_prompt
 
 
 # ===== Factory wiring =====

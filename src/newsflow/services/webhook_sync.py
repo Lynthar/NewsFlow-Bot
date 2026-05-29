@@ -36,6 +36,12 @@ from newsflow.services.feed_service import FeedService
 logger = logging.getLogger(__name__)
 
 
+# Per-destination request timeout ceiling. Dispatch is serial, so a large
+# timeout on one slow endpoint would stall delivery to every other platform.
+# The webhook model docstring promises this stays "small"; enforce it here.
+_MAX_WEBHOOK_TIMEOUT_S = 60
+
+
 class WebhookConfigError(ValueError):
     """Raised when webhooks.yaml is malformed or semantically invalid.
     Startup fails fast on this rather than limping with a half-synced state."""
@@ -127,6 +133,15 @@ def _parse_destinations(
             raise WebhookConfigError(
                 f"destination {name!r}: `timeout_s` must be an integer"
             ) from e
+        if timeout_s > _MAX_WEBHOOK_TIMEOUT_S:
+            logger.warning(
+                "destination %r: timeout_s=%d exceeds cap %ds; clamping",
+                name,
+                timeout_s,
+                _MAX_WEBHOOK_TIMEOUT_S,
+            )
+            timeout_s = _MAX_WEBHOOK_TIMEOUT_S
+        timeout_s = max(1, timeout_s)
 
         out[name] = WebhookConfigDestination(
             name=name,

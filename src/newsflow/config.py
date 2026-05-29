@@ -81,7 +81,8 @@ class Settings(BaseSettings):
     # Digest (LLM-generated daily / weekly summaries)
     digest_provider: Literal["openai"] = "openai"
     digest_model: str = "gpt-5.4-mini"
-    digest_max_articles: int = 50
+    # Per-article summary truncation length fed to the digest LLM prompt.
+    # (The article *count* cap is per-channel: ChannelDigest.max_articles.)
     digest_max_input_chars_per_article: int = 300
     digest_check_interval_minutes: int = 5
     # Override the built-in digest system prompt. Supports {window} and

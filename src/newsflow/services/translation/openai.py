@@ -146,7 +146,15 @@ class OpenAIProvider(TranslationProvider):
                 max_completion_tokens=2000,
             )
 
-            translated = response.choices[0].message.content.strip()
+            # content can be None on OpenAI-compatible endpoints (refusals,
+            # reasoning models, empty completions). Treat empty as a failure
+            # so we don't cache a blank translation — mirrors the digest path.
+            translated = (response.choices[0].message.content or "").strip()
+            if not translated:
+                return TranslationResult(
+                    success=False,
+                    error="LLM returned empty translation",
+                )
 
             return TranslationResult(
                 success=True,

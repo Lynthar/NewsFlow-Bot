@@ -5,7 +5,7 @@ SQLAlchemy base configuration and database utilities.
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
-from sqlalchemy import MetaData, event
+from sqlalchemy import DateTime, MetaData, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -65,12 +65,19 @@ class Base(DeclarativeBase):
 
     metadata = MetaData(naming_convention=convention)
 
-    # Common columns for all models
+    # Common columns for all models.
+    # created_at/updated_at use DateTime(timezone=True) to match every other
+    # timestamp column in the schema. The default is a tz-AWARE UTC value;
+    # on Postgres (asyncpg) binding an aware datetime to a naive
+    # `TIMESTAMP WITHOUT TIME ZONE` column raises DataError, so the column
+    # type must be `timestamptz`. SQLite ignores the flag (stores ISO text).
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(
-        default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )

@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urljoin
 
 import aiohttp
 import feedparser
@@ -36,6 +37,15 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 # anything much larger is either a misconfiguration or an attempt to make us
 # read (and feedparser parse) an unbounded amount of memory.
 MAX_FEED_SIZE_BYTES = 5 * 1024 * 1024
+
+# Follow at most this many HTTP redirects. Each hop is re-validated against the
+# SSRF allow-list (validate_feed_url) before we connect: aiohttp's default
+# redirect following would otherwise chase a Location header into a private /
+# loopback / cloud-metadata address even though the *initial* URL was vetted.
+# Feeds legitimately redirect (http->https, FeedBurner, CDNs), so we follow
+# rather than reject — but only to targets that pass the same validation.
+MAX_REDIRECTS = 5
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 @dataclass
@@ -147,99 +157,145 @@ class FeedFetcher:
         if last_modified:
             headers["If-Modified-Since"] = last_modified
 
+        # Follow redirects manually so each hop is re-validated against the
+        # SSRF allow-list (see MAX_REDIRECTS). allow_redirects=False makes
+        # aiohttp hand us the 3xx response instead of chasing Location itself.
+        current_url = url
         try:
-            async with session.get(url, headers=headers) as response:
-                # Handle 304 Not Modified
-                if response.status == 304:
-                    logger.debug(f"Feed not modified: {url}")
+            for _hop in range(MAX_REDIRECTS + 1):
+                async with session.get(
+                    current_url, headers=headers, allow_redirects=False
+                ) as response:
+                    if response.status in REDIRECT_STATUSES:
+                        location = response.headers.get("Location")
+                        if not location:
+                            return FetchResult(
+                                url=url,
+                                success=False,
+                                entries=[],
+                                error=(
+                                    f"HTTP {response.status} redirect "
+                                    f"without Location header"
+                                ),
+                            )
+                        next_url = urljoin(current_url, location)
+                        try:
+                            validate_feed_url(next_url)
+                        except InvalidFeedURLError as e:
+                            logger.warning(
+                                f"Rejected redirect from {url!r} to "
+                                f"{next_url!r}: {e}"
+                            )
+                            return FetchResult(
+                                url=url,
+                                success=False,
+                                entries=[],
+                                error=f"Unsafe redirect target: {e}",
+                            )
+                        current_url = next_url
+                        continue
+
+                    # Handle 304 Not Modified
+                    if response.status == 304:
+                        logger.debug(f"Feed not modified: {url}")
+                        return FetchResult(
+                            url=url,
+                            success=True,
+                            entries=[],
+                            not_modified=True,
+                            etag=etag,
+                            last_modified=last_modified,
+                        )
+
+                    # Check for errors
+                    if response.status >= 400:
+                        error_msg = f"HTTP {response.status}: {response.reason}"
+                        logger.warning(f"Failed to fetch {url}: {error_msg}")
+                        return FetchResult(
+                            url=url,
+                            success=False,
+                            entries=[],
+                            error=error_msg,
+                        )
+
+                    # Refuse the response up-front if Content-Length is too large.
+                    if (
+                        response.content_length is not None
+                        and response.content_length > MAX_FEED_SIZE_BYTES
+                    ):
+                        logger.warning(
+                            f"Feed {url} too large: "
+                            f"{response.content_length} > {MAX_FEED_SIZE_BYTES}"
+                        )
+                        return FetchResult(
+                            url=url,
+                            success=False,
+                            entries=[],
+                            error=(
+                                f"Feed exceeds size limit "
+                                f"({response.content_length} bytes)"
+                            ),
+                        )
+
+                    # Read streaming, capped. A server that lies about
+                    # Content-Length (or omits it) can't drain our memory.
+                    raw = await response.content.read(MAX_FEED_SIZE_BYTES + 1)
+                    if len(raw) > MAX_FEED_SIZE_BYTES:
+                        logger.warning(
+                            f"Feed {url} exceeded size limit mid-stream"
+                        )
+                        return FetchResult(
+                            url=url,
+                            success=False,
+                            entries=[],
+                            error="Feed exceeds size limit",
+                        )
+
+                    content = raw.decode(
+                        response.charset or "utf-8", errors="replace"
+                    )
+                    feed = feedparser.parse(content)
+
+                    # Check for parse errors
+                    if feed.bozo and not feed.entries:
+                        error_msg = str(feed.bozo_exception)
+                        logger.warning(f"Failed to parse {url}: {error_msg}")
+                        return FetchResult(
+                            url=url,
+                            success=False,
+                            entries=[],
+                            error=f"Parse error: {error_msg}",
+                        )
+
+                    # Extract entries
+                    entries = [
+                        self._parse_entry(entry, url) for entry in feed.entries
+                    ]
+
+                    # Get new cache headers
+                    new_etag = response.headers.get("ETag")
+                    new_last_modified = response.headers.get("Last-Modified")
+
+                    # Get feed metadata
+                    feed_info = feed.feed
                     return FetchResult(
                         url=url,
                         success=True,
-                        entries=[],
-                        not_modified=True,
-                        etag=etag,
-                        last_modified=last_modified,
+                        entries=entries,
+                        etag=new_etag,
+                        last_modified=new_last_modified,
+                        feed_title=feed_info.get("title"),
+                        feed_description=feed_info.get("description"),
+                        feed_link=feed_info.get("link"),
                     )
 
-                # Check for errors
-                if response.status >= 400:
-                    error_msg = f"HTTP {response.status}: {response.reason}"
-                    logger.warning(f"Failed to fetch {url}: {error_msg}")
-                    return FetchResult(
-                        url=url,
-                        success=False,
-                        entries=[],
-                        error=error_msg,
-                    )
-
-                # Refuse the response up-front if Content-Length is too large.
-                if (
-                    response.content_length is not None
-                    and response.content_length > MAX_FEED_SIZE_BYTES
-                ):
-                    logger.warning(
-                        f"Feed {url} too large: "
-                        f"{response.content_length} > {MAX_FEED_SIZE_BYTES}"
-                    )
-                    return FetchResult(
-                        url=url,
-                        success=False,
-                        entries=[],
-                        error=(
-                            f"Feed exceeds size limit "
-                            f"({response.content_length} bytes)"
-                        ),
-                    )
-
-                # Read streaming, capped. A server that lies about
-                # Content-Length (or omits it) can't drain our memory.
-                raw = await response.content.read(MAX_FEED_SIZE_BYTES + 1)
-                if len(raw) > MAX_FEED_SIZE_BYTES:
-                    logger.warning(
-                        f"Feed {url} exceeded size limit mid-stream"
-                    )
-                    return FetchResult(
-                        url=url,
-                        success=False,
-                        entries=[],
-                        error="Feed exceeds size limit",
-                    )
-
-                content = raw.decode(
-                    response.charset or "utf-8", errors="replace"
-                )
-                feed = feedparser.parse(content)
-
-                # Check for parse errors
-                if feed.bozo and not feed.entries:
-                    error_msg = str(feed.bozo_exception)
-                    logger.warning(f"Failed to parse {url}: {error_msg}")
-                    return FetchResult(
-                        url=url,
-                        success=False,
-                        entries=[],
-                        error=f"Parse error: {error_msg}",
-                    )
-
-                # Extract entries
-                entries = [self._parse_entry(entry, url) for entry in feed.entries]
-
-                # Get new cache headers
-                new_etag = response.headers.get("ETag")
-                new_last_modified = response.headers.get("Last-Modified")
-
-                # Get feed metadata
-                feed_info = feed.feed
-                return FetchResult(
-                    url=url,
-                    success=True,
-                    entries=entries,
-                    etag=new_etag,
-                    last_modified=new_last_modified,
-                    feed_title=feed_info.get("title"),
-                    feed_description=feed_info.get("description"),
-                    feed_link=feed_info.get("link"),
-                )
+            logger.warning(f"Too many redirects fetching {url}")
+            return FetchResult(
+                url=url,
+                success=False,
+                entries=[],
+                error=f"Too many redirects (>{MAX_REDIRECTS})",
+            )
 
         except asyncio.TimeoutError:
             logger.warning(f"Timeout fetching {url}")
@@ -313,7 +369,13 @@ class FeedFetcher:
         for field in ["published", "updated", "created"]:
             if field in entry and entry[field]:
                 try:
-                    return date_parser.parse(entry[field]).astimezone(timezone.utc)
+                    dt = date_parser.parse(entry[field])
+                    # A date string with no offset parses to a naive datetime;
+                    # .astimezone() would then assume the *host's* local tz.
+                    # Treat naive as UTC, matching the published_parsed branch.
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.astimezone(timezone.utc)
                 except (ValueError, TypeError):
                     continue
 

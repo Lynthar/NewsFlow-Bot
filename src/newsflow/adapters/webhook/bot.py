@@ -160,6 +160,15 @@ class WebhookAdapter(BaseAdapter):
         except aiohttp.ClientError as e:
             logger.warning(f"webhook {dest.name} ({host}) client error: {e}")
             return False
+        except ValueError as e:
+            # aiohttp raises ValueError when a header value is illegal (control
+            # chars, non-latin-1). Treat as a failed send (return False) rather
+            # than letting it escape as an uncaught exception that would wedge
+            # the entry in the dispatch loop. The ntfy converter already
+            # sanitizes feed-derived headers; this guards careless custom
+            # headers and any future header-using format.
+            logger.warning(f"webhook {dest.name} ({host}) bad header/request: {e}")
+            return False
 
 
 # Module-level singleton — mirrors the start_discord / start_telegram pattern

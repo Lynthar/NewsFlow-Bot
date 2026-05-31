@@ -155,6 +155,41 @@ def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def
 logger = logging.getLogger(__name__)
 
 
+async def _on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+) -> None:
+    """Central handler for exceptions raised inside slash-command callbacks.
+
+    discord.py routes command-callback exceptions to ``CommandTree.on_error``,
+    NOT to ``Client.on_error`` (which only covers event handlers), and its
+    default implementation merely logs them. Every command in this adapter
+    calls ``interaction.response.defer(ephemeral=True)`` up front, so an
+    unhandled exception would otherwise leave the user staring at a perpetual
+    "thinking…" with no feedback. Log the root cause and send a short
+    ephemeral apology instead.
+    """
+    # CommandInvokeError wraps the real exception raised in the callback;
+    # unwrap it so the log shows the actual cause, not the discord.py wrapper.
+    original = getattr(error, "original", None) or error
+    command = interaction.command.qualified_name if interaction.command else "?"
+    logger.error("Unhandled error in /%s", command, exc_info=original)
+
+    notice = "⚠️ Something went wrong running that command. Please try again later."
+    try:
+        # Normal path: the command already deferred, so the only way to reach
+        # the user is a followup. Fall back to an initial response for the rare
+        # command that errors before deferring.
+        if interaction.response.is_done():
+            await interaction.followup.send(notice, ephemeral=True)
+        else:
+            await interaction.response.send_message(notice, ephemeral=True)
+    except discord.HTTPException:
+        # The interaction token may have expired (15-min cap) or the channel
+        # may be gone. The root cause is already logged; nothing more to do.
+        logger.debug("Could not deliver error notice for /%s", command)
+
+
 class NewsFlowBot(commands.Bot):
     """
     Discord bot with slash commands.
@@ -178,6 +213,11 @@ class NewsFlowBot(commands.Bot):
         await self.add_cog(FeedCommands(self))
         await self.add_cog(SettingsCommands(self))
         await self.add_cog(DigestCommands(self))
+
+        # Route every slash-command exception through one handler so failures
+        # surface to the user instead of hanging on the deferred response.
+        # (Client.on_error below only covers event handlers, not app commands.)
+        self.tree.error(_on_app_command_error)
 
         # Sync slash commands
         logger.info("Syncing slash commands...")

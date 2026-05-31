@@ -128,6 +128,18 @@ async def test_send_message_http_error_returns_false():
     assert ok is False
 
 
+async def test_send_message_value_error_returns_false():
+    """A header-validation ValueError (illegal header bytes) is a failed send,
+    not an uncaught exception that would wedge the entry in the dispatch loop."""
+    session = _FakeSession(raise_exc=ValueError("Invalid header value"))
+    adapter = _make_adapter(session)
+    adapter._destinations = {"x": _dest(name="x")}
+
+    ok = await adapter.send_message("x", _message())
+
+    assert ok is False
+
+
 async def test_send_message_timeout_returns_false():
     session = _FakeSession(raise_exc=asyncio.TimeoutError())
     adapter = _make_adapter(session)

@@ -53,7 +53,7 @@ destinations:
     headers:
       Authorization: "Bearer YOUR_N8N_TOKEN"
       X-Source: newsflow
-    timeout_s: 15
+    timeout_s: 15                    # request timeout; capped at 60s (dispatch is serial)
     translate: false
 
 # Which feeds go to which destination. Key = destination name; value = list

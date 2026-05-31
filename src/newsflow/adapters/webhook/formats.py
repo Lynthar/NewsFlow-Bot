@@ -127,11 +127,18 @@ def _to_ntfy(m: Message) -> WireRequest:
         "Content-Type": "text/plain; charset=utf-8",
         # ntfy decodes RFC-2047 for unicode titles.
         "Title": _rfc2047(m.display_title[:250]),
-        "Click": m.link,
         "Tags": "newspaper,rss",
     }
-    if m.image_url:
-        headers["Attach"] = m.image_url
+    # Click/Attach are HTTP *header* values built from (untrusted) feed data.
+    # A CR/LF or non-latin-1 byte would make aiohttp raise ValueError, which
+    # the adapter's ClientError handler doesn't catch — wedging every send to
+    # this destination. Only set them when they're clean http(s) URLs.
+    click = _safe_header_url(m.link)
+    if click:
+        headers["Click"] = click
+    attach = _safe_header_url(m.image_url)
+    if attach:
+        headers["Attach"] = attach
     return WireRequest(body=body, headers=headers)
 
 
@@ -225,6 +232,22 @@ def _rfc2047(s: str) -> str:
     encoded-word form. str(Header(...)) just returns the raw unicode
     string, which aiohttp would then reject as invalid latin-1."""
     return Header(s, "utf-8").encode()
+
+
+def _safe_header_url(value: str | None) -> str | None:
+    """Return `value` only if it's a clean http(s) URL safe to place in an HTTP
+    header, else None. Unlike the body, header values can't carry arbitrary
+    bytes: aiohttp raises ValueError on control chars (CR/LF/NUL) and on
+    non-latin-1 characters. A well-formed URL is already printable ASCII, so
+    this only rejects malformed or hostile feed values (which would otherwise
+    crash the send)."""
+    if not value or not value.startswith(("http://", "https://")):
+        return None
+    if not value.isascii():
+        return None
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        return None
+    return value
 
 
 _ENTRY_CONVERTERS = {

@@ -141,6 +141,38 @@ def test_ntfy_notification_sets_high_priority():
     assert wire.headers.get("Priority") == "high"
 
 
+def test_ntfy_drops_click_with_control_chars():
+    """A feed link with CR/LF must not reach the Click header — aiohttp would
+    raise ValueError on send, wedging delivery to this destination."""
+    wire = build_payload(
+        "ntfy", _make_message(link="https://example.com/\r\nX-Evil: 1")
+    )
+    assert "Click" not in wire.headers
+    # The notification itself is still well-formed.
+    assert wire.headers["Title"]
+    assert wire.body
+
+
+def test_ntfy_drops_non_http_and_non_ascii_click():
+    assert "Click" not in build_payload(
+        "ntfy", _make_message(link="javascript:alert(1)")
+    ).headers
+    # Non-latin-1 unicode in the URL would raise on header encode.
+    assert "Click" not in build_payload(
+        "ntfy", _make_message(link="https://example.com/文章")
+    ).headers
+
+
+def test_ntfy_drops_bad_attach_but_keeps_clean_one():
+    wire = build_payload(
+        "ntfy", _make_message(image_url="https://example.com/a.jpg\nInjected: y")
+    )
+    assert "Attach" not in wire.headers
+    # A clean image URL is still attached.
+    clean = build_payload("ntfy", _make_message())
+    assert clean.headers["Attach"] == "https://example.com/cover.jpg"
+
+
 # ─── lark / feishu ───────────────────────────────────────────────────────────
 
 

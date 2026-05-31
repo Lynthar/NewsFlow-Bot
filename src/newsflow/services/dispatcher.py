@@ -176,31 +176,40 @@ class Dispatcher:
 
                 result.new_entries = len(new_entries)
 
-                if new_entries:
-                    sub_repo = SubscriptionRepository(session)
-                    subscriptions = await sub_repo.get_all_active_subscriptions()
-                    # Channels that surfaced as gone earlier in THIS cycle.
-                    # The first ChannelGoneError already flipped every sub
-                    # for the channel via deactivate_channel, but the
-                    # cached `subscriptions` list still holds the rest with
-                    # is_active=True (not refreshed). Skipping them here
-                    # avoids N-1 doomed adapter calls + N-1 redundant no-op
-                    # UPDATEs per dead channel per cycle. Next cycle's
-                    # get_all_active_subscriptions filters them out at the
-                    # source.
-                    dead_channels: set[tuple[str, str]] = set()
-                    for sub in subscriptions:
-                        if (sub.platform, sub.platform_channel_id) in dead_channels:
-                            continue
-                        sent = await self._dispatch_to_subscription(
-                            session,
-                            sub,
-                            sub_repo,
-                            dead_channels=dead_channels,
-                        )
-                        result.messages_sent += sent
-                else:
-                    logger.debug("No new entries to dispatch")
+                # Dispatch to subscriptions every cycle, not only when this
+                # cycle produced new entries. A subscription can still hold a
+                # backlog of unsent entries from an earlier cycle whose send
+                # failed transiently (adapter returned False — e.g. a Discord
+                # permission blip or a network hiccup; those deliberately leave
+                # the entry unmarked so it retries). Gating this on new_entries
+                # would strand that backlog until *some* feed happens to
+                # publish again, which for a quiet feed can be days — past the
+                # publish-age cutoff, dropping the entry silently.
+                # get_unsent_entries_for_subscription returns [] cheaply when a
+                # subscription has nothing pending, so an idle cycle costs just
+                # one indexed SELECT per active subscription.
+                sub_repo = SubscriptionRepository(session)
+                subscriptions = await sub_repo.get_all_active_subscriptions()
+                # Channels that surfaced as gone earlier in THIS cycle.
+                # The first ChannelGoneError already flipped every sub
+                # for the channel via deactivate_channel, but the
+                # cached `subscriptions` list still holds the rest with
+                # is_active=True (not refreshed). Skipping them here
+                # avoids N-1 doomed adapter calls + N-1 redundant no-op
+                # UPDATEs per dead channel per cycle. Next cycle's
+                # get_all_active_subscriptions filters them out at the
+                # source.
+                dead_channels: set[tuple[str, str]] = set()
+                for sub in subscriptions:
+                    if (sub.platform, sub.platform_channel_id) in dead_channels:
+                        continue
+                    sent = await self._dispatch_to_subscription(
+                        session,
+                        sub,
+                        sub_repo,
+                        dead_channels=dead_channels,
+                    )
+                    result.messages_sent += sent
 
                 # Always commit so per-feed metadata written by fetch_all_feeds
                 # (etag / last_modified / last_fetched_at / error_count /
@@ -427,8 +436,17 @@ class Dispatcher:
                 if result.success:
                     summary_translated = result.translated_text
 
-            # Cache translations in database
-            if title_translated or summary_translated:
+            # Cache translations in the DB only when every field we attempted
+            # actually came back. Caching a partial result (e.g. title
+            # translated but the summary call failed) would freeze the gap in:
+            # the early-cache check at the top of this method would then
+            # short-circuit future dispatches and the summary would never be
+            # retried, even after the provider recovers. Leaving a partial
+            # uncached lets the next dispatch retry — the half that already
+            # succeeded comes back cheaply from the service-layer cache.
+            title_ok = title_translated is not None or not entry.title
+            summary_ok = summary_translated is not None or not plain_summary
+            if title_ok and summary_ok and (title_translated or summary_translated):
                 feed_repo = FeedRepository(session)
                 await feed_repo.update_entry_translation(
                     entry_id=entry.id,

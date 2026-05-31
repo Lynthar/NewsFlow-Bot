@@ -8,8 +8,12 @@ mapping/guard logic, not aiohttp.
 import json
 from datetime import UTC
 
+import pytest
+
 from newsflow.core.source_fetcher import SourceRequest, get_source_fetcher
 from newsflow.core.sources.json_api import JsonApiSourceFetcher
+
+pytest.importorskip("jsonpath_ng")  # needs the source-json extra
 
 
 def _fetcher_returning(payload: dict) -> JsonApiSourceFetcher:

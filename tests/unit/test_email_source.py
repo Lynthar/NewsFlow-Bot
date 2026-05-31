@@ -6,10 +6,13 @@ with ``MailMessage.from_bytes``.
 
 from datetime import UTC
 
-from imap_tools import MailMessage
+import pytest
 
 from newsflow.core.source_fetcher import SourceRequest, get_source_fetcher
 from newsflow.core.sources.email_imap import EmailSourceFetcher
+
+# Skip the whole module if the source-email extra isn't installed.
+MailMessage = pytest.importorskip("imap_tools").MailMessage
 
 
 def _email(

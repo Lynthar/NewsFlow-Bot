@@ -6,16 +6,19 @@ overridden with explicit args), so these stay offline and pin the auth + write
 """
 
 import pytest
-from fastapi import HTTPException
 
-from newsflow.api.deps import require_api_key
-from newsflow.api.routes.ingest import (
+pytest.importorskip("fastapi")  # needs the api extra
+
+from fastapi import HTTPException  # noqa: E402
+
+from newsflow.api.deps import require_api_key  # noqa: E402
+from newsflow.api.routes.ingest import (  # noqa: E402
     IngestEntry,
     IngestPayload,
     _to_entry_dict,
     ingest,
 )
-from newsflow.models.feed import Feed
+from newsflow.models.feed import Feed  # noqa: E402
 
 
 class _FakeSettings:

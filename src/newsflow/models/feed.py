@@ -5,7 +5,7 @@ Feed and FeedEntry models for RSS sources.
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from newsflow.models.base import Base
@@ -31,6 +31,16 @@ class Feed(Base):
     title: Mapped[str | None] = mapped_column(String(512))
     description: Mapped[str | None] = mapped_column(Text)
     site_url: Mapped[str | None] = mapped_column(String(2048))
+
+    # Source type selects the fetcher. 'rss' is the default and keeps every
+    # existing feed on the optimized RSS batch path; other values (json_api,
+    # email_imap, …) route through a registered SourceFetcher. `config` holds
+    # source-specific settings (JSONPath mappings, IMAP target, …) as JSON —
+    # SQLite stores TEXT, Postgres JSONB. NULL for plain RSS.
+    source_type: Mapped[str] = mapped_column(
+        String(32), default="rss", server_default="rss", nullable=False
+    )
+    config: Mapped[dict | None] = mapped_column(JSON)
 
     # Feed status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

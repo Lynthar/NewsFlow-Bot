@@ -8,8 +8,10 @@ Handles fetching and parsing RSS feeds with:
 """
 
 import asyncio
+import hashlib
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin
@@ -62,6 +64,10 @@ class FetchResult:
     feed_link: str | None = None
     error: str | None = None
     not_modified: bool = False
+    # Feed URLs advertised by an HTML page via <link rel="alternate"> when
+    # `url` turned out not to be a feed. add_feed resolves and retries against
+    # these. Empty for normal feed responses.
+    discovered_feeds: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -254,9 +260,31 @@ class FeedFetcher:
                     content = raw.decode(
                         response.charset or "utf-8", errors="replace"
                     )
+
+                    # JSON Feed (jsonfeed.org): feedparser only parses XML, so
+                    # detect and map it ourselves. Detection is conservative
+                    # (official content-type or a sniff for the jsonfeed.org
+                    # version marker), so XML feeds never enter this branch.
+                    json_feed = self._parse_json_feed(
+                        content, response.content_type, url
+                    )
+                    if json_feed is not None:
+                        json_entries, json_title = json_feed
+                        return FetchResult(
+                            url=url,
+                            success=True,
+                            entries=json_entries,
+                            etag=response.headers.get("ETag"),
+                            last_modified=response.headers.get("Last-Modified"),
+                            feed_title=json_title,
+                        )
+
                     feed = feedparser.parse(content)
 
-                    # Check for parse errors
+                    # Check for parse errors. If the body was actually an HTML
+                    # page advertising a feed (<link rel="alternate">, which
+                    # feedparser surfaces in feed.feed.links), hand those back
+                    # so add_feed can resolve and retry the real feed URL.
                     if feed.bozo and not feed.entries:
                         error_msg = str(feed.bozo_exception)
                         logger.warning(f"Failed to parse {url}: {error_msg}")
@@ -265,6 +293,7 @@ class FeedFetcher:
                             success=False,
                             entries=[],
                             error=f"Parse error: {error_msg}",
+                            discovered_feeds=self._discover_feeds(feed, url),
                         )
 
                     # Extract entries
@@ -356,8 +385,106 @@ class FeedFetcher:
             "image_url": image_url,
         }
 
+    def _discover_feeds(self, feed: Any, base_url: str) -> list[str]:
+        """Return feed URLs an HTML page advertises via ``<link rel="alternate">``.
+
+        feedparser surfaces these in ``feed.feed.links`` even when the page
+        itself is not a feed. Each candidate is resolved to an absolute URL and
+        must pass the SSRF allow-list (``validate_feed_url``) to be returned.
+        """
+        feed_types = {
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/feed+json",
+            "application/json",
+        }
+        out: list[str] = []
+        for link in (feed.feed or {}).get("links") or []:
+            if link.get("rel") != "alternate" or link.get("type") not in feed_types:
+                continue
+            href = link.get("href")
+            if not href:
+                continue
+            candidate = urljoin(base_url, href)
+            try:
+                validate_feed_url(candidate)
+            except InvalidFeedURLError:
+                continue
+            if candidate not in out:
+                out.append(candidate)
+        return out
+
+    def _parse_json_feed(
+        self, content: str, content_type: str | None, feed_url: str
+    ) -> tuple[list[dict[str, Any]], str | None] | None:
+        """Parse a JSON Feed body into ``(entries, feed_title)``.
+
+        Returns None when the body is not a JSON Feed, so the caller falls back
+        to the XML (feedparser) path. Detection is conservative: the official
+        ``application/feed+json`` content-type, or a sniff for the jsonfeed.org
+        version marker — an XML feed never matches.
+        """
+        head = content[:1000].lstrip()
+        looks_json = content_type == "application/feed+json" or (
+            head.startswith("{") and "jsonfeed.org/version" in content[:1000]
+        )
+        if not looks_json:
+            return None
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            return None
+        entries = [
+            self._json_feed_item(item, feed_url)
+            for item in data["items"]
+            if isinstance(item, dict)
+        ]
+        title = data.get("title")
+        return entries, title if isinstance(title, str) else None
+
+    def _json_feed_item(self, item: dict[str, Any], feed_url: str) -> dict[str, Any]:
+        """Map one JSON Feed item to the normalized dict ``_parse_entry`` yields."""
+        url = item.get("url") or item.get("external_url")
+        # JSON Feed requires a unique `id`; fall back to the url, then to a
+        # content hash so multiple id-less items can't collapse to one guid
+        # (which would make dedupe drop all but the first).
+        guid = item.get("id") or url
+        if not guid:
+            basis = (
+                f"{item.get('title', '')}{item.get('content_text', '')}"
+                f"{item.get('content_html', '')}"
+            )
+            guid = hashlib.sha256(basis.encode("utf-8")).hexdigest()
+        # authors[] in JSON Feed 1.1; author{} in 1.0.
+        authors = item.get("authors")
+        if not authors and isinstance(item.get("author"), dict):
+            authors = [item["author"]]
+        author = None
+        if isinstance(authors, list) and authors and isinstance(authors[0], dict):
+            author = authors[0].get("name")
+        # Reuse _parse_date's naive→UTC string handling via a feedparser-shaped
+        # dict, rather than duplicating it here.
+        return {
+            "guid": str(guid),
+            "title": item.get("title") or "Untitled",
+            "link": url or feed_url,
+            "summary": item.get("content_text") or "",
+            "content": item.get("content_html"),
+            "author": author,
+            "published_at": self._parse_date(
+                {"published": item.get("date_published")}
+            ),
+            "image_url": item.get("image") or item.get("banner_image"),
+        }
+
     def _parse_date(self, entry: Any) -> datetime | None:
-        """Parse entry date to datetime."""
+        """Parse entry date to datetime.
+
+        Also serves JSON Feed: callers hand a ``{"published": <rfc3339>}`` dict
+        so the naive→UTC string handling below is shared, not duplicated.
+        """
         # Try parsed time first
         if hasattr(entry, "published_parsed") and entry.published_parsed:
             try:
@@ -366,10 +493,10 @@ class FeedFetcher:
                 pass
 
         # Try string parsing
-        for field in ["published", "updated", "created"]:
-            if field in entry and entry[field]:
+        for key in ["published", "updated", "created"]:
+            if key in entry and entry[key]:
                 try:
-                    dt = date_parser.parse(entry[field])
+                    dt = date_parser.parse(entry[key])
                     # A date string with no offset parses to a naive datetime;
                     # .astimezone() would then assume the *host's* local tz.
                     # Treat naive as UTC, matching the published_parsed branch.

@@ -62,6 +62,8 @@ class FeedRepository:
         title: str | None = None,
         description: str | None = None,
         site_url: str | None = None,
+        source_type: str = "rss",
+        config: dict | None = None,
     ) -> Feed:
         """Create a new feed."""
         feed = Feed(
@@ -69,6 +71,8 @@ class FeedRepository:
             title=title,
             description=description,
             site_url=site_url,
+            source_type=source_type,
+            config=config,
         )
         self.session.add(feed)
         await self.session.flush()

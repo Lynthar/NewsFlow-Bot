@@ -207,6 +207,17 @@ async def main() -> None:
             )
             sys.exit(1)
 
+    # Reconcile declarative non-RSS sources (JSON-API, IMAP email) from
+    # sources.yaml — same file-presence opt-in and fail-fast policy as webhooks.
+    if settings.sources_enabled:
+        from newsflow.services.source_sync import SourceConfigError, sync_sources
+
+        try:
+            await sync_sources(settings.sources_config_path)
+        except SourceConfigError as e:
+            logger.error(f"sources.yaml is invalid; aborting startup. {e}")
+            sys.exit(1)
+
     # Initialize cache if configured
     if settings.cache_backend == "redis" and settings.redis_url:
         from newsflow.services.cache import init_cache

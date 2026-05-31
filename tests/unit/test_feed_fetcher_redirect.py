@@ -34,11 +34,16 @@ class _FakeResp:
         body: bytes = b"",
         charset: str = "utf-8",
         reason: str = "OK",
+        content_type: str = "application/xml",
     ) -> None:
         self.status = status
         self.headers = headers or {}
         self.charset = charset
         self.reason = reason
+        # Real aiohttp responses always expose content_type; the fetcher reads
+        # it to detect JSON Feed. Default to an XML type so these redirect
+        # fixtures exercise the normal feedparser path.
+        self.content_type = content_type
         self.content_length = len(body) if body else None
         self.content = _FakeContent(body)
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.api.deps import get_db
+from newsflow.api.deps import get_db, require_api_key
 from newsflow.models.feed import Feed
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.services.feed_service import FeedService
@@ -148,6 +148,7 @@ async def get_feed(
 async def create_feed(
     feed_data: FeedCreate,
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ) -> FeedResponse:
     """
     Add a new feed.
@@ -172,6 +173,7 @@ async def create_feed(
 async def delete_feed(
     feed_id: int,
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ) -> MessageResponse:
     """Delete a feed and all its entries."""
     repo = FeedRepository(db)
@@ -192,6 +194,7 @@ async def delete_feed(
 async def refresh_feed(
     feed_id: int,
     db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_api_key),
 ) -> FeedResponse:
     """Force refresh a feed."""
     repo = FeedRepository(db)
@@ -220,6 +223,7 @@ async def refresh_feed(
 @router.post("/test", response_model=FeedTestResponse)
 async def test_feed(
     feed_data: FeedCreate,
+    _: None = Depends(require_api_key),
 ) -> FeedTestResponse:
     """
     Test a feed URL without adding it.

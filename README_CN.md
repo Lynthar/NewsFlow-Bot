@@ -30,9 +30,11 @@
 
 | 功能 | 说明 |
 |---|---|
-| 📡 **RSS 抓取** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限 |
+| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限；粘网站首页自动发现 feed，另有 `gh:` / `gnews:` / `yt:` … 简写 |
+| 🧩 **非 RSS 源** | 声明式 `sources.yaml`：轮询任意 **JSON API**（JSONPath）或 **IMAP 邮箱 / newsletter**，或接收 **入站 webhook** 推送——都走同一套过滤/翻译/日报/投递链 |
 | 🌐 **双平台推送** | Discord 斜杠命令 + Telegram 前缀命令并发工作 |
-| 🔌 **通用 Webhook** | 声明式 `webhooks.yaml` 推送到 Slack / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名 |
+| 🔌 **Webhook（出站）** | 声明式 `webhooks.yaml` 推送到 Slack / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名 |
+| 📥 **入站 ingest API** | `POST /api/ingest/{source}`（API key 鉴权）让 n8n / CI / 脚本把条目推进 NewsFlow |
 | 🌍 **自动翻译** | DeepL / OpenAI / Google，两层缓存（DB + 内存/Redis） |
 | 🎯 **关键词过滤** | 单订阅 include/exclude 规则，被过滤条目不消耗翻译 API |
 | 📰 **AI 日报 / 周报** | 可选 LLM 摘要，按日/周把频道收到的文章聚合成简报 |
@@ -134,6 +136,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 
 **Webhook 推送**是纯出口（没有 bot 命令）——在配置目录放一份 `data/webhooks.yaml` 然后重启即可。详见 [GUIDE.md 第 4 章](GUIDE.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
 
+**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）在 `data/sources.yaml` 声明——详见 [GUIDE.md 第 4B 章](GUIDE.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。可选依赖：`pip install 'newsflow-bot[source-json,source-email]'`。
+
 ---
 
 ## ⚙️ 关键配置
@@ -155,6 +159,8 @@ TRANSLATION_PROVIDER=openai              # 或 deepl / google
 OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://api.deepseek.com # OpenAI 兼容端点（可选）
 DIGEST_MODEL=gpt-5.4-mini                # 日报用的模型
+API_ENABLED=true                         # REST API + 入站 /api/ingest
+API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推送所需
 ```
 
 **完整 30+ 配置项**：[GUIDE.md 第 2 章](GUIDE.md#二完整配置项)。

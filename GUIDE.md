@@ -13,7 +13,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 1. [完整命令参考](#一完整命令参考)
 2. [完整配置项](#二完整配置项)
 3. [AI 功能详解（翻译 / 日报 / 提示词定制）](#三ai-功能详解)
-4. [Webhook 推送](#四webhook-推送)
+4. [Webhook 推送（出站）](#四webhook-推送)
+4. [非 RSS 信息源（JSON-API / 邮件 / 入站）](#四b非-rss-信息源sourcesyaml)
 5. [OPML 导入导出](#五opml-导入导出)
 6. [REST API](#六rest-api)
 7. [高级部署与运维](#七高级部署与运维)
@@ -44,13 +45,20 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 | 命令 | 说明 |
 |---|---|
-| `/feed add <url>` | 订阅；成功后几秒内自动推一条预览 |
+| `/feed add <url>` | 订阅；`<url>` 可是 feed 地址、**网站首页**（自动发现）、**JSON Feed** 或简写（见下表后说明）。成功后几秒内自动推一条预览 |
 | `/feed remove <url>` | 退订 |
 | `/feed pause <url>` | 暂停（不删，可 resume） |
 | `/feed resume <url>` | 恢复已暂停的订阅 |
 | `/feed list [page]` | 分页列出本频道订阅（每页 20 条） |
 | `/feed test <url>` | 不订阅，只测试 URL 是否是合法 feed |
 | `/feed status <url>` | 单 feed 详情：健康、最近失败时间、最近 5 篇文章 |
+
+> **`/feed add` 接受的输入**：
+> - **feed 地址**：常规 RSS / Atom / **JSON Feed**（[jsonfeed.org](https://jsonfeed.org)）URL。
+> - **网站首页**：粘 `https://example.com`，自动解析页面 `<link rel="alternate">` 找到真正的 feed 再订阅（添加时解析一次，之后直接抓真实 feed）。
+> - **简写**（自动展开成真实 feed URL；含 `://` 守卫，绝不改动正常 URL）：`gh:owner/repo`（GitHub releases）、`gnews:关键词`（Google News 搜索）、`yt:频道ID`、`pypi:包名`、`reddit:版块`、`masto:user@instance`。
+>
+> 这些只是 RSS 抓取的便利层。**非 RSS 源**（JSON-API / 邮件 / 入站 webhook）走声明式 `sources.yaml`，见 [§4B](#四b非-rss-信息源sourcesyaml)。
 
 **翻译设置**
 
@@ -243,6 +251,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `API_ENABLED` | `false` | 启用 FastAPI 管理端点 |
 | `API_HOST` | `0.0.0.0` | 监听地址 |
 | `API_PORT` | `8000` | 监听端口 |
+| `API_KEY` | `（空）` | 写端点（feed 增删改 + `/api/ingest`）的共享密钥。**空 = 禁用所有写端点（fail-closed）**，读端点不受影响。请求带 `Authorization: Bearer <API_KEY>` |
+| `SOURCES_CONFIG_PATH` | `./data/sources.yaml` | 非 RSS 源声明文件；文件存在即启用同步（见 §4B） |
 
 ### 2.8 日志
 
@@ -548,6 +558,97 @@ def _to_discord_text(text: str) -> WireRequest:
 
 ---
 
+## 四B、非 RSS 信息源（sources.yaml）
+
+§四 的 webhook 是**出站**（把条目推给别人）。本节是**入站**：把 RSS 之外的东西变成源。和 `webhooks.yaml` 一样**声明式**——`data/sources.yaml` 存在即启用，每次启动幂等同步进 DB（创建 / 更新 / 删除源与订阅）。完整示例见 [`samples/sources.example.yaml`](samples/sources.example.yaml)。
+
+> **安全边界**：同步只动「非 RSS 类型的 feed」和「`platform_user_id=source-yaml` 的订阅」。你用命令建的 RSS 订阅永不受影响。
+
+### 4B.1 结构
+
+```yaml
+sources:
+  <名字>:
+    url: <地址或标识>
+    type: json_api | email_imap | webhook_inbound
+    config: { ... }            # 按 type 不同（见下）
+    subscribers:               # 谁收这个源的条目
+      - platform: discord | telegram | webhook
+        channel: "<频道ID / webhook 目的地名>"
+        translate: false       # 可选
+        language: zh-CN        # 可选
+        silent: false          # 可选
+```
+
+每个源就是一个 feed，条目走**和 RSS 完全一样**的过滤 / 翻译 / 静默 / 日报 / 投递链路。
+
+### 4B.2 三种源类型
+
+**`json_api`** — 轮询任意 REST/JSON 接口，用 JSONPath 抽条目。依赖 `pip install 'newsflow-bot[source-json]'`（jsonpath-ng）。
+
+```yaml
+  my-api:
+    url: https://api.example.com/articles   # 要轮询的接口
+    type: json_api
+    config:
+      items: "$.data[*]"     # JSONPath 定位条目数组（必填）
+      guid: id               # 每条的去重键字段；缺失则按内容 hash
+      title: title
+      link: url
+      summary: summary
+      published: published_at
+      # image / author 也支持；字段是相对每条的 JSONPath，"author.name" 嵌套也行
+```
+
+**`email_imap`** — 轮询 IMAP 邮箱，把每封邮件变成条目（适合**无 RSS 的 newsletter**）。依赖 `pip install 'newsflow-bot[source-email]'`（imap-tools）。
+
+```yaml
+  my-newsletters:
+    url: imap://me@example.com/INBOX   # 仅作标识；连接用下面的 config
+    type: email_imap
+    config:
+      host: imap.example.com
+      user: me@example.com
+      password_env: NEWSFLOW_IMAP_PASS  # 存密码的【环境变量名】
+      mailbox: INBOX                    # 可选，默认 INBOX
+      limit: 50                         # 可选，每轮取最新 N 封
+```
+
+> 🔒 **密码从不入库**：`config` 里只放 `password_env`（环境变量**名**），真正的密码放 `.env` / 环境。请用**应用专用密码**，不是主密码。guid = 邮件 Message-ID，跨轮精确去重。
+
+**`webhook_inbound`** — 入站推送：外部系统把条目 POST 进来，**不轮询**（无额外依赖）。
+
+```yaml
+  ci-events:
+    url: ci-events           # POST /api/ingest/{url} 里的 slug
+    type: webhook_inbound
+    config: {}
+    subscribers:
+      - platform: discord
+        channel: "123456789012345678"
+```
+
+外部这样推（需 REST API 启用 + `API_KEY`，见 §2.7 / §6）：
+
+```bash
+curl -X POST http://<host>:8000/api/ingest/ci-events \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"entries":[{"id":"build-42","title":"Build #42 passed","url":"https://ci/42"}]}'
+```
+
+每个 entry 字段：`id`（去重键，缺失则内容 hash）、`title`、`link`/`url`、`summary`、`content`、`author`、`image`、`published_at`。重复 `id` 自动幂等去重。n8n / Zapier / CI / GitHub webhook 都能接。
+
+### 4B.3 与 §四 出站 webhook 的区别
+
+| | §四 webhook（出站） | 本节 `webhook_inbound`（入站） |
+|---|---|---|
+| 方向 | NewsFlow → POST 给外部 | 外部 → POST 给 NewsFlow |
+| 角色 | 投递目的地 | 信息源 |
+| 声明 | `webhooks.yaml` | `sources.yaml` |
+
+---
+
 ## 五、OPML 导入导出
 
 **用途**：从 Feedly / Reeder / NetNewsWire 搬家；备份订阅列表；在多个频道 / 实例间迁移。
@@ -576,7 +677,7 @@ def _to_discord_text(text: str) -> WireRequest:
 
 `.env` 里设 `API_ENABLED=true` 启用。
 
-> ⚠️ **当前 API 无认证 + CORS 允许所有来源**。仅建议内网 / 本机使用。公网暴露前请加 nginx 反代 + Basic Auth 或 API Key 中间件。
+> **鉴权**：**读端点（GET）开放**；**写端点**（feed 增删改、`/api/feeds/test`、`/api/ingest`）要求 `Authorization: Bearer <API_KEY>`。**未配 `API_KEY` 时写端点一律返回 503（fail-closed）**。CORS 仍允许所有来源，公网暴露建议再加 nginx 反代。
 
 ### 6.1 端点
 
@@ -592,7 +693,10 @@ def _to_discord_text(text: str) -> WireRequest:
 | `POST` | `/api/feeds/{id}/refresh` | 强制刷新 |
 | `POST` | `/api/feeds/test` | 测试 URL |
 | `GET` | `/api/stats` | 总体统计 |
+| `POST` | `/api/ingest/{source}` | 🔒 **入站推送**：外部系统把条目 POST 进来，写入对应 `webhook_inbound` 源（见 §4B） |
 | `GET` | `/api/stats/feeds` | 每个 feed 的统计 |
+
+🔒 写端点（`POST /api/feeds`、`DELETE /api/feeds/{id}`、`/refresh`、`/test`、`/api/ingest`）需 `Authorization: Bearer <API_KEY>`；未配 `API_KEY` 返回 503。
 
 `LOG_LEVEL=DEBUG` 时自动暴露 `/docs`（Swagger UI）。
 

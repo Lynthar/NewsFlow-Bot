@@ -108,11 +108,18 @@ class Settings(BaseSettings):
     api_enabled: bool = False
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Shared secret for API write endpoints (feed mutations + /api/ingest).
+    # Empty = write access disabled (fail closed). Set via the API_KEY env var.
+    api_key: str = ""
 
     # Webhook adapter: enabled whenever the referenced YAML file exists.
     # The file is both the source-of-truth (declarative — edit and restart)
     # and the on/off switch: remove it to disable webhook delivery entirely.
     webhooks_config_path: Path = Path("./data/webhooks.yaml")
+
+    # Declarative non-RSS sources (JSON-API, IMAP email). Same file-presence
+    # opt-in as webhooks: create the file to enable, remove it to disable.
+    sources_config_path: Path = Path("./data/sources.yaml")
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -150,6 +157,15 @@ class Settings(BaseSettings):
         don't want webhook delivery just don't create the file."""
         try:
             return self.webhooks_config_path.is_file()
+        except OSError:
+            return False
+
+    @property
+    def sources_enabled(self) -> bool:
+        """Non-RSS source sync runs iff a sources.yaml exists at the configured
+        path — same file-presence opt-in as webhooks."""
+        try:
+            return self.sources_config_path.is_file()
         except OSError:
             return False
 

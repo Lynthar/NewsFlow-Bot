@@ -12,6 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from newsflow.config import get_settings
 from newsflow.core.content_processor import process_content
 from newsflow.core.feed_fetcher import FeedFetcher, FetchResult, get_fetcher
+from newsflow.core.source_fetcher import (
+    PUSH_SOURCE_TYPES,
+    SourceRequest,
+    get_source_fetcher,
+)
+from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.repositories.feed_repository import FeedRepository
 
@@ -73,6 +79,11 @@ class FeedService:
         Returns:
             AddFeedResult with success status and feed object
         """
+        # Expand `gh:owner/repo` / `gnews:keyword` shortcuts into the real feed
+        # URL before anything else, so dedupe and storage key on the resolved
+        # URL. A normal URL is returned unchanged.
+        url = expand_source_shortcut(url)
+
         # Check if feed already exists
         existing = await self.repo.get_feed_by_url(url)
         if existing:
@@ -84,6 +95,26 @@ class FeedService:
 
         # Fetch and validate feed
         result = await self.fetcher.fetch_feed(url)
+
+        # If `url` was an HTML page that advertises a feed, fetch_feed returns
+        # the candidate(s) in discovered_feeds. Resolve to the first and retry
+        # once, re-checking dedupe against the resolved URL.
+        if not result.success and result.discovered_feeds:
+            discovered = result.discovered_feeds[0]
+            existing = await self.repo.get_feed_by_url(discovered)
+            if existing:
+                return AddFeedResult(
+                    success=True,
+                    feed=existing,
+                    message="Feed already exists",
+                )
+            retry = await self.fetcher.fetch_feed(discovered)
+            if retry.success and retry.entries:
+                logger.info(
+                    f"add_feed: resolved {url} to advertised feed {discovered}"
+                )
+                url, result = discovered, retry
+
         if not result.success:
             return AddFeedResult(
                 success=False,
@@ -145,6 +176,26 @@ class FeedService:
             entry_count=len(entries),
         )
 
+    async def upsert_source_feed(
+        self, url: str, source_type: str, config: dict | None
+    ) -> Feed:
+        """Create or update a non-RSS source feed (json_api, email_imap, …).
+
+        Unlike add_feed, this does NOT fetch over HTTP — the registered
+        SourceFetcher pulls entries on the next dispatch cycle. Used by the
+        declarative sources.yaml sync.
+        """
+        existing = await self.repo.get_feed_by_url(url)
+        if existing is not None:
+            existing.source_type = source_type
+            existing.config = config
+            if not existing.is_active:
+                existing.is_active = True
+            return existing
+        return await self.repo.create_feed(
+            url=url, source_type=source_type, config=config
+        )
+
     async def test_feed(self, url: str) -> FetchResult:
         """
         Test if a feed URL is valid.
@@ -155,7 +206,7 @@ class FeedService:
         Returns:
             FetchResult with success status and entries
         """
-        return await self.fetcher.fetch_feed(url)
+        return await self.fetcher.fetch_feed(expand_source_shortcut(url))
 
     async def _apply_fetch_result(
         self, feed: Feed, result: FetchResult
@@ -250,19 +301,42 @@ class FeedService:
         if not feeds:
             return []
 
-        fetch_results = await self.fetcher.fetch_multiple(
-            [
-                {
-                    "url": f.url,
-                    "etag": f.etag,
-                    "last_modified": f.last_modified,
-                }
-                for f in feeds
-            ]
-        )
+        # RSS keeps its optimized concurrent batch path. Other source types
+        # (json_api, email_imap, …) are fetched via their registered
+        # SourceFetcher; each yields the same FetchResult shape so everything
+        # downstream is identical. With only RSS feeds present (the default),
+        # this is the same single fetch_multiple call as before.
+        rss_feeds = [f for f in feeds if (f.source_type or "rss") == "rss"]
+        # Push sources (webhook_inbound) receive entries via the API, not by
+        # polling — no fetcher, so leave them out of the fetch entirely.
+        other_feeds = [
+            f
+            for f in feeds
+            if f.source_type != "rss" and f.source_type not in PUSH_SOURCE_TYPES
+        ]
+
+        results_by_id: dict[int, FetchResult] = {}
+        if rss_feeds:
+            rss_results = await self.fetcher.fetch_multiple(
+                [
+                    {
+                        "url": f.url,
+                        "etag": f.etag,
+                        "last_modified": f.last_modified,
+                    }
+                    for f in rss_feeds
+                ]
+            )
+            for f, fr in zip(rss_feeds, rss_results):
+                results_by_id[f.id] = fr
+        for f in other_feeds:
+            results_by_id[f.id] = await self._fetch_non_rss_source(f)
 
         results: list[FetchFeedResult] = []
-        for feed, fr in zip(feeds, fetch_results):
+        for feed in feeds:  # apply in the original feed order
+            if feed.id not in results_by_id:
+                continue  # push source — not polled; entries arrive via the API
+            fr = results_by_id[feed.id]
             try:
                 results.append(await self._apply_fetch_result(feed, fr))
             except Exception as e:
@@ -283,6 +357,36 @@ class FeedService:
                 )
 
         return results
+
+    async def _fetch_non_rss_source(self, feed: Feed) -> FetchResult:
+        """Fetch one non-RSS feed via its registered SourceFetcher, converting
+        any failure into a FetchResult so a single bad source (or an
+        unregistered type) can't abort the whole dispatch cycle."""
+        fetcher = get_source_fetcher(feed.source_type)
+        if fetcher is None:
+            return FetchResult(
+                url=feed.url,
+                success=False,
+                entries=[],
+                error=f"No fetcher registered for source_type {feed.source_type!r}",
+            )
+        try:
+            return await fetcher.fetch(
+                SourceRequest(
+                    url=feed.url,
+                    etag=feed.etag,
+                    last_modified=feed.last_modified,
+                    config=feed.config,
+                )
+            )
+        except Exception as e:
+            logger.exception(f"Source fetch failed for {feed.url}: {e}")
+            return FetchResult(
+                url=feed.url,
+                success=False,
+                entries=[],
+                error=f"{type(e).__name__}: {e}",
+            )
 
     async def get_feed(self, feed_id: int) -> Feed | None:
         """Get a feed by ID."""

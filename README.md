@@ -30,9 +30,11 @@ An **RSS push backend you run on your own server**. Hand it a Discord or Telegra
 
 | Feature | Notes |
 |---|---|
-| 📡 **RSS fetching** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap |
+| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap; paste a site homepage to auto-discover its feed, plus `gh:` / `gnews:` / `yt:` … shortcuts |
+| 🧩 **Non-RSS sources** | Declarative `sources.yaml`: poll any **JSON API** (JSONPath) or **IMAP mailbox / newsletter**, or receive **inbound webhook** pushes — all through the same filter/translate/digest/deliver pipeline |
 | 🌐 **Multi-platform** | Discord slash commands + Telegram prefix commands in one process |
-| 🔌 **Generic webhook** | Push to Slack / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported |
+| 🔌 **Webhook (outbound)** | Push to Slack / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported |
+| 📥 **Inbound ingest API** | `POST /api/ingest/{source}` (API-key auth) lets n8n / CI / scripts push entries into NewsFlow |
 | 🌍 **Auto-translation** | DeepL / OpenAI / Google, two-tier cache (DB + memory/Redis) |
 | 🎯 **Keyword filter** | Per-subscription include/exclude; filtered entries skip translate |
 | 📰 **AI digest** | Optional LLM-generated daily / weekly briefings |
@@ -134,6 +136,8 @@ Full reference (30+ commands across both platforms): [GUIDE.md §1](GUIDE.md#一
 
 **Webhook delivery** is output-only (no bot commands) — drop a `data/webhooks.yaml` in your config dir and restart; see [GUIDE.md §4](GUIDE.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
 
+**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared in `data/sources.yaml` — see [GUIDE.md §4B](GUIDE.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras: `pip install 'newsflow-bot[source-json,source-email]'`.
+
 ---
 
 ## ⚙️ Key configuration
@@ -155,6 +159,8 @@ TRANSLATION_PROVIDER=openai              # or deepl / google
 OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://api.deepseek.com # Any OpenAI-compatible endpoint
 DIGEST_MODEL=gpt-5.4-mini                # LLM for digest generation
+API_ENABLED=true                         # REST API + inbound /api/ingest
+API_KEY=long-random-string               # required for API writes / inbound push
 ```
 
 Full 30+ variables: [GUIDE.md §2](GUIDE.md#二完整配置项).

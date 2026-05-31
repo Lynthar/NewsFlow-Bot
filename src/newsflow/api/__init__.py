@@ -31,7 +31,7 @@ def create_app():
             "Install it with: pip install 'newsflow-bot[api]'"
         )
 
-    from newsflow.api.routes import feeds, health, stats
+    from newsflow.api.routes import feeds, health, ingest, stats
 
     settings = get_settings()
 
@@ -69,6 +69,7 @@ def create_app():
     app.include_router(health.router, tags=["Health"])
     app.include_router(feeds.router, prefix="/api/feeds", tags=["Feeds"])
     app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
+    app.include_router(ingest.router, prefix="/api/ingest", tags=["Ingest"])
 
     return app
 

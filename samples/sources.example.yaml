@@ -1,0 +1,60 @@
+# Declarative non-RSS sources, reconciled into the DB on every startup — the
+# counterpart to webhooks.yaml for sources that aren't plain RSS (JSON APIs,
+# IMAP newsletters, …). Copy to data/sources.yaml to enable; remove the file to
+# disable. Each source becomes a feed whose entries flow through the normal
+# filter / translate / silent / digest / delivery pipeline to its subscribers.
+#
+# Editing + restarting reconciles: added sources/subscribers are created,
+# removed ones are deleted. RSS feeds and bot-command subscriptions are never
+# touched by this sync.
+
+sources:
+  # ── JSON API (needs the `source-json` extra: pip install jsonpath-ng) ───────
+  example-json-api:
+    url: https://api.example.com/articles      # the JSON endpoint to poll
+    type: json_api
+    config:
+      items: "$.data[*]"     # JSONPath to the array of items   (required)
+      guid: id               # field path per item; falls back to a content hash
+      title: title
+      link: url
+      summary: summary
+      published: published_at
+      # image: image_url
+      # author: author.name  # nested paths work too
+    subscribers:
+      - platform: discord
+        channel: "123456789012345678"   # Discord channel id
+        translate: false                # optional (default false)
+        language: zh-CN                 # optional, used when translate: true
+        silent: false                   # optional (default false)
+      - platform: webhook
+        channel: my-slack-destination   # a destination name from webhooks.yaml
+
+  # ── Email / newsletter via IMAP (needs `source-email`: pip install imap-tools)
+  example-newsletters:
+    url: imap://me@example.com/INBOX     # identifier only; connection uses config
+    type: email_imap
+    config:
+      host: imap.example.com
+      user: me@example.com
+      password_env: NEWSFLOW_IMAP_PASS   # NAME of the env var holding the app
+                                         # password — the password is NEVER
+                                         # stored here or in the database
+      mailbox: INBOX                     # optional (default INBOX)
+      limit: 50                          # optional, newest N messages per poll
+    subscribers:
+      - platform: telegram
+        channel: "-1001234567890"        # Telegram chat id
+
+  # ── Inbound webhook / push (no extra dependency) ────────────────────────────
+  # External systems POST entries to /api/ingest/<url> (here /api/ingest/ci-events)
+  # with header  Authorization: Bearer <API_KEY>.  No polling — entries arrive on
+  # push. Needs the REST API enabled (api_enabled) and API_KEY set.
+  ci-events:
+    url: ci-events           # the {source} slug in POST /api/ingest/{source}
+    type: webhook_inbound
+    config: {}               # no fetch config — entries are pushed in
+    subscribers:
+      - platform: discord
+        channel: "123456789012345678"

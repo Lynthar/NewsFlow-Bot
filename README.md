@@ -136,7 +136,7 @@ Full reference (30+ commands across both platforms): [GUIDE.md §1](GUIDE.md#一
 
 **Webhook delivery** is output-only (no bot commands) — drop a `data/webhooks.yaml` in your config dir and restart; see [GUIDE.md §4](GUIDE.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
 
-**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared in `data/sources.yaml` — see [GUIDE.md §4B](GUIDE.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras: `pip install 'newsflow-bot[source-json,source-email]'`.
+**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared in `data/sources.yaml` — see [GUIDE.md §4B](GUIDE.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras: `make install-all` (or `pip install -e '.[source-json,source-email]'`).
 
 ---
 

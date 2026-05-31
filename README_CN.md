@@ -136,7 +136,7 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 
 **Webhook 推送**是纯出口（没有 bot 命令）——在配置目录放一份 `data/webhooks.yaml` 然后重启即可。详见 [GUIDE.md 第 4 章](GUIDE.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
 
-**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）在 `data/sources.yaml` 声明——详见 [GUIDE.md 第 4B 章](GUIDE.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。可选依赖：`pip install 'newsflow-bot[source-json,source-email]'`。
+**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）在 `data/sources.yaml` 声明——详见 [GUIDE.md 第 4B 章](GUIDE.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。可选依赖：`make install-all`（或 `pip install -e '.[source-json,source-email]'`）。
 
 ---
 

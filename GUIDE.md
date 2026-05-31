@@ -584,7 +584,7 @@ sources:
 
 ### 4B.2 三种源类型
 
-**`json_api`** — 轮询任意 REST/JSON 接口，用 JSONPath 抽条目。依赖 `pip install 'newsflow-bot[source-json]'`（jsonpath-ng）。
+**`json_api`** — 轮询任意 REST/JSON 接口，用 JSONPath 抽条目。需装 `source-json` extra（`make install-all` 或 `pip install -e '.[source-json]'`，即 jsonpath-ng）。
 
 ```yaml
   my-api:
@@ -600,7 +600,7 @@ sources:
       # image / author 也支持；字段是相对每条的 JSONPath，"author.name" 嵌套也行
 ```
 
-**`email_imap`** — 轮询 IMAP 邮箱，把每封邮件变成条目（适合**无 RSS 的 newsletter**）。依赖 `pip install 'newsflow-bot[source-email]'`（imap-tools）。
+**`email_imap`** — 轮询 IMAP 邮箱，把每封邮件变成条目（适合**无 RSS 的 newsletter**）。需装 `source-email` extra（`make install-all` 或 `pip install -e '.[source-email]'`，即 imap-tools）。
 
 ```yaml
   my-newsletters:

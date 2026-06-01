@@ -11,6 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+from newsflow import __version__
 from newsflow.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def create_app():
     app = FastAPI(
         title="NewsFlow Bot API",
         description="REST API for managing NewsFlow Bot feeds and subscriptions",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
         docs_url="/docs" if settings.log_level == "DEBUG" else None,
         redoc_url="/redoc" if settings.log_level == "DEBUG" else None,

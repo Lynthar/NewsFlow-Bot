@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from newsflow import __version__
 from newsflow.api.deps import get_db
 from newsflow.config import get_settings
 
@@ -46,7 +47,7 @@ async def health_check() -> HealthResponse:
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(timezone.utc).isoformat(),
-        version="0.1.0",
+        version=__version__,
         components={
             "discord_enabled": settings.discord_enabled,
             "telegram_enabled": settings.telegram_enabled,

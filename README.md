@@ -38,7 +38,7 @@ An **RSS push backend you run on your own server**. Hand it a Discord or Telegra
 | 🌍 **Auto-translation** | DeepL / OpenAI / Google, two-tier cache (DB + memory/Redis) |
 | 🎯 **Keyword filter** | Per-subscription include/exclude; filtered entries skip translate |
 | 📰 **AI digest** | Optional LLM-generated daily / weekly briefings |
-| 📋 **OPML import/export** | Migrate from Feedly / Reeder; repo ships a curated 23-feed OPML |
+| 📋 **OPML import/export** | Migrate from Feedly / Reeder; repo ships a curated 22-feed OPML |
 | 🔁 **Exponential backoff** | Dying sources auto-stretch retries; 10 fails → auto-disable + notify |
 | ⏸ **Pause / resume** | Temporarily stop without deleting the subscription |
 | 🔇 **Silent (digest-only)** | Skip instant push but keep entries flowing into the digest — for channels that only want the rollup |

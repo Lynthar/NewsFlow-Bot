@@ -1030,9 +1030,11 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     processing_msg = await update.message.reply_text("⏳ Testing feed...")
 
     from newsflow.core import get_fetcher
+    from newsflow.core.source_shortcuts import expand_source_shortcut
 
     fetcher = get_fetcher()
-    result = await fetcher.fetch_feed(url)
+    # Expand gh:/yt:/… shortcuts so /test matches what /add would actually fetch.
+    result = await fetcher.fetch_feed(expand_source_shortcut(url))
 
     if result.success:
         desc = result.feed_description or ""

@@ -117,3 +117,60 @@ async def test_push_source_is_not_fetched(session):
     assert results == []  # the push source was skipped, nothing applied
     await session.refresh(inbound)
     assert inbound.error_count == 0  # crucially, NOT marked as a failed fetch
+
+
+async def test_fetch_and_store_routes_non_rss_to_source_fetcher(session, monkeypatch):
+    """Single-feed refresh (the API /refresh path) must route a non-RSS feed to
+    its SourceFetcher, not force it through the RSS HTTP fetcher — otherwise a
+    json_api refresh ignores its JSONPath config and IMAP refresh fails."""
+    api = Feed(
+        url="https://ex.com/api",
+        source_type="json_api",
+        is_active=True,
+        error_count=0,
+        config={"k": "v"},
+    )
+    session.add(api)
+    await session.commit()
+
+    svc = FeedService(session)
+    # The RSS fetcher must NOT be touched for a json_api feed.
+    svc.fetcher = SimpleNamespace(fetch_feed=AsyncMock())
+
+    seen = {}
+
+    class _FakeJson:
+        async def fetch(self, req):
+            seen["req"] = req
+            return FetchResult(url=req.url, success=True, entries=[], not_modified=True)
+
+    monkeypatch.setitem(sf._REGISTRY, "json_api", _FakeJson())
+
+    result = await svc.fetch_and_store(api)
+    await session.commit()
+
+    svc.fetcher.fetch_feed.assert_not_awaited()  # did NOT fall back to RSS
+    assert seen["req"].url == "https://ex.com/api"
+    assert seen["req"].config == {"k": "v"}  # config passed through
+    assert result.success is True
+
+
+async def test_fetch_and_store_push_source_is_noop(session):
+    """A webhook_inbound feed has no fetcher — single-feed refresh is a no-op
+    success (entries arrive via /api/ingest), never an RSS fetch or an error."""
+    inbound = Feed(
+        url="ci-events", source_type="webhook_inbound", is_active=True, error_count=0
+    )
+    session.add(inbound)
+    await session.commit()
+
+    svc = FeedService(session)
+    svc.fetcher = SimpleNamespace(fetch_feed=AsyncMock())
+
+    result = await svc.fetch_and_store(inbound)
+    await session.commit()
+
+    svc.fetcher.fetch_feed.assert_not_awaited()
+    assert result.success is True
+    await session.refresh(inbound)
+    assert inbound.error_count == 0  # not marked as a failed fetch

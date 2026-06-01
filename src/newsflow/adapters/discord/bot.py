@@ -760,9 +760,11 @@ class FeedCommands(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         from newsflow.core import get_fetcher
+        from newsflow.core.source_shortcuts import expand_source_shortcut
 
         fetcher = get_fetcher()
-        result = await fetcher.fetch_feed(url)
+        # Expand gh:/yt:/… shortcuts so /test matches what /add would fetch.
+        result = await fetcher.fetch_feed(expand_source_shortcut(url))
 
         if result.success:
             embed = discord.Embed(

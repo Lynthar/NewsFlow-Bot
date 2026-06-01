@@ -114,6 +114,14 @@ class SentEntry(Base):
     # dispatch loop doesn't keep re-evaluating the same entry every cycle.
     was_filtered: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # True if this row was written by seed_sent_entries to suppress a
+    # back-catalog entry on a brand-new subscription — i.e. it was NEVER
+    # shown to the channel, only recorded so dispatch skips it. The digest
+    # pipeline must exclude these: the user saw nothing to summarize.
+    # `was_filtered` can't carry this meaning — a filtered entry is opt-in
+    # visible via ChannelDigest.include_filtered, a seeded one never is.
+    seeded: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Indexes
     __table_args__ = (
         Index(

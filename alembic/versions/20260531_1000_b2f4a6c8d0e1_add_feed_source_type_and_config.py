@@ -7,8 +7,10 @@ Create Date: 2026-05-31 10:00:00+00:00
 Additive columns for multi-source support (Phase 1). ``source_type`` selects
 the fetcher — the ``'rss'`` server_default keeps every existing feed on the RSS
 path, so this is fully backward-compatible. ``config`` holds source-specific
-settings (JSONPath mappings, IMAP target, …) as JSON: TEXT on SQLite, JSONB on
-Postgres. Existing rows get ``source_type='rss'`` and ``config=NULL``.
+settings (JSONPath mappings, IMAP target, …) in a generic SQLAlchemy ``JSON``
+column: TEXT on SQLite, a ``JSON`` column on Postgres (not ``JSONB`` — the blob
+is never queried into). Existing rows get ``source_type='rss'`` and
+``config=NULL``.
 """
 from typing import Sequence, Union
 

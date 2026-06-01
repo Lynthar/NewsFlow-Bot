@@ -196,3 +196,72 @@ async def test_reconcile_leaves_rss_feeds_untouched(session):
 
     feeds = await _feeds(session)
     assert len(feeds) == 1 and feeds[0].source_type == "rss"  # RSS untouched
+
+
+async def test_reconcile_skips_url_colliding_with_existing_rss_feed(session):
+    """If a sources.yaml URL collides with an interactively-added RSS feed, the
+    sync must NOT convert it to json_api / overwrite its config / subscribe to
+    it — and must not delete it on a later removal. The whole source is skipped.
+    """
+    collide_url = "https://api.example.com/items"  # == _src() default url
+    rss = Feed(url=collide_url, source_type="rss", title="User's RSS")
+    session.add(rss)
+    await session.commit()
+    rss_id = rss.id
+
+    # Reconcile a source whose URL hits the existing RSS feed.
+    await _reconcile(session, [_src()])
+    await session.commit()
+
+    feeds = await _feeds(session)
+    assert len(feeds) == 1
+    assert feeds[0].id == rss_id
+    assert feeds[0].source_type == "rss"  # NOT converted
+    assert feeds[0].config is None  # config NOT overwritten
+    assert len(await _subs(session)) == 0  # no source-yaml sub created
+
+    # Removing every source must leave the user's RSS feed intact (the sync
+    # only deletes feeds it actually owns).
+    await _reconcile(session, [])
+    await session.commit()
+    feeds = await _feeds(session)
+    assert len(feeds) == 1 and feeds[0].id == rss_id
+
+
+async def test_reconcile_leaves_non_owned_sub_settings_untouched(session):
+    """A subscription at the same (platform, channel, feed) that isn't owned by
+    sources.yaml must not have its settings rewritten by the file."""
+    # Build a non-RSS source feed + a foreign (non-source-yaml) sub on it.
+    await _reconcile(session, [_src(subs=[])])
+    await session.commit()
+    feed = (await _feeds(session))[0]
+
+    foreign = Subscription(
+        platform="discord",
+        platform_user_id="a-real-human",  # not "source-yaml"
+        platform_channel_id="123",
+        feed_id=feed.id,
+        is_active=True,
+        translate=False,
+        target_language="ja",
+        silent=True,
+    )
+    session.add(foreign)
+    await session.commit()
+
+    # The file now declares a discord/123 subscriber with different settings.
+    await _reconcile(
+        session,
+        [_src(subs=[SubscriberCfg(
+            platform="discord", channel="123", translate=True, language="en"
+        )])],
+    )
+    await session.commit()
+
+    subs = await _subs(session)
+    assert len(subs) == 1  # the unique index prevented a duplicate
+    assert subs[0].platform_user_id == "a-real-human"
+    # Untouched: still the human's settings, not the file's.
+    assert subs[0].translate is False
+    assert subs[0].target_language == "ja"
+    assert subs[0].silent is True

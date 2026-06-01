@@ -373,3 +373,71 @@ async def test_digest_generate_includes_filtered_when_configured(session):
         a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]
     }
     assert titles == {"A", "B"}
+
+
+async def test_digest_excludes_seeded_backlog(session):
+    """Backlog seeded as already-sent on a new subscription (seeded=True) was
+    never shown to the channel, so it must NOT enter the digest — even though
+    its SentEntry rows are recent and was_filtered=False, and even when the
+    channel opts into include_filtered. Regression for the seed/deliver
+    conflation that polluted the first digest after every new subscription."""
+    feed = Feed(url="https://example.com/feed", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+    )
+    session.add(sub)
+    await session.flush()
+
+    now = datetime.now(timezone.utc)
+    shown = FeedEntry(
+        feed_id=feed.id, guid="shown", title="Shown",
+        link="https://x/s", published_at=now - timedelta(hours=2),
+    )
+    backlog = FeedEntry(
+        feed_id=feed.id, guid="backlog", title="Backlog",
+        link="https://x/b", published_at=now - timedelta(hours=1),
+    )
+    session.add_all([shown, backlog])
+    await session.flush()
+    session.add_all([
+        SentEntry(
+            subscription_id=sub.id, feed_id=shown.feed_id, guid=shown.guid,
+            sent_at=now - timedelta(minutes=20), was_filtered=False, seeded=False,
+        ),
+        SentEntry(
+            subscription_id=sub.id, feed_id=backlog.feed_id, guid=backlog.guid,
+            sent_at=now - timedelta(minutes=10), was_filtered=False, seeded=True,
+        ),
+    ])
+    await session.flush()
+
+    config = ChannelDigest(
+        platform="discord",
+        platform_channel_id="c",
+        enabled=True,
+        schedule="daily",
+        delivery_hour_utc=9,
+        language="en",
+        include_filtered=True,  # even opted-in, seeded backlog stays out
+        max_articles=50,
+    )
+    session.add(config)
+    await session.flush()
+
+    summarizer = AsyncMock()
+    summarizer.generate_digest = AsyncMock(
+        return_value=DigestResult(success=True, text="ok")
+    )
+    service = DigestService(session, summarizer)
+    await service.generate(config)
+
+    titles = {
+        a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]
+    }
+    assert titles == {"Shown"}  # seeded backlog excluded

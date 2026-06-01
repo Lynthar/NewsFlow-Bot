@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from newsflow.config import get_settings
 from newsflow.core.filter import FilterRule
 from newsflow.core.opml import OpmlEntry, OpmlParseError, build_opml, parse_opml
+from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
 from newsflow.repositories.feed_repository import FeedRepository
@@ -212,6 +213,11 @@ class SubscriptionService:
         Returns:
             UnsubscribeResult
         """
+        # Resolve gh:/yt:/… shortcuts the same way add_feed did, so a user can
+        # manage a feed with the exact string they subscribed with (the stored
+        # URL is the expanded form). No-op for ordinary URLs.
+        feed_url = expand_source_shortcut(feed_url)
+
         # Find feed
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
@@ -247,6 +253,7 @@ class SubscriptionService:
         feed_url: str,
     ) -> SubscriptionActionResult:
         """Mark a subscription inactive. Dispatch skips it until resumed."""
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(
@@ -271,6 +278,7 @@ class SubscriptionService:
         feed_url: str,
     ) -> SubscriptionActionResult:
         """Reactivate a previously paused subscription."""
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(
@@ -298,6 +306,7 @@ class SubscriptionService:
         """Fetch a single subscription with its feed and recent entries for
         a detailed status view. Returns None if the subscription doesn't exist.
         """
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return None
@@ -341,6 +350,8 @@ class SubscriptionService:
 
         If feed_url is None, updates all subscriptions for the channel.
         """
+        if feed_url:
+            feed_url = expand_source_shortcut(feed_url)
         subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
 
         if not subs:
@@ -371,6 +382,7 @@ class SubscriptionService:
         this is explicitly one-feed: different feeds in the same channel
         can have different target languages.
         """
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(
@@ -403,6 +415,7 @@ class SubscriptionService:
 
         Passing both keyword lists empty clears any existing filter.
         """
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(
@@ -465,6 +478,7 @@ class SubscriptionService:
     ) -> FilterRule | None:
         """Return the current filter for a subscription, or None if there's
         no subscription matching (platform, channel_id, feed_url)."""
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return None
@@ -485,6 +499,7 @@ class SubscriptionService:
         """Toggle silent mode on a single subscription. Silent subs don't
         push instant messages to the channel, but their entries still flow
         into the digest pipeline."""
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(
@@ -544,6 +559,7 @@ class SubscriptionService:
     ) -> SubscriptionActionResult:
         """Toggle translation for one subscription (see set_feed_language for
         rationale)."""
+        feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(

@@ -24,6 +24,13 @@ from newsflow.repositories.feed_repository import FeedRepository
 logger = logging.getLogger(__name__)
 
 
+class SourceFeedConflictError(ValueError):
+    """Raised by upsert_source_feed when a declared non-RSS source URL collides
+    with an existing plain-RSS feed. sources.yaml only owns non-RSS feeds, so
+    rather than silently convert (and later delete) a user's RSS feed, the sync
+    skips the colliding source and logs it."""
+
+
 @dataclass
 class AddFeedResult:
     """Result of adding a feed."""
@@ -184,9 +191,21 @@ class FeedService:
         Unlike add_feed, this does NOT fetch over HTTP — the registered
         SourceFetcher pulls entries on the next dispatch cycle. Used by the
         declarative sources.yaml sync.
+
+        Raises SourceFeedConflictError if `url` already exists as a plain-RSS
+        feed (interactively added via /feed add). Adopting it would convert it
+        to a non-RSS type, overwrite its config, and make it eligible for
+        deletion when the source later leaves the file — silently hijacking a
+        user's feed. sources.yaml's ownership boundary is non-RSS feeds only.
         """
         existing = await self.repo.get_feed_by_url(url)
         if existing is not None:
+            if (existing.source_type or "rss") == "rss":
+                raise SourceFeedConflictError(
+                    f"sources.yaml URL {url!r} already exists as an "
+                    f"interactively-added RSS feed; refusing to convert it to "
+                    f"{source_type!r}"
+                )
             existing.source_type = source_type
             existing.config = config
             if not existing.is_active:
@@ -272,13 +291,30 @@ class FeedService:
         """
         Fetch a single feed and store new entries. Used by single-feed
         callers (e.g. the API `/refresh` endpoint).
+
+        Routes by source_type exactly like fetch_all_feeds: RSS uses the HTTP
+        fetcher, other pull types (json_api, email_imap, …) go through their
+        registered SourceFetcher, and push types (webhook_inbound) have nothing
+        to poll — entries arrive via /api/ingest — so they report a no-op
+        success rather than being force-fetched as RSS (which would 404 / fail).
         """
-        try:
-            result = await self.fetcher.fetch_feed(
-                url=feed.url,
-                etag=feed.etag,
-                last_modified=feed.last_modified,
+        source_type = feed.source_type or "rss"
+        if source_type in PUSH_SOURCE_TYPES:
+            return FetchFeedResult(
+                success=True,
+                feed=feed,
+                message="Push source — entries arrive via the ingest API, "
+                "nothing to poll",
             )
+        try:
+            if source_type == "rss":
+                result = await self.fetcher.fetch_feed(
+                    url=feed.url,
+                    etag=feed.etag,
+                    last_modified=feed.last_modified,
+                )
+            else:
+                result = await self._fetch_non_rss_source(feed)
             return await self._apply_fetch_result(feed, result)
         except Exception as e:
             logger.exception(f"Error fetching feed {feed.url}: {e}")

@@ -132,7 +132,6 @@ class Settings(BaseSettings):
 
     # Quota limits (0 = unlimited)
     max_feeds_per_channel: int = 0
-    max_entries_per_feed: int = 0
 
     # Admin user IDs (platform-specific). default_factory avoids the
     # mutable-default warning pydantic v2 raises on bare `[]`.

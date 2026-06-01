@@ -474,6 +474,54 @@ async def test_channel_silent_default_mixed_returns_false(session):
     assert await svc._channel_silent_default("discord", "c1") is False
 
 
+async def test_management_commands_resolve_source_shortcut(session):
+    """A feed added via a shortcut (gh:owner/repo) is stored under the expanded
+    URL. Management commands must resolve the same shortcut, not fail with
+    'Feed not found'. Regression for the add-expands / manage-doesn't asymmetry.
+    """
+    expanded = "https://github.com/owner/repo/releases.atom"  # gh: expansion
+    feed = Feed(url=expanded, title="repo", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+        translate=True,
+    )
+    session.add(sub)
+    await session.flush()
+
+    svc = SubscriptionService(session)
+
+    # pause via the shortcut form resolves to the stored feed
+    paused = await svc.pause_subscription(
+        platform="discord", channel_id="c", feed_url="gh:owner/repo"
+    )
+    assert paused.success is True
+    await session.refresh(sub)
+    assert sub.is_active is False
+
+    # so do the other lookups (silent / detail), all keyed off the shortcut
+    silenced = await svc.set_feed_silent(
+        platform="discord", channel_id="c", feed_url="gh:owner/repo", silent=True
+    )
+    assert silenced.success is True
+
+    detail = await svc.get_subscription_detail(
+        platform="discord", channel_id="c", feed_url="gh:owner/repo"
+    )
+    assert detail is not None and detail.feed.id == feed.id
+
+    # and unsubscribe finally removes it via the shortcut
+    removed = await svc.unsubscribe(
+        platform="discord", channel_id="c", feed_url="gh:owner/repo"
+    )
+    assert removed.success is True
+
+
 async def test_channel_silent_default_paused_subs_excluded(session):
     """Paused (is_active=False) subs don't participate in the check —
     `get_channel_subscriptions` already filters them out, so a channel

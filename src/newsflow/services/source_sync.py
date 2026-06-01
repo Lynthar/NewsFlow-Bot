@@ -28,7 +28,7 @@ from newsflow.models.base import get_session_factory
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
-from newsflow.services.feed_service import FeedService
+from newsflow.services.feed_service import FeedService, SourceFeedConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +173,17 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
     desired_subs: set[tuple[str, str, int]] = set()  # (platform, channel, feed_id)
 
     for src in sources:
-        feed = await feed_service.upsert_source_feed(src.url, src.type, src.config)
+        try:
+            feed = await feed_service.upsert_source_feed(
+                src.url, src.type, src.config
+            )
+        except SourceFeedConflictError as e:
+            # The URL collides with a user's interactively-added RSS feed.
+            # Skip this source (and its subscribers) rather than hijack the
+            # feed; the RSS feed stays untouched and _remove_stale (non-RSS
+            # only) never deletes it.
+            logger.warning(f"source_sync: skipping source {src.name!r}: {e}")
+            continue
         await session.flush()  # ensure feed.id is populated
         desired_urls.add(src.url)
 
@@ -205,6 +215,17 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
                 logger.info(
                     f"source_sync: subscribed {sub_cfg.platform}/{sub_cfg.channel} "
                     f"→ {src.name!r}"
+                )
+            elif existing.platform_user_id != _OWNER:
+                # Defense in depth: a sub at this (platform, channel, feed)
+                # that we don't own must never be silently rewritten by the
+                # file. (Can't normally happen — interactive subs are on RSS
+                # feeds — but guard anyway.)
+                logger.warning(
+                    f"source_sync: subscription {existing.platform}/"
+                    f"{existing.platform_channel_id} → feed_id={feed.id} is "
+                    f"owned by {existing.platform_user_id!r}, not sources.yaml;"
+                    f" leaving its settings untouched"
                 )
             else:
                 # Keep settings in sync with the file so operators can change

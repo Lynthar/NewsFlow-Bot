@@ -35,8 +35,10 @@ class Feed(Base):
     # Source type selects the fetcher. 'rss' is the default and keeps every
     # existing feed on the optimized RSS batch path; other values (json_api,
     # email_imap, …) route through a registered SourceFetcher. `config` holds
-    # source-specific settings (JSONPath mappings, IMAP target, …) as JSON —
-    # SQLite stores TEXT, Postgres JSONB. NULL for plain RSS.
+    # source-specific settings (JSONPath mappings, IMAP target, …) in a generic
+    # SQLAlchemy JSON column: TEXT on SQLite, a JSON column on Postgres (not
+    # JSONB — the blob is stored/loaded whole, never queried into). NULL for
+    # plain RSS.
     source_type: Mapped[str] = mapped_column(
         String(32), default="rss", server_default="rss", nullable=False
     )

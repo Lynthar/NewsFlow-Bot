@@ -64,6 +64,21 @@ async def test_seed_sent_entries_marks_all_existing(session):
     unsent = await repo.get_unsent_entries_for_subscription(sub.id)
     assert list(unsent) == []
 
+    # Seeded rows must carry seeded=True so the digest pipeline excludes
+    # backlog the channel never actually received.
+    from sqlalchemy import select
+
+    from newsflow.models.subscription import SentEntry
+
+    rows = (
+        await session.execute(
+            select(SentEntry).where(SentEntry.subscription_id == sub.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 3
+    assert all(r.seeded is True for r in rows)
+    assert all(r.was_filtered is False for r in rows)
+
 
 async def test_seed_sent_entries_empty_feed(session):
     feed = await _make_feed_with_entries(session, 0)

@@ -392,7 +392,9 @@ class SubscriptionRepository:
         """Seed SentEntry so a new subscription doesn't flood the channel
         with backlog. Entries ordered newest-first by published_at; the top
         `keep_latest` are left unsent (they'll be delivered on next dispatch
-        as a preview). Remaining entries are marked sent.
+        as a preview). Remaining entries are marked sent with ``seeded=True``
+        so the digest pipeline skips them — they were suppressed, never shown
+        to the channel.
 
         Returns:
             Number of rows seeded (i.e. count of entries excluded from preview).
@@ -422,6 +424,9 @@ class SubscriptionRepository:
                     subscription_id=subscription_id,
                     feed_id=feed_id,
                     guid=guid,
+                    # Mark as seeded, not delivered: these entries were never
+                    # shown to the channel, so the digest must skip them.
+                    seeded=True,
                 )
                 for guid in guids
             ]

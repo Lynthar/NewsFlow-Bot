@@ -1,0 +1,8 @@
+# This directory holds your editable declarative config: webhooks.yaml and
+# sources.yaml. Under Docker it is mounted read-only at /app/config (see
+# docker/docker-compose.yml). Copy a starting point from ../samples/ and edit:
+#
+#   cp samples/webhooks.example.yaml config/webhooks.yaml
+#   cp samples/sources.example.yaml  config/sources.yaml
+#
+# Files placed here are git-ignored (they may hold HMAC secrets / IMAP creds).

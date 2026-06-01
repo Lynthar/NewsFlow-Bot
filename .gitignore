@@ -42,6 +42,12 @@ uv.lock
 *.sqlite3
 data/
 
+# User-edited declarative config (webhooks.yaml / sources.yaml). Keep the dir
+# so the Docker bind mount has a source, but ignore its contents — they may
+# hold HMAC secrets / IMAP credentials.
+/config/*
+!/config/.gitkeep
+
 # Logs
 *.log
 

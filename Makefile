@@ -48,13 +48,20 @@ format:
 # Docker - Basic
 # ============================================
 
-# Build Docker image
+# Build the image locally. Compose pulls the prebuilt GHCR image by default;
+# to run THIS local build instead, set NEWSFLOW_IMAGE for the up command, e.g.
+#   make docker-build
+#   NEWSFLOW_IMAGE=newsflow-bot:latest make docker-up
 docker-build:
 	docker build -f docker/Dockerfile -t newsflow-bot:latest .
 
-# Start with Docker Compose
+# Start with Docker Compose (pulls the prebuilt image unless NEWSFLOW_IMAGE is set)
 docker-up:
 	docker-compose -f docker/docker-compose.yml up -d
+
+# Build locally and run that build (skips the GHCR pull)
+docker-up-local: docker-build
+	NEWSFLOW_IMAGE=newsflow-bot:latest docker-compose -f docker/docker-compose.yml up -d
 
 # Stop Docker Compose
 docker-down:

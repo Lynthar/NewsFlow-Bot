@@ -1,7 +1,8 @@
 # Declarative non-RSS sources, reconciled into the DB on every startup — the
 # counterpart to webhooks.yaml for sources that aren't plain RSS (JSON APIs,
-# IMAP newsletters, …). Copy to data/sources.yaml to enable; remove the file to
-# disable. Each source becomes a feed whose entries flow through the normal
+# IMAP newsletters, …). Copy to `config/sources.yaml` to enable (Docker — the
+# config/ dir is mounted in; bare-metal default `data/sources.yaml`); remove the
+# file to disable. Each source becomes a feed whose entries flow through the normal
 # filter / translate / silent / digest / delivery pipeline to its subscribers.
 #
 # Editing + restarting reconciles: added sources/subscribers are created,

@@ -88,12 +88,14 @@ cd NewsFlow-Bot
 cp .env.example .env
 nano .env     # fill in at least one DISCORD_TOKEN or TELEGRAM_TOKEN
 
-# 3. Run
+# 3. Run (pulls the prebuilt multi-arch image from GHCR — no local build)
 docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 
 You're live when you see `Discord bot logged in as ...` or `Telegram bot started successfully`.
+
+> Prefer to build the image yourself instead of pulling? `make docker-up-local` (or set `NEWSFLOW_IMAGE=newsflow-bot:latest` for the `up` command).
 
 **Getting a token**: Discord via [Developer Portal](https://discord.com/developers/applications); Telegram via [@BotFather](https://t.me/BotFather).
 
@@ -134,9 +136,11 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 
 Full reference (30+ commands across both platforms): [GUIDE.md §1](GUIDE.md#一完整命令参考).
 
-**Webhook delivery** is output-only (no bot commands) — drop a `data/webhooks.yaml` in your config dir and restart; see [GUIDE.md §4](GUIDE.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
+**Webhook delivery** is output-only (no bot commands) — under Docker, `cp samples/webhooks.example.yaml config/webhooks.yaml` (the `config/` dir is mounted into the container), edit, and restart; see [GUIDE.md §4](GUIDE.md#四webhook-推送) or the annotated [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml).
 
-**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared in `data/sources.yaml` — see [GUIDE.md §4B](GUIDE.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras: `make install-all` (or `pip install -e '.[source-json,source-email]'`).
+**Non-RSS sources** (JSON API, IMAP newsletters, inbound webhook push) are declared the same way in `config/sources.yaml` — see [GUIDE.md §4B](GUIDE.md#四b非-rss-信息源sourcesyaml) or [`samples/sources.example.yaml`](samples/sources.example.yaml). Extras are already in the Docker image; for a bare-metal run use `make install-all`.
+
+> Running bare-metal (not Docker)? These files default to `./data/` instead — override with `WEBHOOKS_CONFIG_PATH` / `SOURCES_CONFIG_PATH`.
 
 ---
 
@@ -201,7 +205,7 @@ Fast dev loop:
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 252 tests
+make test      # 326 tests
 make lint
 ```
 

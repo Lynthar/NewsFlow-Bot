@@ -1,7 +1,8 @@
 # NewsFlow webhook configuration — declarative source-of-truth.
 #
-# Copy this file to `data/webhooks.yaml` (or whatever `WEBHOOKS_CONFIG_PATH`
-# points at) and edit. The bot reconciles the DB against this file on every
+# Copy this file to `config/webhooks.yaml` (Docker — the config/ dir is mounted
+# into the container; bare-metal default is `data/webhooks.yaml`, or wherever
+# `WEBHOOKS_CONFIG_PATH` points) and edit. The bot reconciles the DB against this file on every
 # startup: added destinations/subscriptions are created, removed ones are
 # deleted. File absent → webhook delivery disabled entirely.
 #

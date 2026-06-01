@@ -14,10 +14,11 @@ services:
   # Main Application
   # ============================================
   newsflow:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: newsflow-bot:latest
+    # Pulls the prebuilt multi-arch image from GHCR by default — no local build.
+    # To run a locally-built image instead:
+    #   make docker-build      # builds newsflow-bot:latest
+    #   NEWSFLOW_IMAGE=newsflow-bot:latest docker compose -f docker/docker-compose.yml up -d
+    image: ${NEWSFLOW_IMAGE:-ghcr.io/lynthar/newsflow-bot:latest}
     container_name: newsflow-bot
     restart: unless-stopped
     env_file:
@@ -27,8 +28,18 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - API_ENABLED=${API_ENABLED:-false}
       - API_PORT=8000
+      # webhooks.yaml / sources.yaml are read from the host-mounted ./config dir
+      # (see volumes), so they're editable on the host. The bot reconciles them
+      # on every start.
+      - WEBHOOKS_CONFIG_PATH=/app/config/webhooks.yaml
+      - SOURCES_CONFIG_PATH=/app/config/sources.yaml
     volumes:
+      # Persistent app state (the SQLite DB), managed by Docker.
       - newsflow-data:/app/data
+      # Your declarative config, edited on the host and mounted read-only — the
+      # bot only ever reads these. Put webhooks.yaml / sources.yaml in ./config/
+      # to enable those features (file absent = feature off).
+      - ../config:/app/config:ro
     ports:
       - "${API_PORT:-8000}:8000"
     networks:

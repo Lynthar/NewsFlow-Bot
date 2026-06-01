@@ -88,12 +88,14 @@ cd NewsFlow-Bot
 cp .env.example .env
 nano .env     # 至少填一个 DISCORD_TOKEN 或 TELEGRAM_TOKEN
 
-# 3. 启动
+# 3. 启动（直接拉 GHCR 预构建多架构镜像，无需本地编译）
 docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 
 看到 `Discord bot logged in as ...` 或 `Telegram bot started successfully` 就跑起来了。
+
+> 想自己构建镜像而不是拉预构建的？用 `make docker-up-local`（或给 `up` 命令设 `NEWSFLOW_IMAGE=newsflow-bot:latest`）。
 
 **获取 token**：Discord 看 [Developer Portal](https://discord.com/developers/applications)；Telegram 找 [@BotFather](https://t.me/BotFather)。详细步骤见 [GUIDE.md](GUIDE.md#一完整命令参考)。
 
@@ -134,9 +136,11 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 
 **完整命令参考**（30+ 个）：[GUIDE.md 第 1 章](GUIDE.md#一完整命令参考)。
 
-**Webhook 推送**是纯出口（没有 bot 命令）——在配置目录放一份 `data/webhooks.yaml` 然后重启即可。详见 [GUIDE.md 第 4 章](GUIDE.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
+**Webhook 推送**是纯出口（没有 bot 命令）——Docker 部署下 `cp samples/webhooks.example.yaml config/webhooks.yaml`（`config/` 目录已挂载进容器），编辑后重启即可。详见 [GUIDE.md 第 4 章](GUIDE.md#四webhook-推送) 或带注释的 [`samples/webhooks.example.yaml`](samples/webhooks.example.yaml)。
 
-**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）在 `data/sources.yaml` 声明——详见 [GUIDE.md 第 4B 章](GUIDE.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。可选依赖：`make install-all`（或 `pip install -e '.[source-json,source-email]'`）。
+**非 RSS 源**（JSON API、IMAP newsletter、入站 webhook 推送）同样在 `config/sources.yaml` 声明——详见 [GUIDE.md 第 4B 章](GUIDE.md#四b非-rss-信息源sourcesyaml) 或 [`samples/sources.example.yaml`](samples/sources.example.yaml)。相关 extra 已打进 Docker 镜像；裸机运行才需 `make install-all`。
+
+> 裸机运行（非 Docker）？这两个文件默认在 `./data/` 下——用 `WEBHOOKS_CONFIG_PATH` / `SOURCES_CONFIG_PATH` 改路径。
 
 ---
 
@@ -201,7 +205,7 @@ API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 252 个测试
+make test      # 326 个测试
 make lint
 ```
 

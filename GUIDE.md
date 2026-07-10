@@ -1575,14 +1575,18 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 ```
 NewsFlow-Bot/
+├── .github/workflows/            # CI：test.yml（pytest 门禁）+ docker-publish.yml
 ├── alembic/                      # 迁移脚本 + env.py
 ├── docker/                       # Dockerfile + compose
-├── samples/                      # 预置 OPML（curated-feeds.opml）等
+├── samples/                      # 预置 OPML + webhooks/sources 示例 YAML
 ├── src/newsflow/
 │   ├── main.py                   # 启动入口
 │   ├── config.py                 # Settings（pydantic-settings）
 │   ├── core/                     # 无状态原语
-│   │   ├── feed_fetcher.py       # HTTP + feedparser + 条件请求
+│   │   ├── feed_fetcher.py       # HTTP + feedparser + 条件请求 + feed 自动发现
+│   │   ├── source_fetcher.py     # 非 RSS 源抽象（SourceFetcher 注册表）
+│   │   ├── sources/              # json_api / email_imap 拉取器
+│   │   ├── source_shortcuts.py   # gh:/gnews:/yt:/pypi:/reddit:/masto: 简写
 │   │   ├── content_processor.py  # HTML 清洗、源名映射
 │   │   ├── url_security.py       # SSRF 校验
 │   │   ├── filter.py             # FilterRule 关键词匹配
@@ -1590,9 +1594,10 @@ NewsFlow-Bot/
 │   │   └── timeutil.py           # 相对时间格式化
 │   ├── models/                   # SQLAlchemy ORM
 │   │   ├── base.py               # Base + engine + FK pragma
-│   │   ├── feed.py               # Feed / FeedEntry
+│   │   ├── feed.py               # Feed / FeedEntry（source_type/config）
 │   │   ├── subscription.py       # Subscription / SentEntry
 │   │   ├── digest.py             # ChannelDigest
+│   │   ├── webhook.py            # WebhookDestination
 │   │   └── migrate.py            # alembic upgrade 封装
 │   ├── repositories/             # DB 查询
 │   │   ├── feed_repository.py
@@ -1603,17 +1608,21 @@ NewsFlow-Bot/
 │   │   ├── feed_service.py
 │   │   ├── subscription_service.py   # 订阅 / 过滤 / OPML / 翻译配置
 │   │   ├── digest_service.py         # AI 日报/周报生成
+│   │   ├── webhook_sync.py           # webhooks.yaml → DB 对账（owner="yaml"）
+│   │   ├── source_sync.py            # sources.yaml → DB 对账（owner="source-yaml"）
 │   │   ├── cache.py                  # 内存 / Redis 抽象
 │   │   ├── translation/              # 翻译 provider + 工厂
-│   │   └── summarization/            # Digest LLM provider + 工厂
+│   │   ├── summarization/            # Digest LLM provider + 工厂
+│   │   └── _openai_compat.py         # OpenAI SDK 兼容垫片
 │   ├── adapters/                 # 平台 I/O
-│   │   ├── base.py               # BaseAdapter + Message + Protocol
+│   │   ├── base.py               # BaseAdapter + Message + Channel 异常契约
 │   │   ├── discord/bot.py        # /feed, /settings, /digest 命令
-│   │   └── telegram/bot.py       # /add, /filter, /digest 命令
-│   └── api/                      # FastAPI 路由（可选）
+│   │   ├── telegram/bot.py       # /add, /filter, /digest 命令
+│   │   └── webhook/              # 出站 HTTP 推送 + payload formats
+│   └── api/                      # FastAPI 路由（feeds/stats/health/ingest）
 ├── tests/
 │   ├── conftest.py               # 内存 SQLite session fixture
-│   └── unit/                     # 134 个测试
+│   └── unit/                     # 全部单元测试（CI 在 3.11/3.13 上全量跑）
 ├── pyproject.toml                # 依赖权威
 ├── alembic.ini                   # 迁移配置
 ├── Makefile                      # 常用命令
@@ -1625,5 +1634,5 @@ NewsFlow-Bot/
 ---
 
 读到这里就差不多了。剩下的细节建议直接读代码 —— 这个项目不大，
-`src/newsflow/` 总共 ~3500 行，一下午能通读。有任何这份文档没覆盖到的
+`src/newsflow/` 总共 ~13000 行，核心路径一天能通读。有任何这份文档没覆盖到的
 陷阱、决策、或困惑，欢迎开 issue 或直接 PR 补充到这里。

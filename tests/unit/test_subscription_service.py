@@ -75,6 +75,49 @@ async def test_resume_subscription_reactivates(session):
     assert sub.is_active is True
 
 
+async def test_resume_revives_auto_disabled_feed(session):
+    """The deactivation notice tells users resume re-enables the source —
+    so resume must reset the Feed's error state, not just the subscription
+    flag (fetch skips inactive feeds, so it can never self-heal)."""
+    sub = await _seed_sub(session)
+    sub.is_active = False
+    feed = await session.get(Feed, sub.feed_id)
+    feed.is_active = False
+    feed.error_count = 10
+    feed.last_error = "HTTP 500"
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.resume_subscription(
+        platform="discord", channel_id="c1", feed_url=FEED_URL
+    )
+
+    assert result.success is True
+    assert sub.is_active is True
+    assert feed.is_active is True
+    assert feed.error_count == 0
+    assert "re-enabled" in result.message
+
+
+async def test_resume_leaves_healthy_feed_untouched(session):
+    """Resuming a paused sub on a healthy feed must not fabricate the
+    're-enabled' notice or clobber live error-tracking state."""
+    sub = await _seed_sub(session)
+    sub.is_active = False
+    feed = await session.get(Feed, sub.feed_id)
+    feed.error_count = 3  # transient errors, still active and backing off
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.resume_subscription(
+        platform="discord", channel_id="c1", feed_url=FEED_URL
+    )
+
+    assert result.success is True
+    assert feed.error_count == 3
+    assert "re-enabled" not in result.message
+
+
 async def test_get_subscription_detail_returns_sub_and_recent_entries(session):
     sub = await _seed_sub(session)
     # Add 3 entries so detail has content.
@@ -543,3 +586,110 @@ async def test_channel_silent_default_paused_subs_excluded(session):
 
     svc = SubscriptionService(session)
     assert await svc._channel_silent_default("discord", "c1") is False
+
+
+# ── F10: paused subscriptions stay visible / bulk resume ─────────────────────
+
+
+async def _seed_two_subs(session):
+    """One active + one paused subscription in channel c1."""
+    feed_a = Feed(url="https://example.com/a", title="A", is_active=True)
+    feed_b = Feed(url="https://example.com/b", title="B", is_active=True)
+    session.add_all([feed_a, feed_b])
+    await session.flush()
+    sub_a = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c1",
+        feed_id=feed_a.id,
+        is_active=True,
+    )
+    sub_b = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c1",
+        feed_id=feed_b.id,
+        is_active=False,  # paused
+    )
+    session.add_all([sub_a, sub_b])
+    await session.flush()
+    return sub_a, sub_b, feed_a, feed_b
+
+
+async def test_get_channel_subscriptions_lists_paused_when_asked(session):
+    """Pausing must not make a subscription unfindable — /feed list and
+    export pass include_inactive=True; dispatch-facing callers keep the
+    active-only default."""
+    sub_a, sub_b, *_ = await _seed_two_subs(session)
+    svc = SubscriptionService(session)
+
+    active_only = await svc.get_channel_subscriptions("discord", "c1")
+    assert [s.id for s in active_only] == [sub_a.id]
+
+    everything = await svc.get_channel_subscriptions(
+        "discord", "c1", include_inactive=True
+    )
+    assert [s.id for s in everything] == [sub_a.id, sub_b.id]  # ordered by id
+
+
+async def test_export_opml_includes_paused_subscriptions(session):
+    """An export is a backup — dropping paused feeds would lose them."""
+    await _seed_two_subs(session)
+    svc = SubscriptionService(session)
+
+    xml = await svc.export_opml("discord", "c1")
+
+    assert "https://example.com/a" in xml
+    assert "https://example.com/b" in xml
+
+
+async def test_update_settings_reaches_paused_subscriptions(session):
+    """Channel-wide settings apply to paused subs too, so they don't resume
+    with stale language/translate values later."""
+    _, sub_b, *_ = await _seed_two_subs(session)
+    svc = SubscriptionService(session)
+
+    ok = await svc.update_settings(
+        platform="discord", channel_id="c1", target_language="ja"
+    )
+
+    assert ok is True
+    assert sub_b.target_language == "ja"
+
+
+async def test_resume_all_reactivates_subs_and_revives_feeds(session):
+    sub_a, sub_b, feed_a, feed_b = await _seed_two_subs(session)
+    # The paused sub's feed was also auto-disabled while nobody watched.
+    feed_b.is_active = False
+    feed_b.error_count = 10
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.resume_all_subscriptions("discord", "c1")
+
+    assert result.success is True
+    assert sub_b.is_active is True
+    assert feed_b.is_active is True
+    assert feed_b.error_count == 0
+    assert "1 subscription" in result.message
+    assert "1 auto-disabled feed" in result.message
+    # The already-active sub and healthy feed are untouched.
+    assert sub_a.is_active is True and feed_a.is_active is True
+
+
+async def test_resume_all_reports_nothing_to_do(session):
+    sub_a, sub_b, *_ = await _seed_two_subs(session)
+    sub_b.is_active = True
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.resume_all_subscriptions("discord", "c1")
+
+    assert result.success is True
+    assert "already active" in result.message
+
+
+async def test_resume_all_empty_channel_fails(session):
+    svc = SubscriptionService(session)
+    result = await svc.resume_all_subscriptions("discord", "empty-channel")
+    assert result.success is False

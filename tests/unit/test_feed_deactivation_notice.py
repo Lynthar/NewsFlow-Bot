@@ -155,6 +155,13 @@ async def test_notify_feed_deactivated_sends_to_all_subscribers(session, monkeyp
     # Verify channel IDs routed correctly.
     assert discord_adapter.send_text.call_args[0][0] == "c-disc"
     assert telegram_adapter.send_text.call_args[0][0] == "c-tg"
+    # Recovery hint must use each platform's own command syntax — Telegram
+    # has /resume, not Discord's /feed resume.
+    discord_text = discord_adapter.send_text.call_args[0][1]
+    telegram_text = telegram_adapter.send_text.call_args[0][1]
+    assert "/feed resume" in discord_text
+    assert "/resume" in telegram_text
+    assert "/feed resume" not in telegram_text
 
 
 async def test_notify_feed_deactivated_swallows_adapter_errors(session, monkeypatch):

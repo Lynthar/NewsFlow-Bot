@@ -18,7 +18,12 @@ from telegram.ext import (
     filters,
 )
 
-from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
+from newsflow.adapters.base import (
+    BaseAdapter,
+    ChannelGoneError,
+    ChannelMigratedError,
+    Message,
+)
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_keyword_csv
 from newsflow.core.timeutil import relative_time, time_until
@@ -43,7 +48,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/add &lt;url&gt; — Subscribe\n"
         "/remove &lt;url&gt; — Unsubscribe\n"
         "/pause &lt;url&gt; — Temporarily stop delivery\n"
-        "/resume &lt;url&gt; — Resume delivery\n"
+        "/resume &lt;url&gt; — Resume delivery (/resume all — every paused feed)\n"
         "/list [page] — List subscribed feeds\n"
         "/info &lt;url&gt; — Detailed status of one feed\n"
         "/test &lt;url&gt; — Check if a URL is a valid feed\n\n"
@@ -117,14 +122,26 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             name=f"preview:telegram:{result.subscription.id}",
         )
 
+    # Escape everything user-/feed-controlled: a title containing "&" or a
+    # URL with a query string would otherwise make Telegram reject the HTML
+    # parse — leaving the user stuck on "Adding feed..." although the
+    # subscription actually succeeded.
     if result.success:
-        feed_title = result.feed.title or url
+        feed_title = _escape_html(result.feed.title or url)
         if result.is_new:
-            message = f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{url}"
+            message = (
+                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{_escape_html(url)}"
+            )
         else:
-            message = f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{result.message}"
+            message = (
+                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n"
+                f"{_escape_html(result.message)}"
+            )
     else:
-        message = f"❌ <b>Failed to Add Feed</b>\n\n{result.message}\n\nURL: {url}"
+        message = (
+            f"❌ <b>Failed to Add Feed</b>\n\n{_escape_html(result.message)}\n\n"
+            f"URL: {_escape_html(url)}"
+        )
 
     await processing_msg.edit_text(message, parse_mode="HTML")
 
@@ -151,9 +168,9 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await session.commit()
 
     if result.success:
-        message = f"✅ <b>Feed Removed</b>\n\n{result.message}"
+        message = f"✅ <b>Feed Removed</b>\n\n{_escape_html(result.message)}"
     else:
-        message = f"❌ <b>Failed to Remove Feed</b>\n\n{result.message}"
+        message = f"❌ <b>Failed to Remove Feed</b>\n\n{_escape_html(result.message)}"
 
     await update.message.reply_text(message, parse_mode="HTML")
 
@@ -204,7 +221,11 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         service = SubscriptionService(session)
         subs = list(
             await service.get_channel_subscriptions(
-                platform="telegram", channel_id=chat_id
+                platform="telegram",
+                channel_id=chat_id,
+                # Paused subs must stay listed (with the ⏸ chip) or their
+                # URLs become unfindable and /resume impossible.
+                include_inactive=True,
             )
         )
 
@@ -262,9 +283,9 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /resume <url>."""
+    """Handle /resume <url> (or `/resume all` for every paused feed)."""
     if not context.args:
-        await update.message.reply_text("Usage: /resume <rss_url>")
+        await update.message.reply_text("Usage: /resume <rss_url> (or: /resume all)")
         return
     url = context.args[0]
     chat_id = str(update.effective_chat.id)
@@ -272,9 +293,14 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
-        result = await service.resume_subscription(
-            platform="telegram", channel_id=chat_id, feed_url=url
-        )
+        if url.strip().lower() == "all":
+            result = await service.resume_all_subscriptions(
+                platform="telegram", channel_id=chat_id
+            )
+        else:
+            result = await service.resume_subscription(
+                platform="telegram", channel_id=chat_id, feed_url=url
+            )
         await session.commit()
 
     prefix = "▶️" if result.success else "❌"
@@ -1043,14 +1069,17 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         message = (
             f"✅ <b>Feed Test: Success</b>\n\n"
-            f"<b>{result.feed_title or 'Untitled Feed'}</b>\n\n"
+            f"<b>{_escape_html(result.feed_title or 'Untitled Feed')}</b>\n\n"
             f"Entries: {len(result.entries)}\n"
-            f"URL: {url}"
+            f"URL: {_escape_html(url)}"
         )
         if desc:
-            message += f"\n\nDescription: {desc}"
+            message += f"\n\nDescription: {_escape_html(desc)}"
     else:
-        message = f"❌ <b>Feed Test: Failed</b>\n\nError: {result.error}\n\nURL: {url}"
+        message = (
+            f"❌ <b>Feed Test: Failed</b>\n\nError: "
+            f"{_escape_html(result.error or 'unknown')}\n\nURL: {_escape_html(url)}"
+        )
 
     await processing_msg.edit_text(message, parse_mode="HTML")
 
@@ -1082,7 +1111,10 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await session.commit()
 
     if success:
-        message = f"✅ <b>Language Updated</b>\n\nTranslation language set to: <b>{language}</b>"
+        message = (
+            f"✅ <b>Language Updated</b>\n\n"
+            f"Translation language set to: <b>{_escape_html(language)}</b>"
+        )
     else:
         message = "⚠️ <b>No Subscriptions</b>\n\nNo feeds subscribed in this chat."
 
@@ -1125,6 +1157,29 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         message = "⚠️ <b>No Subscriptions</b>\n\nNo feeds subscribed in this chat."
 
     await update.message.reply_text(message, parse_mode="HTML")
+
+
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Application-wide error handler: any exception escaping a command
+    handler lands here instead of dying silently in PTB's default logger.
+
+    Mirrors the Discord adapter's _on_app_command_error contract — the
+    user always gets *some* acknowledgement instead of a bot that appears
+    to have read the command and ignored it. Reply is plain text (no
+    parse_mode) so this path can't itself fail on markup.
+    """
+    logger.error("Unhandled error in Telegram handler", exc_info=context.error)
+
+    message = getattr(update, "effective_message", None)
+    if message is None:
+        return
+    try:
+        await message.reply_text(
+            "⚠️ Something went wrong handling that command. "
+            "Please check the syntax (/help) and try again."
+        )
+    except Exception:  # noqa: BLE001 — never let the error handler raise
+        logger.exception("Failed to send error notice to user")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1217,6 +1272,9 @@ class TelegramAdapter(BaseAdapter):
                 import_document,
             )
         )
+        # Without this, a handler exception is logged by PTB and the user
+        # gets nothing — every failure looks like the bot ignored them.
+        self.app.add_error_handler(_on_error)
 
         logger.info("Starting Telegram bot...")
         await self.app.initialize()
@@ -1270,6 +1328,20 @@ class TelegramAdapter(BaseAdapter):
             )
         return False
 
+    @staticmethod
+    def _migrated_chat_id(e: Exception) -> str | None:
+        """New chat id when `e` is Telegram's group→supergroup migration
+        signal, else None. ChatMigrated subclasses TelegramError directly
+        (not BadRequest/Forbidden), so _is_chat_gone never matches it —
+        without this check it would fall through to the generic handler
+        and the old chat id would be retried forever.
+        """
+        from telegram.error import ChatMigrated
+
+        if isinstance(e, ChatMigrated):
+            return str(e.new_chat_id)
+        return None
+
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Telegram chat. Raises ChannelGoneError
         when the chat is permanently unreachable (deleted, bot kicked,
@@ -1288,6 +1360,9 @@ class TelegramAdapter(BaseAdapter):
             )
             return True
         except Exception as e:
+            new_id = self._migrated_chat_id(e)
+            if new_id is not None:
+                raise ChannelMigratedError(channel_id, new_id, reason=str(e)) from e
             if self._is_chat_gone(e):
                 raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send message to {channel_id}: {e}")
@@ -1306,6 +1381,9 @@ class TelegramAdapter(BaseAdapter):
             )
             return True
         except Exception as e:
+            new_id = self._migrated_chat_id(e)
+            if new_id is not None:
+                raise ChannelMigratedError(channel_id, new_id, reason=str(e)) from e
             if self._is_chat_gone(e):
                 raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send text to {channel_id}: {e}")
@@ -1335,6 +1413,9 @@ class TelegramAdapter(BaseAdapter):
                 text=text,
             )
         except Exception as e:
+            new_id = self._migrated_chat_id(e)
+            if new_id is not None:
+                raise ChannelMigratedError(channel_id, new_id, reason=str(e)) from e
             if self._is_chat_gone(e):
                 raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send text to {channel_id}: {e}")

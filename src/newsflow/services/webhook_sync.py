@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 # The webhook model docstring promises this stays "small"; enforce it here.
 _MAX_WEBHOOK_TIMEOUT_S = 60
 
+# Subscription.platform_user_id marker identifying rows this sync owns.
+# sources.yaml also creates platform="webhook" subscriptions (owner
+# "source-yaml"), so every mutation/removal below must filter on this
+# marker — otherwise the two syncs delete each other's rows on startup.
+_OWNER = "yaml"
+
 
 class WebhookConfigError(ValueError):
     """Raised when webhooks.yaml is malformed or semantically invalid.
@@ -242,13 +248,17 @@ async def _sync_destinations(
             row.headers = cfg.headers
             row.timeout_s = cfg.timeout_s
 
-    # Drop destinations that disappeared from YAML, and their subscriptions.
-    # Subscriptions reference the destination via string name (not FK) so we
-    # have to delete them explicitly.
+    # Drop destinations that disappeared from YAML, and our subscriptions to
+    # them. Subscriptions reference the destination via string name (not FK)
+    # so we have to delete them explicitly. Subscriptions owned by
+    # sources.yaml that point at the removed destination are source_sync's
+    # to manage — deleting them here would just make source_sync recreate
+    # them (with a fresh SentEntry seed) on the very next startup.
     for name in set(existing) - set(config.destinations):
         await session.execute(
             delete(Subscription).where(
                 Subscription.platform == "webhook",
+                Subscription.platform_user_id == _OWNER,
                 Subscription.platform_channel_id == name,
             )
         )
@@ -283,6 +293,12 @@ async def _sync_subscriptions(
                     )
                     continue
                 feed = add_result.feed
+            elif not feed.is_active:
+                # Still declared in the file = the operator wants it working.
+                # Revive an auto-disabled feed on restart (the deactivation
+                # notice promises exactly this for YAML-declared feeds).
+                feed.reactivate()
+                logger.info(f"webhook_sync: reactivated auto-disabled feed {url!r}")
 
             desired.add((dest_name, feed.id))
 
@@ -295,9 +311,8 @@ async def _sync_subscriptions(
                 sub = Subscription(
                     platform="webhook",
                     # platform_user_id is NOT NULL but webhook has no human
-                    # user; "yaml" is a stable literal telling future readers
-                    # "owned by the YAML config".
-                    platform_user_id="yaml",
+                    # user; the marker says "owned by webhooks.yaml".
+                    platform_user_id=_OWNER,
                     platform_channel_id=dest_name,
                     feed_id=feed.id,
                     is_active=True,
@@ -315,6 +330,18 @@ async def _sync_subscriptions(
                 logger.info(
                     f"webhook_sync: subscribed {dest_name!r} → {url!r}"
                 )
+            elif existing.platform_user_id != _OWNER:
+                # The same (destination, feed) pair is also declared in
+                # sources.yaml, which owns this row — mirror the ownership
+                # guard in source_sync._reconcile and leave it untouched
+                # rather than rewriting its settings (or double-delivering
+                # via a duplicate row of our own).
+                logger.warning(
+                    f"webhook_sync: subscription {dest_name!r} → "
+                    f"feed_id={feed.id} is owned by "
+                    f"{existing.platform_user_id!r}, not webhooks.yaml; "
+                    f"leaving its settings untouched"
+                )
             else:
                 # Keep translate / language in sync with the YAML defaults so
                 # operators can flip them by editing the file and restarting.
@@ -323,9 +350,16 @@ async def _sync_subscriptions(
                 if not existing.is_active:
                     existing.is_active = True
 
-    # Drop webhook subscriptions that dropped out of the YAML.
+    # Drop our webhook subscriptions that dropped out of the YAML. The owner
+    # filter is load-bearing: without it, every startup would delete the
+    # webhook-platform subscriptions sources.yaml owns (cascading their
+    # SentEntry dedupe history) just for source_sync to recreate them —
+    # losing any not-yet-delivered backlog across each restart.
     result = await session.execute(
-        select(Subscription).where(Subscription.platform == "webhook")
+        select(Subscription).where(
+            Subscription.platform == "webhook",
+            Subscription.platform_user_id == _OWNER,
+        )
     )
     for sub in result.scalars().all():
         if (sub.platform_channel_id, sub.feed_id) not in desired:

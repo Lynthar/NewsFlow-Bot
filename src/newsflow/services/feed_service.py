@@ -94,6 +94,13 @@ class FeedService:
         # Check if feed already exists
         existing = await self.repo.get_feed_by_url(url)
         if existing:
+            # Re-adding is the natural "I want this working again" signal:
+            # an auto-disabled feed (10 straight errors) has no other
+            # user-reachable revival path — fetch skips inactive feeds, so
+            # its error state can never clear on its own.
+            if not existing.is_active:
+                existing.reactivate()
+                logger.info(f"Reactivated auto-disabled feed on re-add: {url}")
             return AddFeedResult(
                 success=True,
                 feed=existing,
@@ -110,6 +117,11 @@ class FeedService:
             discovered = result.discovered_feeds[0]
             existing = await self.repo.get_feed_by_url(discovered)
             if existing:
+                if not existing.is_active:
+                    existing.reactivate()
+                    logger.info(
+                        f"Reactivated auto-disabled feed on re-add: {discovered}"
+                    )
                 return AddFeedResult(
                     success=True,
                     feed=existing,
@@ -209,7 +221,9 @@ class FeedService:
             existing.source_type = source_type
             existing.config = config
             if not existing.is_active:
-                existing.is_active = True
+                # Full revival, not just the flag: with a stale error_count
+                # of 10, the very next fetch error would disable it again.
+                existing.reactivate()
             return existing
         return await self.repo.create_feed(
             url=url, source_type=source_type, config=config

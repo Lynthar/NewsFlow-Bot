@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.adapters.base import ChannelGoneError, Message
+from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError, Message
 from newsflow.config import get_settings
 from newsflow.core.content_processor import (
     MAX_SUMMARY_LENGTH,
@@ -210,13 +210,33 @@ class Dispatcher:
                         dead_channels=dead_channels,
                     )
                     result.messages_sent += sent
+                    # Commit after each subscription, not once per round.
+                    # Messages went out the moment the adapter returned —
+                    # a single round-end commit meant any late failure
+                    # (SQLITE_BUSY, crash, deploy restart) rolled back the
+                    # whole round's sent-marks and re-pushed EVERY message
+                    # next cycle. Per-sub commits bound the re-send window
+                    # to one subscription (≤ the per-cycle entry limit)
+                    # and release the SQLite write lock between subs so
+                    # slash commands aren't starved during a long round.
+                    # (Safe to keep using the ORM objects: the session
+                    # factory sets expire_on_commit=False.)
+                    try:
+                        await session.commit()
+                    except Exception:
+                        logger.exception(
+                            f"Commit failed after subscription {sub.id}; "
+                            f"its sent-marks may replay next cycle"
+                        )
+                        await session.rollback()
 
-                # Always commit so per-feed metadata written by fetch_all_feeds
-                # (etag / last_modified / last_fetched_at / error_count /
-                # next_retry_at) persists even when every feed returned 304 or
-                # no new items. Without this the AsyncSession context manager
-                # rolls back on exit, silently defeating the ETag cache,
-                # exponential backoff, and the 10-errors auto-deactivate.
+                # Final commit covers rounds with zero subscriptions — feed
+                # metadata written by fetch_all_feeds (etag / last_modified /
+                # last_fetched_at / error_count / next_retry_at) must persist
+                # even when every feed returned 304 or no new items. Without
+                # it the AsyncSession context manager would roll those back,
+                # silently defeating the ETag cache, exponential backoff, and
+                # the 10-errors auto-deactivate.
                 await session.commit()
 
             except Exception as e:
@@ -342,6 +362,41 @@ class Dispatcher:
                 # buckets; Telegram AIORateLimiter); this is just a nudge to
                 # avoid bursty spikes when many entries are due at once.
                 await asyncio.sleep(0.1)
+
+            except ChannelMigratedError as e:
+                # Telegram group upgraded to supergroup: the channel still
+                # exists but under a new chat id, and the old id rejects
+                # every send from now on. Repoint all subscriptions and
+                # any digest config at the new id; the not-yet-sent
+                # entries (including this one) deliver there on the next
+                # cycle. The outer dispatch_once commit persists it.
+                from newsflow.repositories.digest_repository import (
+                    ChannelDigestRepository,
+                )
+
+                # Capture before migrate_channel: it rewrites the identity-
+                # mapped `subscription` object in place, so reading the
+                # attribute afterwards would yield the NEW id.
+                platform = subscription.platform
+                old_channel_id = subscription.platform_channel_id
+
+                moved = await sub_repo.migrate_channel(
+                    platform, old_channel_id, e.new_channel_id
+                )
+                digests_moved = await ChannelDigestRepository(
+                    session
+                ).migrate_channel(platform, old_channel_id, e.new_channel_id)
+                if dead_channels is not None:
+                    # Remaining cached subs in this cycle still carry the
+                    # old id — skip them; next cycle reads the migrated
+                    # rows and delivers everything to the new id.
+                    dead_channels.add((platform, old_channel_id))
+                logger.warning(
+                    f"Channel {platform}/{old_channel_id} migrated to "
+                    f"{e.new_channel_id}; repointed {moved} subscription(s) "
+                    f"and {digests_moved} digest config(s)"
+                )
+                return sent_count
 
             except ChannelGoneError as e:
                 # Channel is permanently unreachable. Deactivate every
@@ -484,8 +539,15 @@ class Dispatcher:
         # redundant text. See content_processor.dedup_summary for rules.
         plain_summary = dedup_summary(entry.title, plain_summary)
 
-        title_translated = entry.title_translated
-        summary_translated = entry.summary_translated
+        # Translated fields start empty: the cache on FeedEntry is shared by
+        # every subscription to this feed, so seeding from it here would hand
+        # a channel that turned translation OFF (or targets another language)
+        # whatever translation some other channel happened to cache first.
+        # Only the translate branch below may fill these — _translate_entry
+        # checks the cached language actually matches this subscription's
+        # target before reusing it.
+        title_translated: str | None = None
+        summary_translated: str | None = None
 
         # Translate if enabled for this subscription. Pass the cleaned
         # summary so we don't spend tokens translating <p> tags or get back
@@ -584,19 +646,39 @@ class Dispatcher:
                 return
 
             name = feed_title or feed_url
-            text = (
-                f"⚠️ The RSS feed \"{name}\" has been auto-disabled after "
-                f"10 consecutive fetch errors. Use /feed resume <url> once "
-                f"the source is working again, or /feed remove <url> to "
-                f"clean up.\nURL: {feed_url}"
-            )
+
+            # Recovery instructions differ per platform — quoting a Discord
+            # command shape at a Telegram user sends them down a dead end.
+            def _text_for(platform: str) -> str:
+                if platform == "telegram":
+                    hint = (
+                        "Use /resume <url> once the source is working again, "
+                        "or /remove <url> to clean up."
+                    )
+                elif platform == "webhook":
+                    hint = (
+                        "Feeds declared in YAML are re-enabled automatically "
+                        "on the next bot restart; remove it from the file to "
+                        "clean up."
+                    )
+                else:
+                    hint = (
+                        "Use /feed resume <url> once the source is working "
+                        "again, or /feed remove <url> to clean up."
+                    )
+                return (
+                    f"⚠️ The RSS feed \"{name}\" has been auto-disabled after "
+                    f"10 consecutive fetch errors. {hint}\nURL: {feed_url}"
+                )
 
             for sub in subs:
                 adapter = self._adapters.get(sub.platform)
                 if adapter is None:
                     continue
                 try:
-                    await adapter.send_text(sub.platform_channel_id, text)
+                    await adapter.send_text(
+                        sub.platform_channel_id, _text_for(sub.platform)
+                    )
                 except Exception:
                     logger.exception(
                         f"Failed to send deactivation notice to "
@@ -932,6 +1014,44 @@ class Dispatcher:
                     f"Delivered digest to {config.platform}/"
                     f"{config.platform_channel_id} ({chunks_sent} chunks)"
                 )
+            except ChannelMigratedError as e:
+                # Same channel, new chat id (Telegram supergroup upgrade).
+                # Repoint subs + digest config in a fresh session; the
+                # digest wasn't marked delivered, so the next tick
+                # regenerates and delivers it to the new id.
+                from newsflow.repositories.subscription_repository import (
+                    SubscriptionRepository,
+                )
+
+                # Capture before migrating — migrate_channel may rewrite
+                # the identity-mapped `config` object in place.
+                platform = config.platform
+                old_channel_id = config.platform_channel_id
+
+                try:
+                    async with session_factory() as mig_session:
+                        moved = await SubscriptionRepository(
+                            mig_session
+                        ).migrate_channel(
+                            platform, old_channel_id, e.new_channel_id
+                        )
+                        digests_moved = await ChannelDigestRepository(
+                            mig_session
+                        ).migrate_channel(
+                            platform, old_channel_id, e.new_channel_id
+                        )
+                        await mig_session.commit()
+                    logger.warning(
+                        f"Digest channel {platform}/{old_channel_id} "
+                        f"migrated to {e.new_channel_id}; repointed {moved} "
+                        f"subscription(s) and {digests_moved} digest "
+                        f"config(s)"
+                    )
+                except Exception:
+                    logger.exception(
+                        f"Failed to migrate channel "
+                        f"{platform}/{old_channel_id}"
+                    )
             except ChannelGoneError as e:
                 # Digest target channel is gone. Disable the digest config
                 # AND any remaining active subs pointing at this channel

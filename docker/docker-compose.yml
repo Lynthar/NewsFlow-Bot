@@ -1,13 +1,16 @@
 # NewsFlow Bot - Docker Compose Configuration
 #
-# Usage:
-#   1. Copy ../.env.example to ../.env and configure your tokens
-#   2. Run: docker-compose up -d
-#   3. View logs: docker-compose logs -f newsflow
-#   4. Stop: docker-compose down
+# Usage (from the repo root, Compose v2):
+#   1. Copy .env.example to .env and configure your tokens
+#   2. Run:      docker compose -f docker/docker-compose.yml up -d
+#   3. Logs:     docker compose -f docker/docker-compose.yml logs -f newsflow
+#   4. Stop:     docker compose -f docker/docker-compose.yml down
 #
-# For production with Redis:
-#   docker-compose --profile with-redis up -d
+# With Redis / Postgres profiles:
+#   docker compose -f docker/docker-compose.yml --profile with-redis up -d
+#   docker compose -f docker/docker-compose.yml --profile with-postgres up -d
+#     (for Postgres, also set DATABASE_URL in .env — see the postgres
+#      service below)
 
 services:
   # ============================================
@@ -24,9 +27,17 @@ services:
     env_file:
       - ../.env
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./data/newsflow.db
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - API_ENABLED=${API_ENABLED:-false}
+      # Keys in this block OVERRIDE .env — that's the trap this file used
+      # to have (DATABASE_URL / LOG_LEVEL / API_ENABLED were pinned here,
+      # so setting them in .env silently did nothing and the
+      # with-postgres profile never actually connected to Postgres).
+      # Only container-infrastructure values belong here; user config
+      # flows through env_file, with image ENV defaults as fallback.
+      #
+      # In-container API port stays fixed: the ports mapping below always
+      # forwards to 8000. To change the HOST port, set API_PORT in your
+      # shell (`API_PORT=9000 docker compose ... up -d`) — compose does
+      # NOT read ../.env for ${...} interpolation.
       - API_PORT=8000
       # webhooks.yaml / sources.yaml are read from the host-mounted ./config dir
       # (see volumes), so they're editable on the host. The bot reconciles them
@@ -82,7 +93,12 @@ services:
   # ============================================
   # PostgreSQL Database (Optional)
   # ============================================
-  # Enable with: docker-compose --profile with-postgres up -d
+  # Enable with:
+  #   docker compose -f docker/docker-compose.yml --profile with-postgres up -d
+  # AND point the app at it by setting in .env:
+  #   DATABASE_URL=postgresql+asyncpg://newsflow:newsflow@postgres/newsflow
+  # (host is the service name `postgres`; without DATABASE_URL the app
+  # keeps its SQLite default and this container just idles.)
   postgres:
     image: postgres:15-alpine
     container_name: newsflow-postgres

@@ -291,10 +291,63 @@ class SubscriptionService:
             return SubscriptionActionResult(
                 success=False, message="Subscription not found"
             )
+        message = f"Resumed {feed.title or feed_url}"
+        # The auto-disable notice tells users to run resume "once the source
+        # is working again" — honor that: an auto-disabled feed has no other
+        # user-reachable revival path (fetch skips inactive feeds, so its
+        # error counter can never reset on its own).
+        if not feed.is_active:
+            feed.reactivate()
+            message += " (feed re-enabled; it will be fetched next cycle)"
+            logger.info(f"Reactivated auto-disabled feed on resume: {feed_url}")
         logger.info(f"Resumed: {platform}/{channel_id} × {feed_url}")
-        return SubscriptionActionResult(
-            success=True, message=f"Resumed {feed.title or feed_url}"
+        return SubscriptionActionResult(success=True, message=message)
+
+    async def resume_all_subscriptions(
+        self,
+        platform: str,
+        channel_id: str,
+    ) -> SubscriptionActionResult:
+        """Reactivate every paused subscription in a channel, reviving any
+        auto-disabled feeds they point at.
+
+        Exists for the bulk-pause scenarios a per-URL resume can't
+        reasonably cover: the bot being kicked and re-invited (ChannelGone
+        deactivates the whole channel), or an operator un-mothballing a
+        channel — dozens of URLs nobody wants to retype.
+        """
+        subs = await self.sub_repo.get_channel_subscriptions(
+            platform, channel_id, include_inactive=True
         )
+        if not subs:
+            return SubscriptionActionResult(
+                success=False, message="No subscriptions in this channel"
+            )
+
+        resumed = 0
+        feeds_revived = 0
+        for sub in subs:
+            if not sub.is_active:
+                sub.is_active = True
+                resumed += 1
+            if sub.feed and not sub.feed.is_active:
+                sub.feed.reactivate()
+                feeds_revived += 1
+
+        if resumed == 0 and feeds_revived == 0:
+            return SubscriptionActionResult(
+                success=True,
+                message=f"All {len(subs)} subscription(s) already active",
+            )
+
+        message = f"Resumed {resumed} subscription(s)"
+        if feeds_revived:
+            message += f"; re-enabled {feeds_revived} auto-disabled feed(s)"
+        logger.info(
+            f"Resume all: {platform}/{channel_id} — {resumed} subs, "
+            f"{feeds_revived} feeds revived"
+        )
+        return SubscriptionActionResult(success=True, message=message)
 
     async def get_subscription_detail(
         self,
@@ -324,9 +377,13 @@ class SubscriptionService:
         self,
         platform: str,
         channel_id: str,
+        include_inactive: bool = False,
     ) -> Sequence[Subscription]:
-        """Get all subscriptions for a channel."""
-        return await self.sub_repo.get_channel_subscriptions(platform, channel_id)
+        """Get all subscriptions for a channel. User-facing listings pass
+        include_inactive=True so paused subscriptions stay visible."""
+        return await self.sub_repo.get_channel_subscriptions(
+            platform, channel_id, include_inactive=include_inactive
+        )
 
     async def get_subscription_feeds(
         self,
@@ -352,7 +409,12 @@ class SubscriptionService:
         """
         if feed_url:
             feed_url = expand_source_shortcut(feed_url)
-        subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
+        # Paused subscriptions get the new settings too — otherwise a channel
+        # language change silently skips them and they resume with stale
+        # settings later.
+        subs = await self.sub_repo.get_channel_subscriptions(
+            platform, channel_id, include_inactive=True
+        )
 
         if not subs:
             return False
@@ -584,8 +646,12 @@ class SubscriptionService:
     async def export_opml(
         self, platform: str, channel_id: str
     ) -> str:
-        """Dump this channel's subscriptions as an OPML 2.0 document."""
-        subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
+        """Dump this channel's subscriptions as an OPML 2.0 document.
+        Includes paused subscriptions — an export is a backup, and silently
+        dropping paused feeds would lose them on re-import."""
+        subs = await self.sub_repo.get_channel_subscriptions(
+            platform, channel_id, include_inactive=True
+        )
         entries = [
             OpmlEntry(
                 url=sub.feed.url,

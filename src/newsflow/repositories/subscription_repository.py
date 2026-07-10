@@ -54,20 +54,64 @@ class SubscriptionRepository:
         )
         return result.scalar_one_or_none()
 
+    async def migrate_channel(
+        self, platform: str, old_channel_id: str, new_channel_id: str
+    ) -> int:
+        """Repoint every subscription for (platform, old_channel_id) at
+        new_channel_id.
+
+        Telegram group→supergroup migrations keep members and history but
+        issue a brand-new chat id; rewriting the rows in place (same id, so
+        SentEntry dedupe history rides along) keeps delivery seamless. If
+        the new id already has a subscription for the same feed (bot was
+        re-added and the feed re-subscribed before we saw the migration),
+        the old row is dropped in favor of the incumbent. Returns the
+        number of rows repointed.
+        """
+        result = await self.session.execute(
+            select(Subscription).where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == old_channel_id,
+            )
+        )
+        moved = 0
+        for sub in result.scalars().all():
+            conflict = await self.get_subscription(
+                platform, new_channel_id, sub.feed_id
+            )
+            if conflict is not None:
+                await self.session.delete(sub)
+                continue
+            sub.platform_channel_id = new_channel_id
+            moved += 1
+        await self.session.flush()
+        return moved
+
     async def get_channel_subscriptions(
         self,
         platform: str,
         channel_id: str,
+        include_inactive: bool = False,
     ) -> Sequence[Subscription]:
-        """Get all subscriptions for a channel."""
+        """Get all subscriptions for a channel.
+
+        By default only active ones (what dispatch and the silent-inherit
+        heuristic use). Pass include_inactive=True for user-facing views —
+        /feed list and OPML export must show paused subscriptions, or
+        pausing makes them (and their URLs) unfindable and thus
+        unresumable. Ordered by id so pagination is stable across calls.
+        """
+        conditions = [
+            Subscription.platform == platform,
+            Subscription.platform_channel_id == channel_id,
+        ]
+        if not include_inactive:
+            conditions.append(Subscription.is_active == True)
         result = await self.session.execute(
             select(Subscription)
             .options(selectinload(Subscription.feed))
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-                Subscription.is_active == True,
-            )
+            .where(*conditions)
+            .order_by(Subscription.id)
         )
         return result.scalars().all()
 
@@ -484,10 +528,21 @@ class SubscriptionRepository:
                 )
             )
 
+        # Oldest first, for two reasons. Chronology: the newest article
+        # should land at the bottom of the chat, not above older ones.
+        # Backlog fairness: with more than `limit` pending, newest-first
+        # let each cycle's fresh entries permanently squeeze out older
+        # ones until retention silently dropped them — oldest-first
+        # drains the backlog across cycles instead. Undated entries sort
+        # first (can't age them; deliver rather than starve), id breaks
+        # ties deterministically.
         result = await self.session.execute(
             select(FeedEntry)
             .where(*conditions)
-            .order_by(FeedEntry.published_at.desc().nullslast())
+            .order_by(
+                FeedEntry.published_at.asc().nullsfirst(),
+                FeedEntry.id.asc(),
+            )
             .limit(limit)
         )
         return result.scalars().all()

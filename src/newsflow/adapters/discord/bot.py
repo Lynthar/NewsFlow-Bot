@@ -196,11 +196,19 @@ class NewsFlowBot(commands.Bot):
     """
 
     def __init__(self) -> None:
+        # Default (non-privileged) intents only. This bot is slash-command
+        # only — app commands arrive as interactions, which no intent gates —
+        # so requesting message_content would force every operator through
+        # the Developer Portal's privileged-intent toggle for nothing, and
+        # crash-loop the process (PrivilegedIntentsRequired) when they
+        # inevitably don't know to flip it.
         intents = discord.Intents.default()
-        intents.message_content = True
 
         super().__init__(
-            command_prefix="!",  # Fallback prefix
+            # No prefix commands are registered; when_mentioned is an inert
+            # placeholder that also suppresses discord.py's "message content
+            # intent is missing" startup warning (string prefixes trigger it).
+            command_prefix=commands.when_mentioned,
             intents=intents,
             help_command=None,
         )
@@ -355,6 +363,9 @@ class FeedCommands(commands.Cog):
                 await service.get_channel_subscriptions(
                     platform="discord",
                     channel_id=str(interaction.channel_id),
+                    # Paused subs must stay listed (with the ⏸ chip) or their
+                    # URLs become unfindable and /feed resume impossible.
+                    include_inactive=True,
                 )
             )
 
@@ -414,7 +425,7 @@ class FeedCommands(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @feed_group.command(name="resume", description="Resume delivery from a paused feed")
-    @app_commands.describe(url="The RSS feed URL to resume")
+    @app_commands.describe(url="The RSS feed URL to resume, or 'all' for every paused feed")
     async def feed_resume(
         self, interaction: discord.Interaction, url: str
     ) -> None:
@@ -422,11 +433,17 @@ class FeedCommands(commands.Cog):
         session_factory = get_session_factory()
         async with session_factory() as session:
             service = SubscriptionService(session)
-            result = await service.resume_subscription(
-                platform="discord",
-                channel_id=str(interaction.channel_id),
-                feed_url=url,
-            )
+            if url.strip().lower() == "all":
+                result = await service.resume_all_subscriptions(
+                    platform="discord",
+                    channel_id=str(interaction.channel_id),
+                )
+            else:
+                result = await service.resume_subscription(
+                    platform="discord",
+                    channel_id=str(interaction.channel_id),
+                    feed_url=url,
+                )
             await session.commit()
 
         embed = discord.Embed(

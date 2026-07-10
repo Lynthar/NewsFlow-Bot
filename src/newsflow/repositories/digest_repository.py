@@ -86,6 +86,26 @@ class ChannelDigestRepository:
         )
         return result.rowcount
 
+    async def migrate_channel(
+        self, platform: str, old_channel_id: str, new_channel_id: str
+    ) -> int:
+        """Repoint this channel's digest config at a new platform channel
+        id (Telegram group→supergroup migration). If the new id already
+        has its own config, the incumbent wins and the old row is dropped.
+        Returns the number of rows repointed (0 or 1).
+        """
+        old = await self.get(platform, old_channel_id)
+        if old is None:
+            return 0
+        incumbent = await self.get(platform, new_channel_id)
+        if incumbent is not None:
+            await self.session.delete(old)
+            await self.session.flush()
+            return 0
+        old.platform_channel_id = new_channel_id
+        await self.session.flush()
+        return 1
+
     async def mark_delivered(
         self,
         digest_id: int,

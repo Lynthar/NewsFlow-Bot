@@ -38,6 +38,33 @@ class ChannelGoneError(Exception):
         self.reason = reason
 
 
+class ChannelMigratedError(Exception):
+    """Adapter signals that the target channel still exists but now lives
+    under a different platform id.
+
+    Canonical case: Telegram's group→supergroup migration — members and
+    history survive, but the chat gets a brand-new id and the old one
+    rejects every send from then on. The dispatcher catches this and
+    repoints all subscriptions / digest configs from `channel_id` to
+    `new_channel_id`; undelivered entries go out to the new id on the
+    next cycle.
+
+    Contrast ChannelGoneError: there the destination truly no longer
+    exists and the reaction is deactivation, not migration.
+    """
+
+    def __init__(
+        self, channel_id: str, new_channel_id: str, reason: str = ""
+    ) -> None:
+        msg = f"channel {channel_id} migrated to {new_channel_id}"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+        self.channel_id = channel_id
+        self.new_channel_id = new_channel_id
+        self.reason = reason
+
+
 @dataclass
 class Message:
     """

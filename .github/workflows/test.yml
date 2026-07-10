@@ -1,0 +1,76 @@
+name: Tests
+
+# Quality gate for every push and PR. The Docker image publish
+# (docker-publish.yml) runs independently; this is what tells you a
+# change is actually safe to ship.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The supported range's endpoints (3.14 blocked on lxml wheels).
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install project with all extras + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+          pip install "pytest>=7.4,<8" "pytest-asyncio>=0.23,<0.24"
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  # Informational for now (continue-on-error): ruff/mypy report existing
+  # debt across the codebase (unformatted files, strict-mypy gaps) that
+  # predates this workflow. Flip these to blocking in the dedicated
+  # cleanup change that runs `ruff format` / fixes the findings — doing
+  # that here would bury functional diffs under a 37-file reformat.
+  lint:
+    name: ruff + mypy (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+          pip install "ruff>=0.1,<0.2" "mypy>=1.8,<2"
+
+      - name: Ruff check
+        continue-on-error: true
+        run: ruff check src/
+
+      - name: Ruff format check
+        continue-on-error: true
+        run: ruff format --check src/
+
+      - name: Mypy
+        continue-on-error: true
+        run: mypy src/

@@ -463,3 +463,33 @@ subscriptions:
         )
         == 0
     )
+
+
+async def test_sync_reactivates_auto_disabled_feed(session, monkeypatch, tmp_path):
+    """A feed still declared in webhooks.yaml is revived on restart after an
+    auto-disable — the deactivation notice promises exactly this for
+    YAML-declared feeds."""
+    _patch_session_factory(monkeypatch, session)
+    _patch_feed_fetcher(monkeypatch)
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/a
+subscriptions:
+  a:
+    - https://feed.example.com/rss
+""",
+    )
+    await sync_webhooks(path)
+
+    feed = (await session.execute(select(Feed))).scalars().one()
+    feed.is_active = False
+    feed.error_count = 10
+    await session.commit()
+
+    await sync_webhooks(path)
+
+    assert feed.is_active is True
+    assert feed.error_count == 0

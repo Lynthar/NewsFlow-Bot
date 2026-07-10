@@ -87,3 +87,21 @@ async def test_apply_fetch_result_empty_entries_returns_no_new(session):
     assert result.success is True
     assert result.message == "No new entries"
     assert result.new_entries == []
+
+
+async def test_add_feed_reactivates_auto_disabled_existing(session):
+    """Re-adding an existing feed that was auto-disabled revives it —
+    otherwise remove + re-add (the notice's other suggestion) leaves the
+    feed permanently dead."""
+    feed = await _make_feed(session)
+    feed.is_active = False
+    feed.error_count = 10
+    await session.flush()
+
+    svc = FeedService(session)
+    result = await svc.add_feed(feed.url)
+
+    assert result.success is True
+    assert result.feed.id == feed.id
+    assert feed.is_active is True
+    assert feed.error_count == 0

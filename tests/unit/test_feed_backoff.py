@@ -97,3 +97,23 @@ async def test_update_feed_metadata_clears_next_retry(session):
     assert feed.next_retry_at is None
     assert feed.error_count == 0
     assert feed.last_error is None
+
+
+def test_reactivate_revives_auto_disabled_feed():
+    """reactivate() is the only revival path for a feed mark_error disabled —
+    fetch skips inactive feeds, so mark_success can never run for them."""
+    feed = Feed(
+        url="https://example.com/feed",
+        is_active=False,
+        error_count=10,
+        last_error="HTTP 500",
+    )
+    feed.next_retry_at = datetime.now(timezone.utc) + timedelta(hours=32)
+
+    feed.reactivate()
+
+    assert feed.is_active is True
+    assert feed.error_count == 0
+    assert feed.next_retry_at is None
+    # Error history stays visible until the next fetch outcome replaces it.
+    assert feed.last_error == "HTTP 500"

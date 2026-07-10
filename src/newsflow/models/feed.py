@@ -105,6 +105,20 @@ class Feed(Base):
         if self.error_count >= 10:
             self.is_active = False
 
+    def reactivate(self) -> None:
+        """Give a (possibly auto-disabled) feed a fresh chance: clear the
+        error streak and backoff so the next dispatch cycle fetches it again.
+
+        This is the only revival path for a feed that mark_error() disabled —
+        get_feeds_due_for_fetch skips inactive feeds, so mark_success() can
+        never run for them. Called when a user resumes/re-adds a subscription
+        or a YAML sync re-declares the feed. `last_error` is kept for
+        /feed status history until the next fetch outcome overwrites it.
+        """
+        self.is_active = True
+        self.error_count = 0
+        self.next_retry_at = None
+
 
 class FeedEntry(Base):
     """

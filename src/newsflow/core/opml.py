@@ -11,10 +11,10 @@ NetNewsWire, etc.). Import tolerates the common variants:
 Export always produces a flat list.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Sequence
-from xml.etree import ElementTree as ET
+from datetime import UTC, datetime
+from xml.etree import ElementTree as ET  # noqa: N817
 
 # defusedxml hardens the stdlib parser against billion-laughs / external-entity
 # attacks. Parsing is the only untrusted path (URL fetch + file upload); the
@@ -68,7 +68,7 @@ def build_opml(
 
     head = ET.SubElement(opml, "head")
     ET.SubElement(head, "title").text = title
-    ET.SubElement(head, "dateCreated").text = datetime.now(timezone.utc).strftime(
+    ET.SubElement(head, "dateCreated").text = datetime.now(UTC).strftime(
         "%a, %d %b %Y %H:%M:%S GMT"
     )
 
@@ -83,6 +83,4 @@ def build_opml(
         ET.SubElement(body, "outline", **attrs)
 
     ET.indent(opml, space="  ")
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(
-        opml, encoding="unicode"
-    )
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(opml, encoding="unicode")

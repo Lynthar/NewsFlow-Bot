@@ -4,7 +4,7 @@ Statistics API endpoints.
 Provides endpoints for viewing bot statistics.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -63,7 +63,7 @@ async def get_stats(
     total_feeds = total_feeds_result.scalar_one()
 
     active_feeds_result = await db.execute(
-        select(func.count(Feed.id)).where(Feed.is_active == True)
+        select(func.count(Feed.id)).where(Feed.is_active.is_(True))
     )
     active_feeds = active_feeds_result.scalar_one()
 
@@ -94,7 +94,7 @@ async def get_stats(
         telegram_subscriptions=telegram_subs,
         translation_enabled=settings.can_translate(),
         fetch_interval_minutes=settings.fetch_interval_minutes,
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
     )
 
 

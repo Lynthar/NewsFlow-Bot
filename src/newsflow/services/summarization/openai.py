@@ -7,7 +7,8 @@ OPENAI_BASE_URL the same way they do for translation.
 """
 
 import logging
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from newsflow.services.summarization.base import (
     DigestArticle,
@@ -54,9 +55,7 @@ class OpenAIDigestProvider(SummarizationProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        self.system_prompt_template = (
-            system_prompt_template or SYSTEM_PROMPT_TEMPLATE
-        )
+        self.system_prompt_template = system_prompt_template or SYSTEM_PROMPT_TEMPLATE
         self.max_input_chars = max_input_chars
         self._client: Any = None
 
@@ -87,9 +86,7 @@ class OpenAIDigestProvider(SummarizationProvider):
             if len(summary) > limit:
                 summary = summary[: limit - 3] + "..."
             published = (
-                art.published_at.strftime("%Y-%m-%d %H:%M")
-                if art.published_at
-                else "unknown"
+                art.published_at.strftime("%Y-%m-%d %H:%M") if art.published_at else "unknown"
             )
             lines.append(
                 f"[{idx}] source={art.source} | published={published} | "
@@ -104,23 +101,17 @@ class OpenAIDigestProvider(SummarizationProvider):
         time_window_desc: str,
     ) -> DigestResult:
         if not articles:
-            return DigestResult(
-                success=False, error="No articles supplied to digest provider"
-            )
+            return DigestResult(success=False, error="No articles supplied to digest provider")
 
         lang = language_name(language)
         try:
-            system_prompt = self.system_prompt_template.format(
-                window=time_window_desc, lang=lang
-            )
+            system_prompt = self.system_prompt_template.format(window=time_window_desc, lang=lang)
         except (KeyError, IndexError) as e:
             logger.warning(
                 f"digest_system_prompt references unknown placeholder "
                 f"{e}; falling back to default"
             )
-            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-                window=time_window_desc, lang=lang
-            )
+            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(window=time_window_desc, lang=lang)
         user_prompt = (
             f"Here are {len(articles)} articles from {time_window_desc}:\n\n"
             + self._format_articles(articles)
@@ -146,9 +137,7 @@ class OpenAIDigestProvider(SummarizationProvider):
             )
             text = (response.choices[0].message.content or "").strip()
             if not text:
-                return DigestResult(
-                    success=False, error="LLM returned empty response"
-                )
+                return DigestResult(success=False, error="LLM returned empty response")
             return DigestResult(success=True, text=text)
         except Exception as e:
             logger.exception(f"OpenAI digest generation failed: {e}")

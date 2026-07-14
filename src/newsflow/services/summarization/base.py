@@ -1,14 +1,15 @@
 """Abstract summarization provider for periodic digests."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Sequence
 
 
 @dataclass(frozen=True)
 class DigestArticle:
     """One input article for a digest prompt."""
+
     title: str
     summary: str
     link: str
@@ -19,6 +20,7 @@ class DigestArticle:
 @dataclass
 class DigestResult:
     """Outcome of a digest generation call."""
+
     success: bool
     text: str = ""
     error: str | None = None

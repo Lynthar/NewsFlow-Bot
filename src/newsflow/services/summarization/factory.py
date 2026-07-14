@@ -19,9 +19,7 @@ def _build_provider() -> SummarizationProvider | None:
     # providers plug in here.
     if settings.digest_provider == "openai":
         if not settings.openai_api_key:
-            logger.info(
-                "Digest disabled: digest_provider=openai but OPENAI_API_KEY not set"
-            )
+            logger.info("Digest disabled: digest_provider=openai but OPENAI_API_KEY not set")
             return None
         from newsflow.services.summarization.openai import OpenAIDigestProvider
 
@@ -32,9 +30,7 @@ def _build_provider() -> SummarizationProvider | None:
             system_prompt_template=settings.digest_system_prompt,
             max_input_chars=settings.digest_max_input_chars_per_article,
         )
-    logger.warning(
-        f"Unknown digest provider: {settings.digest_provider!r}"
-    )
+    logger.warning(f"Unknown digest provider: {settings.digest_provider!r}")
     return None
 
 

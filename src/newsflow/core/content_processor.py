@@ -168,7 +168,7 @@ def dedup_summary(title: str, summary: str) -> str:
     # 3 hours ago" (~25 chars after strip) gets dropped but
     # "Fed cuts to stave off inflation risk" (~35 chars) stays.
     if norm_summary.startswith(norm_title):
-        remainder = norm_summary[len(norm_title):].strip(" -—…|·,.")
+        remainder = norm_summary[len(norm_title) :].strip(" -—…|·,.")
         if len(remainder) < 30:
             return ""
 

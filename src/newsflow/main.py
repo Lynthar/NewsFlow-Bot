@@ -8,11 +8,10 @@ import asyncio
 import logging
 import signal
 import sys
-from pathlib import Path
 
 import structlog
 
-from newsflow.config import get_settings, Settings
+from newsflow.config import Settings, get_settings
 from newsflow.core import close_fetcher
 from newsflow.models import close_db
 from newsflow.models.migrate import upgrade_to_head
@@ -25,11 +24,6 @@ def setup_logging(settings: Settings) -> None:
     log_level = getattr(logging, settings.log_level)
 
     # Configure structlog
-    if settings.log_format == "json":
-        renderer = structlog.processors.JSONRenderer()
-    else:
-        renderer = structlog.dev.ConsoleRenderer(colors=True)
-
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -127,11 +121,10 @@ async def start_api_server(settings: Settings) -> None:
 
     try:
         from newsflow.api import run_api_server
+
         await run_api_server()
     except ImportError:
-        logging.warning(
-            "FastAPI not installed. Install with: pip install 'newsflow-bot[api]'"
-        )
+        logging.warning("FastAPI not installed. Install with: pip install 'newsflow-bot[api]'")
 
 
 async def start_dispatch_loop(settings: Settings) -> None:
@@ -202,9 +195,7 @@ async def main() -> None:
         try:
             await sync_webhooks(settings.webhooks_config_path)
         except WebhookConfigError as e:
-            logger.error(
-                f"webhooks.yaml is invalid; aborting startup. {e}"
-            )
+            logger.error(f"webhooks.yaml is invalid; aborting startup. {e}")
             sys.exit(1)
 
     # Reconcile declarative non-RSS sources (JSON-API, IMAP email) from
@@ -221,10 +212,12 @@ async def main() -> None:
     # Initialize cache if configured
     if settings.cache_backend == "redis" and settings.redis_url:
         from newsflow.services.cache import init_cache
+
         init_cache("redis", redis_url=settings.redis_url)
         logger.info("Redis cache initialized")
     else:
         from newsflow.services.cache import init_cache
+
         init_cache("memory")
         logger.info("Memory cache initialized")
 
@@ -247,9 +240,7 @@ async def main() -> None:
         try:
             loop.add_signal_handler(sig, _trigger_shutdown)
         except NotImplementedError:
-            logger.debug(
-                f"Signal {sig.name} handler not supported on this platform"
-            )
+            logger.debug(f"Signal {sig.name} handler not supported on this platform")
 
     # Start all services
     try:

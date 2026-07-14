@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,7 +65,7 @@ def is_due(config: ChannelDigest, now: datetime) -> bool:
         # subtraction below doesn't blow up the whole digest tick.
         last = config.last_delivered_at
         if last.tzinfo is None:
-            last = last.replace(tzinfo=timezone.utc)
+            last = last.replace(tzinfo=UTC)
         elapsed = now - last
         if elapsed < dedupe:
             return False
@@ -73,9 +73,7 @@ def is_due(config: ChannelDigest, now: datetime) -> bool:
     return True
 
 
-def _time_window_desc(
-    config: ChannelDigest, now: datetime
-) -> tuple[datetime, str]:
+def _time_window_desc(config: ChannelDigest, now: datetime) -> tuple[datetime, str]:
     """Return (since, description) for the digest input window.
 
     First-ever digest falls back to 24h / 7d; subsequent digests use the
@@ -89,7 +87,7 @@ def _time_window_desc(
     # downstream comparisons stay consistent.
     last = config.last_delivered_at
     if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
+        last = last.replace(tzinfo=UTC)
     if config.schedule == "weekly":
         return last, "the past week"
     return last, "the past day"
@@ -111,7 +109,7 @@ class DigestService:
         now: datetime | None = None,
     ) -> DigestResult | None:
         """Generate digest text. Returns None if there's nothing to say."""
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         since, window_desc = _time_window_desc(config, now)
 
         entries = await self.repo.get_channel_articles(

@@ -2,7 +2,7 @@
 Feed and FeedEntry models for RSS sources.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text
@@ -78,7 +78,7 @@ class Feed(Base):
 
     def mark_success(self, etag: str | None = None, last_modified: str | None = None) -> None:
         """Mark a successful fetch."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.last_fetched_at = now
         self.last_successful_fetch_at = now
         self.error_count = 0
@@ -94,7 +94,7 @@ class Feed(Base):
         backoff: delay = base_delay * 2^min(error_count, 5), capped so we
         don't overshoot before the error_count=10 auto-deactivate kicks in.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.last_fetched_at = now
         self.error_count += 1
         self.last_error = error

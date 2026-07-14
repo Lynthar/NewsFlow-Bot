@@ -72,6 +72,4 @@ def parse_keyword_csv(raw: str | None) -> tuple[str, ...]:
     """
     if not raw:
         return ()
-    return tuple(
-        kw for kw in (item.strip() for item in raw.split(",")) if kw
-    )
+    return tuple(kw for kw in (item.strip() for item in raw.split(",")) if kw)

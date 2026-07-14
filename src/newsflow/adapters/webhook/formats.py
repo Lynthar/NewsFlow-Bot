@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.header import Header
 
 from newsflow.adapters.base import Message
@@ -48,7 +48,7 @@ def build_notification_payload(format_name: str, text: str) -> WireRequest:
 def _to_generic(m: Message) -> WireRequest:
     payload = {
         "event": "feed.entry.new",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "entry": {
             "title": m.title,
             "title_translated": m.title_translated,
@@ -56,9 +56,7 @@ def _to_generic(m: Message) -> WireRequest:
             "summary": m.summary,
             "summary_translated": m.summary_translated,
             "source": m.source,
-            "published_at": (
-                m.published_at.isoformat() if m.published_at else None
-            ),
+            "published_at": (m.published_at.isoformat() if m.published_at else None),
             "image_url": m.image_url,
         },
     }
@@ -68,7 +66,7 @@ def _to_generic(m: Message) -> WireRequest:
 def _to_generic_text(text: str) -> WireRequest:
     payload = {
         "event": "system.notification",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "text": text,
     }
     return _json(payload)
@@ -200,11 +198,7 @@ def _to_wecom(m: Message) -> WireRequest:
     summary = m.display_summary or ""
     if len(summary) > 1500:
         summary = summary[:1497] + "…"
-    md = (
-        f"### {title}\n"
-        f"> {summary}\n\n"
-        f"[Read on {m.source}]({m.link})"
-    )
+    md = f"### {title}\n" f"> {summary}\n\n" f"[Read on {m.source}]({m.link})"
     payload = {"msgtype": "markdown", "markdown": {"content": md}}
     return _json(payload)
 

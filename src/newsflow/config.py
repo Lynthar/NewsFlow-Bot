@@ -197,9 +197,7 @@ class Settings(BaseSettings):
     @classmethod
     def validate_max_publish_age(cls, v: int) -> int:
         if v < 0:
-            raise ValueError(
-                "max_entry_publish_age_days must be >= 0 (0 disables the filter)"
-            )
+            raise ValueError("max_entry_publish_age_days must be >= 0 (0 disables the filter)")
         return v
 
     @field_validator("sent_entry_retention_days")

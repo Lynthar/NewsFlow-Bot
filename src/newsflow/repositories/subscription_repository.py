@@ -3,15 +3,14 @@ Subscription repository for database operations.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from newsflow.config import get_settings
-from newsflow.models.feed import Feed
 from newsflow.models.subscription import SentEntry, Subscription
 
 logger = logging.getLogger(__name__)
@@ -54,9 +53,7 @@ class SubscriptionRepository:
         )
         return result.scalar_one_or_none()
 
-    async def migrate_channel(
-        self, platform: str, old_channel_id: str, new_channel_id: str
-    ) -> int:
+    async def migrate_channel(self, platform: str, old_channel_id: str, new_channel_id: str) -> int:
         """Repoint every subscription for (platform, old_channel_id) at
         new_channel_id.
 
@@ -76,9 +73,7 @@ class SubscriptionRepository:
         )
         moved = 0
         for sub in result.scalars().all():
-            conflict = await self.get_subscription(
-                platform, new_channel_id, sub.feed_id
-            )
+            conflict = await self.get_subscription(platform, new_channel_id, sub.feed_id)
             if conflict is not None:
                 await self.session.delete(sub)
                 continue
@@ -106,7 +101,7 @@ class SubscriptionRepository:
             Subscription.platform_channel_id == channel_id,
         ]
         if not include_inactive:
-            conditions.append(Subscription.is_active == True)
+            conditions.append(Subscription.is_active.is_(True))
         result = await self.session.execute(
             select(Subscription)
             .options(selectinload(Subscription.feed))
@@ -127,10 +122,8 @@ class SubscriptionRepository:
         """
         conditions = [Subscription.feed_id == feed_id]
         if not include_inactive:
-            conditions.append(Subscription.is_active == True)
-        result = await self.session.execute(
-            select(Subscription).where(*conditions)
-        )
+            conditions.append(Subscription.is_active.is_(True))
+        result = await self.session.execute(select(Subscription).where(*conditions))
         return result.scalars().all()
 
     async def get_all_active_subscriptions(self) -> Sequence[Subscription]:
@@ -138,7 +131,7 @@ class SubscriptionRepository:
         result = await self.session.execute(
             select(Subscription)
             .options(selectinload(Subscription.feed))
-            .where(Subscription.is_active == True)
+            .where(Subscription.is_active.is_(True))
         )
         return result.scalars().all()
 
@@ -227,9 +220,7 @@ class SubscriptionRepository:
 
         if update_data:
             await self.session.execute(
-                update(Subscription)
-                .where(Subscription.id == subscription_id)
-                .values(**update_data)
+                update(Subscription).where(Subscription.id == subscription_id).values(**update_data)
             )
 
     async def set_subscription_filter(
@@ -285,7 +276,7 @@ class SubscriptionRepository:
             .where(
                 Subscription.platform == platform,
                 Subscription.platform_channel_id == channel_id,
-                Subscription.is_active == True,  # noqa: E712
+                Subscription.is_active.is_(True),
             )
             .values(is_active=False)
         )
@@ -372,11 +363,12 @@ class SubscriptionRepository:
     ) -> int:
         """Count subscriptions for a channel."""
         from sqlalchemy import func
+
         result = await self.session.execute(
             select(func.count(Subscription.id)).where(
                 Subscription.platform == platform,
                 Subscription.platform_channel_id == channel_id,
-                Subscription.is_active == True,
+                Subscription.is_active.is_(True),
             )
         )
         return result.scalar_one()
@@ -520,7 +512,7 @@ class SubscriptionRepository:
 
         max_age_days = get_settings().max_entry_publish_age_days
         if max_age_days > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+            cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
             conditions.append(
                 or_(
                     FeedEntry.published_at.is_(None),
@@ -550,8 +542,7 @@ class SubscriptionRepository:
     async def cleanup_old_sent_entries(self, days: int = 7) -> int:
         """Delete old sent entry records."""
         from datetime import timedelta
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        result = await self.session.execute(
-            delete(SentEntry).where(SentEntry.sent_at < cutoff)
-        )
+
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        result = await self.session.execute(delete(SentEntry).where(SentEntry.sent_at < cutoff))
         return result.rowcount

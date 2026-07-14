@@ -4,12 +4,12 @@ Intentionally minimal — no i18n, no locale. All output is English, short,
 and suitable for embedding in one-line status chips like "2h ago" or "in 15m".
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def _ensure_utc(dt: datetime) -> datetime:
     """Naive datetimes are treated as UTC. SQLAlchemy can hand back either."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def relative_time(dt: datetime | None) -> str:
@@ -20,7 +20,7 @@ def relative_time(dt: datetime | None) -> str:
     """
     if dt is None:
         return "never"
-    delta = (datetime.now(timezone.utc) - _ensure_utc(dt)).total_seconds()
+    delta = (datetime.now(UTC) - _ensure_utc(dt)).total_seconds()
     if delta < 60:
         return "just now"
     if delta < 3600:
@@ -37,7 +37,7 @@ def time_until(dt: datetime | None) -> str:
     """
     if dt is None:
         return "never"
-    delta = (_ensure_utc(dt) - datetime.now(timezone.utc)).total_seconds()
+    delta = (_ensure_utc(dt) - datetime.now(UTC)).total_seconds()
     if delta <= 0:
         return "now"
     if delta < 60:

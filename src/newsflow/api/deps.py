@@ -5,7 +5,7 @@ Provides common dependencies for API routes.
 """
 
 import hmac
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession

@@ -5,9 +5,8 @@ Implements Discord-specific functionality using discord.py.
 Uses Slash Commands (Application Commands) as recommended by Discord.
 """
 
-import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import discord
 from discord import app_commands
@@ -50,9 +49,7 @@ def _format_sub_line(sub: Subscription) -> str:
     """Format one subscription for the /feed list description."""
     feed = sub.feed
     title = feed.title or "Untitled"
-    parts = [
-        f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"
-    ]
+    parts = [f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"]
     chip = _sub_status_chip(sub)
     if chip:
         parts.append(chip)
@@ -151,6 +148,7 @@ def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def
         embed.add_field(name="Recent Articles", value=val, inline=False)
 
     return embed
+
 
 logger = logging.getLogger(__name__)
 
@@ -350,9 +348,7 @@ class FeedCommands(commands.Cog):
 
     @feed_group.command(name="list", description="List RSS feeds in this channel")
     @app_commands.describe(page="Page number (20 feeds per page)")
-    async def feed_list(
-        self, interaction: discord.Interaction, page: int = 1
-    ) -> None:
+    async def feed_list(self, interaction: discord.Interaction, page: int = 1) -> None:
         """List feeds for this channel, paginated."""
         await interaction.response.defer(ephemeral=True)
 
@@ -403,9 +399,7 @@ class FeedCommands(commands.Cog):
 
     @feed_group.command(name="pause", description="Stop delivering from this feed")
     @app_commands.describe(url="The RSS feed URL to pause")
-    async def feed_pause(
-        self, interaction: discord.Interaction, url: str
-    ) -> None:
+    async def feed_pause(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -426,9 +420,7 @@ class FeedCommands(commands.Cog):
 
     @feed_group.command(name="resume", description="Resume delivery from a paused feed")
     @app_commands.describe(url="The RSS feed URL to resume, or 'all' for every paused feed")
-    async def feed_resume(
-        self, interaction: discord.Interaction, url: str
-    ) -> None:
+    async def feed_resume(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -461,9 +453,7 @@ class FeedCommands(commands.Cog):
         url="The RSS feed URL",
         enabled="True = silent (digest only), False = back to instant push",
     )
-    async def feed_silent(
-        self, interaction: discord.Interaction, url: str, enabled: bool
-    ) -> None:
+    async def feed_silent(self, interaction: discord.Interaction, url: str, enabled: bool) -> None:
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -485,9 +475,7 @@ class FeedCommands(commands.Cog):
 
     @feed_group.command(name="status", description="Detailed status of one feed in this channel")
     @app_commands.describe(url="The RSS feed URL")
-    async def feed_status(
-        self, interaction: discord.Interaction, url: str
-    ) -> None:
+    async def feed_status(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -646,9 +634,7 @@ class FeedCommands(commands.Cog):
         description="Show the current keyword filter on one feed",
     )
     @app_commands.describe(url="The RSS feed URL")
-    async def feed_filter_show(
-        self, interaction: discord.Interaction, url: str
-    ) -> None:
+    async def feed_filter_show(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -675,13 +661,11 @@ class FeedCommands(commands.Cog):
             lines = []
             if rule.include_keywords:
                 lines.append(
-                    f"**Include** (any of): "
-                    + ", ".join(f"`{k}`" for k in rule.include_keywords)
+                    "**Include** (any of): " + ", ".join(f"`{k}`" for k in rule.include_keywords)
                 )
             if rule.exclude_keywords:
                 lines.append(
-                    f"**Exclude** (none of): "
-                    + ", ".join(f"`{k}`" for k in rule.exclude_keywords)
+                    "**Exclude** (none of): " + ", ".join(f"`{k}`" for k in rule.exclude_keywords)
                 )
             embed = discord.Embed(
                 title="Filter",
@@ -697,9 +681,7 @@ class FeedCommands(commands.Cog):
         description="Remove the keyword filter from one feed",
     )
     @app_commands.describe(url="The RSS feed URL")
-    async def feed_filter_clear(
-        self, interaction: discord.Interaction, url: str
-    ) -> None:
+    async def feed_filter_clear(self, interaction: discord.Interaction, url: str) -> None:
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -740,17 +722,13 @@ class FeedCommands(commands.Cog):
             )
             return
         if file.size and file.size > 1024 * 1024:
-            await interaction.followup.send(
-                "⚠️ OPML file too large (1 MB cap).", ephemeral=True
-            )
+            await interaction.followup.send("⚠️ OPML file too large (1 MB cap).", ephemeral=True)
             return
 
         try:
             content = (await file.read()).decode("utf-8")
         except UnicodeDecodeError:
-            await interaction.followup.send(
-                "⚠️ OPML file is not valid UTF-8.", ephemeral=True
-            )
+            await interaction.followup.send("⚠️ OPML file is not valid UTF-8.", ephemeral=True)
             return
 
         session_factory = get_session_factory()
@@ -761,9 +739,7 @@ class FeedCommands(commands.Cog):
                 user_id=str(interaction.user.id),
                 channel_id=str(interaction.channel_id),
                 opml_content=content,
-                guild_id=(
-                    str(interaction.guild_id) if interaction.guild_id else None
-                ),
+                guild_id=(str(interaction.guild_id) if interaction.guild_id else None),
             )
             await session.commit()
 
@@ -817,9 +793,7 @@ class SettingsCommands(commands.Cog):
 
     @settings_group.command(name="language", description="Set translation target language")
     @app_commands.describe(language="Language code (e.g., zh-CN, ja, ko, en)")
-    async def settings_language(
-        self, interaction: discord.Interaction, language: str
-    ) -> None:
+    async def settings_language(self, interaction: discord.Interaction, language: str) -> None:
         """Set translation language for all feeds in this channel."""
         await interaction.response.defer(ephemeral=True)
 
@@ -850,9 +824,7 @@ class SettingsCommands(commands.Cog):
 
     @settings_group.command(name="translate", description="Enable or disable translation")
     @app_commands.describe(enabled="Enable translation")
-    async def settings_translate(
-        self, interaction: discord.Interaction, enabled: bool
-    ) -> None:
+    async def settings_translate(self, interaction: discord.Interaction, enabled: bool) -> None:
         """Toggle translation for all feeds in this channel."""
         await interaction.response.defer(ephemeral=True)
 
@@ -861,7 +833,7 @@ class SettingsCommands(commands.Cog):
             embed = discord.Embed(
                 title="Translation Not Available",
                 description="Translation is not configured on this bot instance.\n"
-                           "The bot owner needs to set up translation API keys.",
+                "The bot owner needs to set up translation API keys.",
                 color=discord.Color.orange(),
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -900,9 +872,7 @@ class SettingsCommands(commands.Cog):
     @app_commands.describe(
         enabled="True = digest only (no instant push), False = instant push enabled",
     )
-    async def settings_silent(
-        self, interaction: discord.Interaction, enabled: bool
-    ) -> None:
+    async def settings_silent(self, interaction: discord.Interaction, enabled: bool) -> None:
         """Bulk-toggle silent on every subscription in this channel."""
         await interaction.response.defer(ephemeral=True)
         session_factory = get_session_factory()
@@ -940,7 +910,7 @@ class SettingsCommands(commands.Cog):
         embed = discord.Embed(
             title="NewsFlow Bot Status",
             color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
         embed.add_field(name="Guilds", value=str(len(self.bot.guilds)), inline=True)
@@ -1021,15 +991,11 @@ class DigestCommands(commands.Cog):
             await repo.upsert(
                 platform="discord",
                 channel_id=str(interaction.channel_id),
-                guild_id=(
-                    str(interaction.guild_id) if interaction.guild_id else None
-                ),
+                guild_id=(str(interaction.guild_id) if interaction.guild_id else None),
                 enabled=True,
                 schedule=schedule.value,
                 delivery_hour_utc=int(hour_utc),
-                delivery_weekday=(
-                    int(weekday) if schedule.value == "weekly" else None
-                ),
+                delivery_weekday=(int(weekday) if schedule.value == "weekly" else None),
                 language=language,
                 include_filtered=bool(include_filtered),
                 max_articles=int(max_articles),
@@ -1037,13 +1003,9 @@ class DigestCommands(commands.Cog):
             await session.commit()
 
         lines = [
-            f"✅ Digest enabled",
+            "✅ Digest enabled",
             f"**Schedule:** {schedule.value}"
-            + (
-                f" (weekday {weekday})"
-                if schedule.value == "weekly"
-                else ""
-            ),
+            + (f" (weekday {weekday})" if schedule.value == "weekly" else ""),
             f"**Delivery time:** {hour_utc:02d}:00 UTC",
             f"**Language:** {language}",
             f"**Max articles:** {max_articles}",
@@ -1060,9 +1022,7 @@ class DigestCommands(commands.Cog):
         name="disable",
         description="Turn off the digest for this channel (config preserved)",
     )
-    async def digest_disable(
-        self, interaction: discord.Interaction
-    ) -> None:
+    async def digest_disable(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
         from newsflow.repositories.digest_repository import (
@@ -1072,9 +1032,7 @@ class DigestCommands(commands.Cog):
         session_factory = get_session_factory()
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
-            config = await repo.get(
-                "discord", str(interaction.channel_id)
-            )
+            config = await repo.get("discord", str(interaction.channel_id))
             if config is None:
                 await interaction.followup.send(
                     "No digest configured for this channel.",
@@ -1093,9 +1051,7 @@ class DigestCommands(commands.Cog):
         name="show",
         description="Show the current digest configuration",
     )
-    async def digest_show(
-        self, interaction: discord.Interaction
-    ) -> None:
+    async def digest_show(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
         from newsflow.repositories.digest_repository import (
@@ -1105,9 +1061,7 @@ class DigestCommands(commands.Cog):
         session_factory = get_session_factory()
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
-            config = await repo.get(
-                "discord", str(interaction.channel_id)
-            )
+            config = await repo.get("discord", str(interaction.channel_id))
 
         if config is None:
             embed = discord.Embed(
@@ -1120,18 +1074,12 @@ class DigestCommands(commands.Cog):
             lines = [
                 f"**Enabled:** {'✅ yes' if config.enabled else '⏸ no'}",
                 f"**Schedule:** {config.schedule}"
-                + (
-                    f" (weekday {config.delivery_weekday})"
-                    if config.schedule == "weekly"
-                    else ""
-                ),
+                + (f" (weekday {config.delivery_weekday})" if config.schedule == "weekly" else ""),
                 f"**Delivery time:** {config.delivery_hour_utc:02d}:00 UTC",
                 f"**Language:** {config.language}",
                 f"**Max articles:** {config.max_articles}",
-                f"**Include filtered:** "
-                f"{'yes' if config.include_filtered else 'no'}",
-                f"**Last delivered:** "
-                f"{relative_time(config.last_delivered_at)}",
+                f"**Include filtered:** " f"{'yes' if config.include_filtered else 'no'}",
+                f"**Last delivered:** " f"{relative_time(config.last_delivered_at)}",
             ]
             embed = discord.Embed(
                 title="Digest Configuration",
@@ -1145,12 +1093,10 @@ class DigestCommands(commands.Cog):
         name="now",
         description="Generate and deliver a digest immediately (for testing)",
     )
-    async def digest_now(
-        self, interaction: discord.Interaction
-    ) -> None:
+    async def digest_now(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from newsflow.repositories.digest_repository import (
             ChannelDigestRepository,
@@ -1177,9 +1123,7 @@ class DigestCommands(commands.Cog):
         # subtle detached-instance bugs.
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
-            config = await repo.get(
-                "discord", str(interaction.channel_id)
-            )
+            config = await repo.get("discord", str(interaction.channel_id))
             if config is None:
                 await interaction.followup.send(
                     "No digest configured. Run `/digest enable` first.",
@@ -1191,7 +1135,7 @@ class DigestCommands(commands.Cog):
             prior_pin_id = config.last_pinned_message_id
 
             service = DigestService(session, summarizer)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             result = await service.generate(config, now=now)
 
         if result is None:
@@ -1242,9 +1186,7 @@ class DigestCommands(commands.Cog):
         try:
             async with session_factory() as session:
                 repo = ChannelDigestRepository(session)
-                await repo.mark_delivered(
-                    config_id, now, pinned_message_id=new_pin_id
-                )
+                await repo.mark_delivered(config_id, now, pinned_message_id=new_pin_id)
                 await session.commit()
         except Exception:
             logger.exception(
@@ -1289,11 +1231,7 @@ class DiscordAdapter(BaseAdapter):
     def is_connected(self) -> bool:
         """Ready + not closed. discord.py handles auto-reconnect internally
         but briefly reports not-ready during disconnect windows."""
-        return (
-            self.bot is not None
-            and self.bot.is_ready()
-            and not self.bot.is_closed()
-        )
+        return self.bot is not None and self.bot.is_ready() and not self.bot.is_closed()
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Discord channel.
@@ -1349,9 +1287,7 @@ class DiscordAdapter(BaseAdapter):
             logger.exception(f"Failed to send text to {channel_id}: {e}")
             return False
 
-    async def send_text_pinned(
-        self, channel_id: str, text: str
-    ) -> tuple[bool, str | None]:
+    async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
         """Send text and pin the resulting message. Respects the
         `digest_auto_pin` setting: when disabled, this is equivalent to
         `send_text` (sends, doesn't pin, returns `(sent, None)`).
@@ -1386,8 +1322,7 @@ class DiscordAdapter(BaseAdapter):
             return True, str(msg.id)
         except discord.Forbidden:
             logger.warning(
-                f"Cannot pin in channel {channel_id}: bot needs "
-                f"'Manage Messages' permission"
+                f"Cannot pin in channel {channel_id}: bot needs " f"'Manage Messages' permission"
             )
             return True, None
         except discord.HTTPException as e:
@@ -1395,9 +1330,7 @@ class DiscordAdapter(BaseAdapter):
             logger.warning(f"Pin failed in channel {channel_id}: {e}")
             return True, None
 
-    async def unpin_message(
-        self, channel_id: str, message_id: str
-    ) -> bool:
+    async def unpin_message(self, channel_id: str, message_id: str) -> bool:
         """Unpin a previously-pinned message. Treats NotFound as success
         (the message is no longer around to unpin — goal achieved)."""
         try:
@@ -1413,15 +1346,11 @@ class DiscordAdapter(BaseAdapter):
             return True
         except discord.Forbidden:
             logger.warning(
-                f"Cannot unpin in channel {channel_id}: bot needs "
-                f"'Manage Messages' permission"
+                f"Cannot unpin in channel {channel_id}: bot needs " f"'Manage Messages' permission"
             )
             return False
         except Exception as e:
-            logger.warning(
-                f"Unpin failed for message {message_id} in "
-                f"{channel_id}: {e}"
-            )
+            logger.warning(f"Unpin failed for message {message_id} in " f"{channel_id}: {e}")
             return False
 
     def _create_embed(self, message: Message) -> discord.Embed:
@@ -1434,9 +1363,9 @@ class DiscordAdapter(BaseAdapter):
         # interprets them as the host's local time — on a non-UTC
         # host the displayed embed timestamp would shift by the host
         # offset. Pin to UTC explicitly. No-op on UTC hosts (prod).
-        ts = message.published_at or datetime.now(timezone.utc)
+        ts = message.published_at or datetime.now(UTC)
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         embed = discord.Embed(
             description=f"[{message.display_title}]({message.link})",
             color=discord.Color.blue(),

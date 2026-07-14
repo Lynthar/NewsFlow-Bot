@@ -164,9 +164,7 @@ class TranslationService:
             async with semaphore:
                 return await self.translate(text, target_lang, source_lang)
 
-        results = await asyncio.gather(
-            *[translate_with_limit(text) for text in texts]
-        )
+        results = await asyncio.gather(*[translate_with_limit(text) for text in texts])
         return list(results)
 
     def supports_language(self, lang_code: str) -> bool:

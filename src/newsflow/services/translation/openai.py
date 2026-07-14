@@ -64,9 +64,7 @@ class OpenAIProvider(TranslationProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        self.system_prompt_template = (
-            system_prompt_template or DEFAULT_TRANSLATION_PROMPT
-        )
+        self.system_prompt_template = system_prompt_template or DEFAULT_TRANSLATION_PROMPT
         self._client: Any = None
 
     @property

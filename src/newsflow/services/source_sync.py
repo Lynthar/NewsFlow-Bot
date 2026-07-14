@@ -109,9 +109,7 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
 
         subscribers = _parse_subscribers(name, cfg.get("subscribers") or [])
         out.append(
-            SourceCfg(
-                name=name, url=url, type=stype, config=sconfig, subscribers=subscribers
-            )
+            SourceCfg(name=name, url=url, type=stype, config=sconfig, subscribers=subscribers)
         )
     return out
 
@@ -122,9 +120,7 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
     out: list[SubscriberCfg] = []
     for item in raw:
         if not isinstance(item, dict):
-            raise SourceConfigError(
-                f"source {source_name!r}: each subscriber must be a mapping"
-            )
+            raise SourceConfigError(f"source {source_name!r}: each subscriber must be a mapping")
         platform = item.get("platform")
         if platform not in _SUB_PLATFORMS:
             raise SourceConfigError(
@@ -174,9 +170,7 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
 
     for src in sources:
         try:
-            feed = await feed_service.upsert_source_feed(
-                src.url, src.type, src.config
-            )
+            feed = await feed_service.upsert_source_feed(src.url, src.type, src.config)
         except SourceFeedConflictError as e:
             # The URL collides with a user's interactively-added RSS feed.
             # Skip this source (and its subscribers) rather than hijack the
@@ -248,9 +242,7 @@ async def _remove_stale(
 
     # 1. Drop non-RSS feeds that left the file. Deleting the feed cascades to
     #    its subscriptions and entries (and SentEntry via the DB FK).
-    feeds_result = await session.execute(
-        select(Feed).where(Feed.source_type.in_(known))
-    )
+    feeds_result = await session.execute(select(Feed).where(Feed.source_type.in_(known)))
     for feed in feeds_result.scalars().all():
         if feed.url not in desired_urls:
             logger.info(f"source_sync: removing source feed {feed.url!r}")

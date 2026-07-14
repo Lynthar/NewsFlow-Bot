@@ -6,7 +6,7 @@ Implements Telegram-specific functionality using python-telegram-bot.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from telegram import Update
 from telegram.ext import (
@@ -87,8 +87,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Handle /add command."""
     if not context.args:
         await update.message.reply_text(
-            "Usage: /add <rss_url>\n\n"
-            "Example: /add https://example.com/feed.xml"
+            "Usage: /add <rss_url>\n\n" "Example: /add https://example.com/feed.xml"
         )
         return
 
@@ -129,13 +128,10 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if result.success:
         feed_title = _escape_html(result.feed.title or url)
         if result.is_new:
-            message = (
-                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{_escape_html(url)}"
-            )
+            message = f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{_escape_html(url)}"
         else:
             message = (
-                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n"
-                f"{_escape_html(result.message)}"
+                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n" f"{_escape_html(result.message)}"
             )
     else:
         message = (
@@ -176,9 +172,7 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def _escape_html(text: str) -> str:
-    return (
-        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _sub_status_chip(sub: Subscription) -> str | None:
@@ -197,9 +191,7 @@ def _sub_status_chip(sub: Subscription) -> str | None:
 def _format_sub_line(sub: Subscription) -> str:
     feed = sub.feed
     title = _escape_html(feed.title or "Untitled")
-    parts = [
-        f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"
-    ]
+    parts = [f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"]
     chip = _sub_status_chip(sub)
     if chip:
         parts.append(chip)
@@ -231,8 +223,7 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not subs:
         await update.message.reply_text(
-            "📭 <b>No feeds subscribed</b>\n\n"
-            "Use /add &lt;url&gt; to subscribe to an RSS feed.",
+            "📭 <b>No feeds subscribed</b>\n\n" "Use /add &lt;url&gt; to subscribe to an RSS feed.",
             parse_mode="HTML",
         )
         return
@@ -277,9 +268,7 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await session.commit()
 
     prefix = "⏸" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -294,9 +283,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     async with session_factory() as session:
         service = SubscriptionService(session)
         if url.strip().lower() == "all":
-            result = await service.resume_all_subscriptions(
-                platform="telegram", channel_id=chat_id
-            )
+            result = await service.resume_all_subscriptions(platform="telegram", channel_id=chat_id)
         else:
             result = await service.resume_subscription(
                 platform="telegram", channel_id=chat_id, feed_url=url
@@ -304,9 +291,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await session.commit()
 
     prefix = "▶️" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -338,10 +323,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif not feed.is_active:
         state = "🛑 Auto-disabled (10+ consecutive errors)"
     elif feed.error_count > 0:
-        state = (
-            f"⚠️ {feed.error_count} errors — retry "
-            f"{time_until(feed.next_retry_at)}"
-        )
+        state = f"⚠️ {feed.error_count} errors — retry " f"{time_until(feed.next_retry_at)}"
     else:
         state = "✅ Healthy"
 
@@ -350,8 +332,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"🔗 {_escape_html(feed.url)}",
         "",
         f"<b>State:</b> {state}",
-        f"<b>Translation:</b> "
-        f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
+        f"<b>Translation:</b> " f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
         f"<b>Last OK fetch:</b> {relative_time(feed.last_successful_fetch_at)}",
         f"<b>Last attempt:</b> {relative_time(feed.last_fetched_at)}",
     ]
@@ -365,18 +346,11 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         lines.append("")
         lines.append("<b>Recent articles:</b>")
         for entry in detail.recent_entries:
-            ts = (
-                relative_time(entry.published_at)
-                if entry.published_at
-                else ""
-            )
-            title_line = entry.title[:80] + (
-                "…" if len(entry.title) > 80 else ""
-            )
+            ts = relative_time(entry.published_at) if entry.published_at else ""
+            title_line = entry.title[:80] + ("…" if len(entry.title) > 80 else "")
             suffix = f" — {ts}" if ts else ""
             lines.append(
-                f"• <a href=\"{_escape_html(entry.link)}\">"
-                f"{_escape_html(title_line)}</a>{suffix}"
+                f'• <a href="{_escape_html(entry.link)}">' f"{_escape_html(title_line)}</a>{suffix}"
             )
 
     await update.message.reply_text(
@@ -387,19 +361,24 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 _WEEKDAY_NAMES = {
-    "mon": 0, "monday": 0,
-    "tue": 1, "tuesday": 1,
-    "wed": 2, "wednesday": 2,
-    "thu": 3, "thursday": 3,
-    "fri": 4, "friday": 4,
-    "sat": 5, "saturday": 5,
-    "sun": 6, "sunday": 6,
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
 }
 
 
-async def digest_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /digest <subcommand> …
 
     Forms:
@@ -409,7 +388,7 @@ async def digest_command(
       /digest enable daily <hour_utc> [lang]
       /digest enable weekly <weekday> <hour_utc> [lang]
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from newsflow.repositories.digest_repository import (
         ChannelDigestRepository,
@@ -447,20 +426,14 @@ async def digest_command(
             "<b>Digest Configuration</b>",
             f"Enabled: {'✅ yes' if config.enabled else '⏸ no'}",
             f"Schedule: {config.schedule}"
-            + (
-                f" (weekday {config.delivery_weekday})"
-                if config.schedule == "weekly"
-                else ""
-            ),
+            + (f" (weekday {config.delivery_weekday})" if config.schedule == "weekly" else ""),
             f"Delivery time: {config.delivery_hour_utc:02d}:00 UTC",
             f"Language: {config.language}",
             f"Max articles: {config.max_articles}",
             f"Include filtered: {'yes' if config.include_filtered else 'no'}",
             f"Last delivered: {relative_time(config.last_delivered_at)}",
         ]
-        await update.message.reply_text(
-            "\n".join(lines), parse_mode="HTML"
-        )
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         return
 
     if sub == "disable":
@@ -468,23 +441,18 @@ async def digest_command(
             repo = ChannelDigestRepository(session)
             config = await repo.get("telegram", chat_id)
             if config is None:
-                await update.message.reply_text(
-                    "No digest configured for this chat."
-                )
+                await update.message.reply_text("No digest configured for this chat.")
                 return
             config.enabled = False
             await session.commit()
-        await update.message.reply_text(
-            "⏸ Digest disabled. Use /digest enable to turn it back on."
-        )
+        await update.message.reply_text("⏸ Digest disabled. Use /digest enable to turn it back on.")
         return
 
     if sub == "now":
         summarizer = get_summarizer()
         if summarizer is None:
             await update.message.reply_text(
-                "⚠️ Digest not available: LLM provider not configured "
-                "(check OPENAI_API_KEY)."
+                "⚠️ Digest not available: LLM provider not configured " "(check OPENAI_API_KEY)."
             )
             return
 
@@ -492,13 +460,11 @@ async def digest_command(
             repo = ChannelDigestRepository(session)
             config = await repo.get("telegram", chat_id)
             if config is None:
-                await update.message.reply_text(
-                    "No digest configured. Use /digest enable first."
-                )
+                await update.message.reply_text("No digest configured. Use /digest enable first.")
                 return
 
             service = DigestService(session, summarizer)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             result = await service.generate(config, now=now)
             if result is None:
                 await update.message.reply_text(
@@ -506,17 +472,13 @@ async def digest_command(
                 )
                 return
             if not result.success:
-                await update.message.reply_text(
-                    f"❌ Digest generation failed: {result.error}"
-                )
+                await update.message.reply_text(f"❌ Digest generation failed: {result.error}")
                 return
 
             dispatcher = get_dispatcher()
             adapter = dispatcher._adapters.get("telegram")
             if adapter is None:
-                await update.message.reply_text(
-                    "Telegram adapter not registered yet — try again."
-                )
+                await update.message.reply_text("Telegram adapter not registered yet — try again.")
                 return
             chunks, new_pin_id = await dispatcher.deliver_digest(
                 adapter,
@@ -526,9 +488,7 @@ async def digest_command(
                 prior_pin_id=config.last_pinned_message_id,
             )
             if chunks:
-                await repo.mark_delivered(
-                    config.id, now, pinned_message_id=new_pin_id
-                )
+                await repo.mark_delivered(config.id, now, pinned_message_id=new_pin_id)
                 await session.commit()
         return
 
@@ -592,21 +552,16 @@ async def digest_command(
             if mode == "daily"
             else f"weekly on weekday {weekday} at {hour:02d}:00 UTC"
         )
-        await update.message.reply_text(
-            f"✅ Digest enabled — {desc}, language {language}."
-        )
+        await update.message.reply_text(f"✅ Digest enabled — {desc}, language {language}.")
         return
 
     await update.message.reply_text(
-        f"Unknown subcommand <code>{_escape_html(sub)}</code>. "
-        "Use /digest for help.",
+        f"Unknown subcommand <code>{_escape_html(sub)}</code>. " "Use /digest for help.",
         parse_mode="HTML",
     )
 
 
-async def filter_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /filter <url> [show | clear | include=... exclude=...]
 
     Forms:
@@ -646,26 +601,18 @@ async def filter_command(
             )
             return
         if rule.is_empty():
-            await update.message.reply_text(
-                "No filter set — every entry is delivered."
-            )
+            await update.message.reply_text("No filter set — every entry is delivered.")
             return
         lines = ["<b>Filter</b>"]
         if rule.include_keywords:
             lines.append(
                 "<b>Include</b> (any of): "
-                + ", ".join(
-                    f"<code>{_escape_html(k)}</code>"
-                    for k in rule.include_keywords
-                )
+                + ", ".join(f"<code>{_escape_html(k)}</code>" for k in rule.include_keywords)
             )
         if rule.exclude_keywords:
             lines.append(
                 "<b>Exclude</b> (none of): "
-                + ", ".join(
-                    f"<code>{_escape_html(k)}</code>"
-                    for k in rule.exclude_keywords
-                )
+                + ", ".join(f"<code>{_escape_html(k)}</code>" for k in rule.exclude_keywords)
             )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         return
@@ -724,14 +671,10 @@ async def filter_command(
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
-async def setlang_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /setlang <url> <code> — per-feed translation language override."""
     if len(context.args) != 2:
         await update.message.reply_text(
@@ -754,14 +697,10 @@ async def setlang_command(
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
-async def settrans_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /settrans <url> <on|off> — per-feed translation toggle."""
     if len(context.args) != 2:
         await update.message.reply_text(
@@ -793,14 +732,10 @@ async def settrans_command(
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
-async def silent_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /silent <on|off> — channel-wide silent mode toggle.
 
     Silent channels don't get instant feed pushes, but entries still flow
@@ -826,14 +761,10 @@ async def silent_command(
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
-async def setsilent_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /setsilent <url> <on|off> — per-feed silent toggle."""
     if len(context.args) != 2:
         await update.message.reply_text(
@@ -857,14 +788,10 @@ async def setsilent_command(
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(
-        f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
-async def export_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /export — send the subscription list as an OPML file."""
     import io
 
@@ -872,9 +799,7 @@ async def export_command(
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
-        opml_xml = await service.export_opml(
-            platform="telegram", channel_id=chat_id
-        )
+        opml_xml = await service.export_opml(platform="telegram", channel_id=chat_id)
 
     buf = io.BytesIO(opml_xml.encode("utf-8"))
     await update.message.reply_document(
@@ -884,9 +809,7 @@ async def export_command(
     )
 
 
-async def _do_opml_import(
-    update: Update, chat_id: str, user_id: str, opml_content: str
-) -> None:
+async def _do_opml_import(update: Update, chat_id: str, user_id: str, opml_content: str) -> None:
     """Shared core for /import with URL and document-upload handlers."""
     processing = await update.message.reply_text("⏳ Importing…")
 
@@ -911,19 +834,14 @@ async def _do_opml_import(
         lines.append("")
         lines.append("<b>Failures:</b>")
         for url, err in result.failed[:10]:
-            lines.append(
-                f"• <code>{_escape_html(url[:60])}</code>: "
-                f"{_escape_html(err[:80])}"
-            )
+            lines.append(f"• <code>{_escape_html(url[:60])}</code>: " f"{_escape_html(err[:80])}")
         if len(result.failed) > 10:
             lines.append(f"…and {len(result.failed) - 10} more")
 
     await processing.edit_text("\n".join(lines), parse_mode="HTML")
 
 
-async def import_command(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /import <url> — fetch an OPML document from a URL and import.
 
     File-upload imports are handled by import_document below.
@@ -973,9 +891,7 @@ async def import_command(
                     try:
                         validate_feed_url(current)
                     except InvalidFeedURLError as e:
-                        await update.message.reply_text(
-                            f"❌ Rejected redirect target: {e}"
-                        )
+                        await update.message.reply_text(f"❌ Rejected redirect target: {e}")
                         return
                     continue
                 if response.status != 200:
@@ -985,16 +901,12 @@ async def import_command(
                     return
                 data = await response.content.read(1024 * 1024 + 1)
                 if len(data) > 1024 * 1024:
-                    await update.message.reply_text(
-                        "❌ OPML file too large (1 MB cap)"
-                    )
+                    await update.message.reply_text("❌ OPML file too large (1 MB cap)")
                     return
                 content = data.decode("utf-8", errors="replace")
                 break
         else:
-            await update.message.reply_text(
-                "❌ Failed to fetch OPML: too many redirects"
-            )
+            await update.message.reply_text("❌ Failed to fetch OPML: too many redirects")
             return
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to fetch OPML: {e}")
@@ -1008,9 +920,7 @@ async def import_command(
     )
 
 
-async def import_document(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Auto-import when a user uploads an .opml / .xml file to the chat.
 
     Triggered by a document filter registered in TelegramAdapter.start,
@@ -1202,7 +1112,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Translation: {translation_status}\n"
         f"Fetch Interval: {settings.fetch_interval_minutes} min\n"
         f"Chat Subscriptions: {len(subs)}\n"
-        f"\n🕐 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        f"\n🕐 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
     await update.message.reply_text(message, parse_mode="HTML")
@@ -1236,12 +1146,7 @@ class TelegramAdapter(BaseAdapter):
         # AIORateLimiter transparently queues send_message calls to stay
         # inside Telegram's 30/s global, 1/s per-chat, and 20/min per-group
         # broadcast limits. Needs python-telegram-bot[rate-limiter].
-        self.app = (
-            Application.builder()
-            .token(self.token)
-            .rate_limiter(AIORateLimiter())
-            .build()
-        )
+        self.app = Application.builder().token(self.token).rate_limiter(AIORateLimiter()).build()
 
         # Register handlers
         self.app.add_handler(CommandHandler("start", start_command))
@@ -1267,8 +1172,7 @@ class TelegramAdapter(BaseAdapter):
         # Auto-import when user uploads an .opml/.xml file (no caption needed).
         self.app.add_handler(
             MessageHandler(
-                filters.Document.FileExtension("opml")
-                | filters.Document.FileExtension("xml"),
+                filters.Document.FileExtension("opml") | filters.Document.FileExtension("xml"),
                 import_document,
             )
         )
@@ -1309,6 +1213,7 @@ class TelegramAdapter(BaseAdapter):
         disable subscriptions.
         """
         from telegram.error import BadRequest, Forbidden
+
         msg = str(e).lower()
         if isinstance(e, BadRequest):
             # "Chat not found" = chat id invalid or deleted.
@@ -1389,9 +1294,7 @@ class TelegramAdapter(BaseAdapter):
             logger.exception(f"Failed to send text to {channel_id}: {e}")
             return False
 
-    async def send_text_pinned(
-        self, channel_id: str, text: str
-    ) -> tuple[bool, str | None]:
+    async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
         """Send text and pin the resulting message. Respects the
         `digest_auto_pin` setting — when disabled, equivalent to
         `send_text` (no pin, returns `(sent, None)`).
@@ -1434,9 +1337,7 @@ class TelegramAdapter(BaseAdapter):
             logger.warning(f"Telegram pin failed in {channel_id}: {e}")
             return True, None
 
-    async def unpin_message(
-        self, channel_id: str, message_id: str
-    ) -> bool:
+    async def unpin_message(self, channel_id: str, message_id: str) -> bool:
         """Unpin a specific message. Returns False on error; the caller
         should treat that as "old pin might still be there" and move on.
         """
@@ -1450,8 +1351,7 @@ class TelegramAdapter(BaseAdapter):
             return True
         except Exception as e:
             logger.warning(
-                f"Telegram unpin failed for message {message_id} in "
-                f"{channel_id}: {e}"
+                f"Telegram unpin failed for message {message_id} in " f"{channel_id}: {e}"
             )
             return False
 
@@ -1476,10 +1376,12 @@ class TelegramAdapter(BaseAdapter):
         # Link needs HTML-escape too: RSS URLs often contain `&` in query
         # strings, which Telegram's HTML parser rejects as an invalid entity
         # and fails the whole message send.
-        parts.extend([
-            f"🔗 <a href=\"{self._escape_html(message.link)}\">Read more</a>",
-            f"📰 {self._escape_html(message.source)}",
-        ])
+        parts.extend(
+            [
+                f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
+                f"📰 {self._escape_html(message.source)}",
+            ]
+        )
 
         if message.published_at:
             parts.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
@@ -1488,11 +1390,7 @@ class TelegramAdapter(BaseAdapter):
 
     def _escape_html(self, text: str) -> str:
         """Escape HTML special characters."""
-        return (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # Global app instance

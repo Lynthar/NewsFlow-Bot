@@ -2,8 +2,9 @@
 SQLAlchemy base configuration and database utilities.
 """
 
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import DateTime, MetaData, event
 from sqlalchemy.engine import Engine
@@ -50,6 +51,7 @@ def _set_sqlite_pragmas(dbapi_connection: Any, connection_record: Any) -> None:
     finally:
         cursor.close()
 
+
 # Naming convention for constraints (important for migrations)
 convention = {
     "ix": "ix_%(column_0_label)s",
@@ -74,12 +76,12 @@ class Base(DeclarativeBase):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 

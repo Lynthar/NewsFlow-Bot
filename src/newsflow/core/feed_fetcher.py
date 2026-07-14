@@ -12,7 +12,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin
 
@@ -20,7 +20,6 @@ import aiohttp
 import feedparser
 from dateutil import parser as date_parser
 
-from newsflow.config import get_settings
 from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
 
 logger = logging.getLogger(__name__)
@@ -140,9 +139,7 @@ class FeedFetcher:
             validate_feed_url(url)
         except InvalidFeedURLError as e:
             logger.warning(f"Rejected feed URL {url!r}: {e}")
-            return FetchResult(
-                url=url, success=False, entries=[], error=str(e)
-            )
+            return FetchResult(url=url, success=False, entries=[], error=str(e))
 
         async with self._semaphore:
             return await self._do_fetch(url, etag, last_modified)
@@ -180,8 +177,7 @@ class FeedFetcher:
                                 success=False,
                                 entries=[],
                                 error=(
-                                    f"HTTP {response.status} redirect "
-                                    f"without Location header"
+                                    f"HTTP {response.status} redirect " f"without Location header"
                                 ),
                             )
                         next_url = urljoin(current_url, location)
@@ -189,8 +185,7 @@ class FeedFetcher:
                             validate_feed_url(next_url)
                         except InvalidFeedURLError as e:
                             logger.warning(
-                                f"Rejected redirect from {url!r} to "
-                                f"{next_url!r}: {e}"
+                                f"Rejected redirect from {url!r} to " f"{next_url!r}: {e}"
                             )
                             return FetchResult(
                                 url=url,
@@ -238,8 +233,7 @@ class FeedFetcher:
                             success=False,
                             entries=[],
                             error=(
-                                f"Feed exceeds size limit "
-                                f"({response.content_length} bytes)"
+                                f"Feed exceeds size limit " f"({response.content_length} bytes)"
                             ),
                         )
 
@@ -247,9 +241,7 @@ class FeedFetcher:
                     # Content-Length (or omits it) can't drain our memory.
                     raw = await response.content.read(MAX_FEED_SIZE_BYTES + 1)
                     if len(raw) > MAX_FEED_SIZE_BYTES:
-                        logger.warning(
-                            f"Feed {url} exceeded size limit mid-stream"
-                        )
+                        logger.warning(f"Feed {url} exceeded size limit mid-stream")
                         return FetchResult(
                             url=url,
                             success=False,
@@ -257,17 +249,13 @@ class FeedFetcher:
                             error="Feed exceeds size limit",
                         )
 
-                    content = raw.decode(
-                        response.charset or "utf-8", errors="replace"
-                    )
+                    content = raw.decode(response.charset or "utf-8", errors="replace")
 
                     # JSON Feed (jsonfeed.org): feedparser only parses XML, so
                     # detect and map it ourselves. Detection is conservative
                     # (official content-type or a sniff for the jsonfeed.org
                     # version marker), so XML feeds never enter this branch.
-                    json_feed = self._parse_json_feed(
-                        content, response.content_type, url
-                    )
+                    json_feed = self._parse_json_feed(content, response.content_type, url)
                     if json_feed is not None:
                         json_entries, json_title = json_feed
                         return FetchResult(
@@ -297,9 +285,7 @@ class FeedFetcher:
                         )
 
                     # Extract entries
-                    entries = [
-                        self._parse_entry(entry, url) for entry in feed.entries
-                    ]
+                    entries = [self._parse_entry(entry, url) for entry in feed.entries]
 
                     # Get new cache headers
                     new_etag = response.headers.get("ETag")
@@ -437,9 +423,7 @@ class FeedFetcher:
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
             return None
         entries = [
-            self._json_feed_item(item, feed_url)
-            for item in data["items"]
-            if isinstance(item, dict)
+            self._json_feed_item(item, feed_url) for item in data["items"] if isinstance(item, dict)
         ]
         title = data.get("title")
         return entries, title if isinstance(title, str) else None
@@ -473,9 +457,7 @@ class FeedFetcher:
             "summary": item.get("content_text") or "",
             "content": item.get("content_html"),
             "author": author,
-            "published_at": self._parse_date(
-                {"published": item.get("date_published")}
-            ),
+            "published_at": self._parse_date({"published": item.get("date_published")}),
             "image_url": item.get("image") or item.get("banner_image"),
         }
 
@@ -488,7 +470,7 @@ class FeedFetcher:
         # Try parsed time first
         if hasattr(entry, "published_parsed") and entry.published_parsed:
             try:
-                return datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                return datetime(*entry.published_parsed[:6], tzinfo=UTC)
             except (ValueError, TypeError):
                 pass
 
@@ -501,8 +483,8 @@ class FeedFetcher:
                     # .astimezone() would then assume the *host's* local tz.
                     # Treat naive as UTC, matching the published_parsed branch.
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    return dt.astimezone(timezone.utc)
+                        dt = dt.replace(tzinfo=UTC)
+                    return dt.astimezone(UTC)
                 except (ValueError, TypeError):
                     continue
 
@@ -513,9 +495,7 @@ class FeedFetcher:
         # Check media_content
         if "media_content" in entry:
             for media in entry.media_content:
-                if media.get("medium") == "image" or media.get("type", "").startswith(
-                    "image/"
-                ):
+                if media.get("medium") == "image" or media.get("type", "").startswith("image/"):
                     return media.get("url")
 
         # Check media_thumbnail
@@ -568,7 +548,6 @@ def get_fetcher() -> FeedFetcher:
     """Get the global FeedFetcher instance."""
     global _fetcher
     if _fetcher is None:
-        settings = get_settings()
         _fetcher = FeedFetcher(max_concurrent=10)
     return _fetcher
 

@@ -4,14 +4,12 @@ Feed service - Business logic for feed management.
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.config import get_settings
-from newsflow.core.content_processor import process_content
-from newsflow.core.feed_fetcher import FeedFetcher, FetchResult, get_fetcher
+from newsflow.core.feed_fetcher import FetchResult, get_fetcher
 from newsflow.core.source_fetcher import (
     PUSH_SOURCE_TYPES,
     SourceRequest,
@@ -34,6 +32,7 @@ class SourceFeedConflictError(ValueError):
 @dataclass
 class AddFeedResult:
     """Result of adding a feed."""
+
     success: bool
     feed: Feed | None = None
     message: str = ""
@@ -43,6 +42,7 @@ class AddFeedResult:
 @dataclass
 class FetchFeedResult:
     """Result of fetching a feed."""
+
     success: bool
     feed: Feed | None = None
     new_entries: list[FeedEntry] = None
@@ -119,9 +119,7 @@ class FeedService:
             if existing:
                 if not existing.is_active:
                     existing.reactivate()
-                    logger.info(
-                        f"Reactivated auto-disabled feed on re-add: {discovered}"
-                    )
+                    logger.info(f"Reactivated auto-disabled feed on re-add: {discovered}")
                 return AddFeedResult(
                     success=True,
                     feed=existing,
@@ -129,9 +127,7 @@ class FeedService:
                 )
             retry = await self.fetcher.fetch_feed(discovered)
             if retry.success and retry.entries:
-                logger.info(
-                    f"add_feed: resolved {url} to advertised feed {discovered}"
-                )
+                logger.info(f"add_feed: resolved {url} to advertised feed {discovered}")
                 url, result = discovered, retry
 
         if not result.success:
@@ -177,9 +173,7 @@ class FeedService:
                     success=False,
                     message="Concurrent add race — please retry",
                 )
-            logger.info(
-                f"add_feed: concurrent race on {url}, reusing winner"
-            )
+            logger.info(f"add_feed: concurrent race on {url}, reusing winner")
             return AddFeedResult(
                 success=True,
                 feed=existing,
@@ -195,9 +189,7 @@ class FeedService:
             entry_count=len(entries),
         )
 
-    async def upsert_source_feed(
-        self, url: str, source_type: str, config: dict | None
-    ) -> Feed:
+    async def upsert_source_feed(self, url: str, source_type: str, config: dict | None) -> Feed:
         """Create or update a non-RSS source feed (json_api, email_imap, …).
 
         Unlike add_feed, this does NOT fetch over HTTP — the registered
@@ -225,9 +217,7 @@ class FeedService:
                 # of 10, the very next fetch error would disable it again.
                 existing.reactivate()
             return existing
-        return await self.repo.create_feed(
-            url=url, source_type=source_type, config=config
-        )
+        return await self.repo.create_feed(url=url, source_type=source_type, config=config)
 
     async def test_feed(self, url: str) -> FetchResult:
         """
@@ -241,9 +231,7 @@ class FeedService:
         """
         return await self.fetcher.fetch_feed(expand_source_shortcut(url))
 
-    async def _apply_fetch_result(
-        self, feed: Feed, result: FetchResult
-    ) -> FetchFeedResult:
+    async def _apply_fetch_result(self, feed: Feed, result: FetchResult) -> FetchFeedResult:
         """Write a FetchResult to the DB. No network I/O — safe to call
         sequentially over a batch of already-fetched results."""
         if not result.success:
@@ -259,10 +247,9 @@ class FeedService:
                 # by value so the notify task doesn't need to re-read.
                 # spawn() holds a strong ref so the task isn't GC'd mid-run.
                 from newsflow.services.dispatcher import get_dispatcher
+
                 get_dispatcher().spawn(
-                    get_dispatcher().notify_feed_deactivated(
-                        feed.id, feed.url, feed.title
-                    ),
+                    get_dispatcher().notify_feed_deactivated(feed.id, feed.url, feed.title),
                     name=f"notify_feed_deactivated:{feed.id}",
                 )
             return FetchFeedResult(
@@ -273,9 +260,7 @@ class FeedService:
 
         if result.not_modified:
             await self.repo.update_feed_metadata(feed.id)
-            return FetchFeedResult(
-                success=True, feed=feed, message="Not modified"
-            )
+            return FetchFeedResult(success=True, feed=feed, message="Not modified")
 
         await self.repo.update_feed_metadata(
             feed_id=feed.id,
@@ -286,9 +271,7 @@ class FeedService:
         )
 
         if result.entries:
-            new_entries = await self.repo.create_entries_bulk(
-                feed.id, result.entries
-            )
+            new_entries = await self.repo.create_entries_bulk(feed.id, result.entries)
             logger.info(f"Feed {feed.url}: {len(new_entries)} new entries")
             return FetchFeedResult(
                 success=True,
@@ -297,9 +280,7 @@ class FeedService:
                 message=f"{len(new_entries)} new entries",
             )
 
-        return FetchFeedResult(
-            success=True, feed=feed, message="No new entries"
-        )
+        return FetchFeedResult(success=True, feed=feed, message="No new entries")
 
     async def fetch_and_store(self, feed: Feed) -> FetchFeedResult:
         """
@@ -317,8 +298,7 @@ class FeedService:
             return FetchFeedResult(
                 success=True,
                 feed=feed,
-                message="Push source — entries arrive via the ingest API, "
-                "nothing to poll",
+                message="Push source — entries arrive via the ingest API, " "nothing to poll",
             )
         try:
             if source_type == "rss":
@@ -335,9 +315,7 @@ class FeedService:
             await self.repo.mark_feed_error(
                 feed.id, str(e), base_delay_seconds=self._backoff_base_seconds
             )
-            return FetchFeedResult(
-                success=False, feed=feed, message=f"Error: {str(e)}"
-            )
+            return FetchFeedResult(success=False, feed=feed, message=f"Error: {str(e)}")
 
     async def fetch_all_feeds(self) -> list[FetchFeedResult]:
         """
@@ -360,9 +338,7 @@ class FeedService:
         # Push sources (webhook_inbound) receive entries via the API, not by
         # polling — no fetcher, so leave them out of the fetch entirely.
         other_feeds = [
-            f
-            for f in feeds
-            if f.source_type != "rss" and f.source_type not in PUSH_SOURCE_TYPES
+            f for f in feeds if f.source_type != "rss" and f.source_type not in PUSH_SOURCE_TYPES
         ]
 
         results_by_id: dict[int, FetchResult] = {}
@@ -390,9 +366,7 @@ class FeedService:
             try:
                 results.append(await self._apply_fetch_result(feed, fr))
             except Exception as e:
-                logger.exception(
-                    f"Error applying fetch result for {feed.url}: {e}"
-                )
+                logger.exception(f"Error applying fetch result for {feed.url}: {e}")
                 await self.repo.mark_feed_error(
                     feed.id,
                     str(e),

@@ -31,9 +31,7 @@ def validate_feed_url(url: str) -> None:
         raise InvalidFeedURLError("URL is empty")
 
     if len(url) > MAX_FEED_URL_LENGTH:
-        raise InvalidFeedURLError(
-            f"URL exceeds max length of {MAX_FEED_URL_LENGTH} characters"
-        )
+        raise InvalidFeedURLError(f"URL exceeds max length of {MAX_FEED_URL_LENGTH} characters")
 
     try:
         parsed = urlparse(url)
@@ -41,9 +39,7 @@ def validate_feed_url(url: str) -> None:
         raise InvalidFeedURLError(f"Malformed URL: {e}") from e
 
     if parsed.scheme not in ALLOWED_SCHEMES:
-        raise InvalidFeedURLError(
-            f"Scheme {parsed.scheme!r} not allowed (must be http or https)"
-        )
+        raise InvalidFeedURLError(f"Scheme {parsed.scheme!r} not allowed (must be http or https)")
 
     host = parsed.hostname
     if not host:
@@ -57,10 +53,6 @@ def validate_feed_url(url: str) -> None:
         return  # Hostname, not an IP literal — OK at this layer.
 
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-        raise InvalidFeedURLError(
-            f"Host {host} resolves to a private/loopback/link-local address"
-        )
+        raise InvalidFeedURLError(f"Host {host} resolves to a private/loopback/link-local address")
     if ip.is_multicast or ip.is_unspecified:
-        raise InvalidFeedURLError(
-            f"Host {host} is a multicast/unspecified address"
-        )
+        raise InvalidFeedURLError(f"Host {host} is a multicast/unspecified address")

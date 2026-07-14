@@ -88,8 +88,7 @@ class JsonApiSourceFetcher:
         except ImportError:
             return _fail(
                 req.url,
-                "json_api source needs the 'source-json' extra "
-                "(pip install jsonpath-ng)",
+                "json_api source needs the 'source-json' extra " "(pip install jsonpath-ng)",
             )
 
         try:
@@ -129,18 +128,14 @@ class JsonApiSourceFetcher:
     async def _safe_get(self, url: str) -> bytes:
         """GET with the same SSRF (per-hop revalidation) and size guards as the
         RSS fetcher. Raises on unsafe redirect, HTTP >= 400, or oversize body."""
-        async with aiohttp.ClientSession(
-            timeout=_TIMEOUT, headers=DEFAULT_HEADERS
-        ) as session:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=DEFAULT_HEADERS) as session:
             current = url
             for _hop in range(MAX_REDIRECTS + 1):
                 async with session.get(current, allow_redirects=False) as resp:
                     if resp.status in REDIRECT_STATUSES:
                         location = resp.headers.get("Location")
                         if not location:
-                            raise ValueError(
-                                f"HTTP {resp.status} redirect without Location"
-                            )
+                            raise ValueError(f"HTTP {resp.status} redirect without Location")
                         current = urljoin(current, location)
                         validate_feed_url(current)  # raises on unsafe target
                         continue

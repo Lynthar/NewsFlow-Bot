@@ -29,9 +29,7 @@ class ChannelGoneError(Exception):
 
     def __init__(self, channel_id: str, reason: str = "") -> None:
         msg = (
-            f"channel {channel_id} is gone: {reason}"
-            if reason
-            else f"channel {channel_id} is gone"
+            f"channel {channel_id} is gone: {reason}" if reason else f"channel {channel_id} is gone"
         )
         super().__init__(msg)
         self.channel_id = channel_id
@@ -53,9 +51,7 @@ class ChannelMigratedError(Exception):
     exists and the reaction is deactivation, not migration.
     """
 
-    def __init__(
-        self, channel_id: str, new_channel_id: str, reason: str = ""
-    ) -> None:
+    def __init__(self, channel_id: str, new_channel_id: str, reason: str = "") -> None:
         msg = f"channel {channel_id} migrated to {new_channel_id}"
         if reason:
             msg += f": {reason}"

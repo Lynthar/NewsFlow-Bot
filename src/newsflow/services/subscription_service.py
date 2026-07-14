@@ -3,8 +3,8 @@ Subscription service - Business logic for subscription management.
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SubscribeResult:
     """Result of subscribing to a feed."""
+
     success: bool
     subscription: Subscription | None = None
     feed: Feed | None = None
@@ -34,6 +35,7 @@ class SubscribeResult:
 @dataclass
 class UnsubscribeResult:
     """Result of unsubscribing from a feed."""
+
     success: bool
     message: str = ""
 
@@ -41,6 +43,7 @@ class UnsubscribeResult:
 @dataclass
 class SubscriptionActionResult:
     """Result of a simple state change on a subscription (pause/resume)."""
+
     success: bool
     message: str = ""
 
@@ -49,6 +52,7 @@ class SubscriptionActionResult:
 class SubscriptionDetail:
     """Data transfer object for /feed status. Composes a subscription with
     its owning feed and a few recent entries for context."""
+
     subscription: Subscription
     feed: Feed
     recent_entries: list[FeedEntry]
@@ -57,9 +61,10 @@ class SubscriptionDetail:
 @dataclass
 class OpmlImportResult:
     """Outcome of bulk-subscribing from an OPML file."""
-    added: list[str]                  # URLs newly subscribed in this call
-    already_subscribed: list[str]     # URLs already subscribed in the channel
-    failed: list[tuple[str, str]]     # (url, reason)
+
+    added: list[str]  # URLs newly subscribed in this call
+    already_subscribed: list[str]  # URLs already subscribed in the channel
+    failed: list[tuple[str, str]]  # (url, reason)
 
     @property
     def total(self) -> int:
@@ -129,9 +134,7 @@ class SubscriptionService:
         # preference yet, so the very first /add in an empty channel
         # always defaults to non-silent regardless of any prior
         # `/silent on` (see GUIDE.md).
-        inherit_silent = await self._channel_silent_default(
-            platform, channel_id
-        )
+        inherit_silent = await self._channel_silent_default(platform, channel_id)
 
         # Create subscription
         subscription, created = await self.sub_repo.get_or_create_subscription(
@@ -180,18 +183,14 @@ class SubscriptionService:
             is_new=True,
         )
 
-    async def _channel_silent_default(
-        self, platform: str, channel_id: str
-    ) -> bool:
+    async def _channel_silent_default(self, platform: str, channel_id: str) -> bool:
         """Return True iff every existing active subscription in this
         channel is silent. Empty channel returns False — subscribers
         starting from an empty channel get a non-silent first sub even
         if they ran `/silent on` first; documented in GUIDE.md as a
         known limitation of the lightweight inheritance scheme.
         """
-        subs = await self.sub_repo.get_channel_subscriptions(
-            platform, channel_id
-        )
+        subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
         if not subs:
             return False
         return all(s.silent for s in subs)
@@ -256,20 +255,14 @@ class SubscriptionService:
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
-            return SubscriptionActionResult(
-                success=False, message="Feed not found"
-            )
+            return SubscriptionActionResult(success=False, message="Feed not found")
         updated = await self.sub_repo.deactivate_subscription(
             platform=platform, channel_id=channel_id, feed_id=feed.id
         )
         if not updated:
-            return SubscriptionActionResult(
-                success=False, message="Subscription not found"
-            )
+            return SubscriptionActionResult(success=False, message="Subscription not found")
         logger.info(f"Paused: {platform}/{channel_id} × {feed_url}")
-        return SubscriptionActionResult(
-            success=True, message=f"Paused {feed.title or feed_url}"
-        )
+        return SubscriptionActionResult(success=True, message=f"Paused {feed.title or feed_url}")
 
     async def resume_subscription(
         self,
@@ -281,16 +274,12 @@ class SubscriptionService:
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
-            return SubscriptionActionResult(
-                success=False, message="Feed not found"
-            )
+            return SubscriptionActionResult(success=False, message="Feed not found")
         updated = await self.sub_repo.activate_subscription(
             platform=platform, channel_id=channel_id, feed_id=feed.id
         )
         if not updated:
-            return SubscriptionActionResult(
-                success=False, message="Subscription not found"
-            )
+            return SubscriptionActionResult(success=False, message="Subscription not found")
         message = f"Resumed {feed.title or feed_url}"
         # The auto-disable notice tells users to run resume "once the source
         # is working again" — honor that: an auto-disabled feed has no other
@@ -369,9 +358,7 @@ class SubscriptionService:
         if not sub:
             return None
         recent = await self.feed_repo.get_recent_entries(feed.id, entry_limit)
-        return SubscriptionDetail(
-            subscription=sub, feed=feed, recent_entries=list(recent)
-        )
+        return SubscriptionDetail(subscription=sub, feed=feed, recent_entries=list(recent))
 
     async def get_channel_subscriptions(
         self,
@@ -447,16 +434,12 @@ class SubscriptionService:
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
-            return SubscriptionActionResult(
-                success=False, message="Feed not found"
-            )
+            return SubscriptionActionResult(success=False, message="Feed not found")
         sub = await self.sub_repo.get_subscription(
             platform=platform, channel_id=channel_id, feed_id=feed.id
         )
         if not sub:
-            return SubscriptionActionResult(
-                success=False, message="Subscription not found"
-            )
+            return SubscriptionActionResult(success=False, message="Subscription not found")
         await self.sub_repo.update_subscription_settings(
             subscription_id=sub.id, target_language=language
         )
@@ -480,16 +463,12 @@ class SubscriptionService:
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
-            return SubscriptionActionResult(
-                success=False, message="Feed not found"
-            )
+            return SubscriptionActionResult(success=False, message="Feed not found")
         sub = await self.sub_repo.get_subscription(
             platform=platform, channel_id=channel_id, feed_id=feed.id
         )
         if not sub:
-            return SubscriptionActionResult(
-                success=False, message="Subscription not found"
-            )
+            return SubscriptionActionResult(success=False, message="Subscription not found")
 
         rule = FilterRule(
             include_keywords=include_keywords,
@@ -504,17 +483,10 @@ class SubscriptionService:
         else:
             parts = []
             if rule.include_keywords:
-                parts.append(
-                    f"include=[{', '.join(rule.include_keywords)}]"
-                )
+                parts.append(f"include=[{', '.join(rule.include_keywords)}]")
             if rule.exclude_keywords:
-                parts.append(
-                    f"exclude=[{', '.join(rule.exclude_keywords)}]"
-                )
-            msg = (
-                f"Filter set for {feed.title or feed_url}: "
-                + " · ".join(parts)
-            )
+                parts.append(f"exclude=[{', '.join(rule.exclude_keywords)}]")
+            msg = f"Filter set for {feed.title or feed_url}: " + " · ".join(parts)
         return SubscriptionActionResult(success=True, message=msg)
 
     async def clear_feed_filter(
@@ -564,9 +536,7 @@ class SubscriptionService:
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
-            return SubscriptionActionResult(
-                success=False, message="Feed not found"
-            )
+            return SubscriptionActionResult(success=False, message="Feed not found")
         updated = await self.sub_repo.set_silent(
             platform=platform,
             channel_id=channel_id,
@@ -574,13 +544,9 @@ class SubscriptionService:
             silent=silent,
         )
         if not updated:
-            return SubscriptionActionResult(
-                success=False, message="Subscription not found"
-            )
+            return SubscriptionActionResult(success=False, message="Subscription not found")
         state = "on" if silent else "off"
-        logger.info(
-            f"Silent {state}: {platform}/{channel_id} × {feed_url}"
-        )
+        logger.info(f"Silent {state}: {platform}/{channel_id} × {feed_url}")
         return SubscriptionActionResult(
             success=True,
             message=f"Silent mode {state} for {feed.title or feed_url}",
@@ -599,9 +565,7 @@ class SubscriptionService:
             platform=platform, channel_id=channel_id, silent=silent
         )
         state = "on" if silent else "off"
-        logger.info(
-            f"Channel silent {state}: {platform}/{channel_id} ({flipped} flipped)"
-        )
+        logger.info(f"Channel silent {state}: {platform}/{channel_id} ({flipped} flipped)")
         if flipped == 0:
             return SubscriptionActionResult(
                 success=True,
@@ -624,28 +588,20 @@ class SubscriptionService:
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
-            return SubscriptionActionResult(
-                success=False, message="Feed not found"
-            )
+            return SubscriptionActionResult(success=False, message="Feed not found")
         sub = await self.sub_repo.get_subscription(
             platform=platform, channel_id=channel_id, feed_id=feed.id
         )
         if not sub:
-            return SubscriptionActionResult(
-                success=False, message="Subscription not found"
-            )
-        await self.sub_repo.update_subscription_settings(
-            subscription_id=sub.id, translate=enabled
-        )
+            return SubscriptionActionResult(success=False, message="Subscription not found")
+        await self.sub_repo.update_subscription_settings(subscription_id=sub.id, translate=enabled)
         state = "enabled" if enabled else "disabled"
         return SubscriptionActionResult(
             success=True,
             message=f"Translation {state} for {feed.title or feed_url}",
         )
 
-    async def export_opml(
-        self, platform: str, channel_id: str
-    ) -> str:
+    async def export_opml(self, platform: str, channel_id: str) -> str:
         """Dump this channel's subscriptions as an OPML 2.0 document.
         Includes paused subscriptions — an export is a backup, and silently
         dropping paused feeds would lose them on re-import."""
@@ -715,9 +671,7 @@ class SubscriptionService:
         limit: int = 10,
     ) -> Sequence[FeedEntry]:
         """Get entries that haven't been sent to this subscription."""
-        return await self.sub_repo.get_unsent_entries_for_subscription(
-            subscription_id, limit
-        )
+        return await self.sub_repo.get_unsent_entries_for_subscription(subscription_id, limit)
 
     async def get_all_active_subscriptions(self) -> Sequence[Subscription]:
         """Get all active subscriptions."""

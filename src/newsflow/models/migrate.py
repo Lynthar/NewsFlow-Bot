@@ -28,9 +28,7 @@ def _upgrade_sync() -> None:
 
     ini = _alembic_ini_path()
     if not ini.exists():
-        raise FileNotFoundError(
-            f"alembic.ini not found at {ini} — migrations cannot run"
-        )
+        raise FileNotFoundError(f"alembic.ini not found at {ini} — migrations cannot run")
     command.upgrade(Config(str(ini)), "head")
 
 

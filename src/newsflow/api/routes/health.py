@@ -4,7 +4,7 @@ Health check endpoints.
 Provides endpoints for monitoring service health.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -46,7 +46,7 @@ async def health_check() -> HealthResponse:
 
     return HealthResponse(
         status="healthy",
-        timestamp=datetime.now(timezone.utc).isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
         version=__version__,
         components={
             "discord_enabled": settings.discord_enabled,

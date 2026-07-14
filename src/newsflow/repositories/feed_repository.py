@@ -3,8 +3,8 @@ Feed repository for database operations.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,32 +26,26 @@ class FeedRepository:
 
     async def get_feed_by_id(self, feed_id: int) -> Feed | None:
         """Get a feed by ID."""
-        result = await self.session.execute(
-            select(Feed).where(Feed.id == feed_id)
-        )
+        result = await self.session.execute(select(Feed).where(Feed.id == feed_id))
         return result.scalar_one_or_none()
 
     async def get_feed_by_url(self, url: str) -> Feed | None:
         """Get a feed by URL."""
-        result = await self.session.execute(
-            select(Feed).where(Feed.url == url)
-        )
+        result = await self.session.execute(select(Feed).where(Feed.url == url))
         return result.scalar_one_or_none()
 
     async def get_all_active_feeds(self) -> Sequence[Feed]:
         """Get all active feeds."""
-        result = await self.session.execute(
-            select(Feed).where(Feed.is_active == True)
-        )
+        result = await self.session.execute(select(Feed).where(Feed.is_active.is_(True)))
         return result.scalars().all()
 
     async def get_feeds_due_for_fetch(self) -> Sequence[Feed]:
         """Active feeds that aren't currently inside a backoff window."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         result = await self.session.execute(
             select(Feed).where(
-                Feed.is_active == True,
-                or_(Feed.next_retry_at == None, Feed.next_retry_at <= now),
+                Feed.is_active.is_(True),
+                or_(Feed.next_retry_at.is_(None), Feed.next_retry_at <= now),
             )
         )
         return result.scalars().all()
@@ -109,8 +103,8 @@ class FeedRepository:
         """Update feed metadata after successful fetch. Clears any pending
         backoff — a success means we're back in good standing."""
         update_data = {
-            "last_fetched_at": datetime.now(timezone.utc),
-            "last_successful_fetch_at": datetime.now(timezone.utc),
+            "last_fetched_at": datetime.now(UTC),
+            "last_successful_fetch_at": datetime.now(UTC),
             "error_count": 0,
             "last_error": None,
             "next_retry_at": None,
@@ -124,9 +118,7 @@ class FeedRepository:
         if last_modified:
             update_data["last_modified"] = last_modified
 
-        await self.session.execute(
-            update(Feed).where(Feed.id == feed_id).values(**update_data)
-        )
+        await self.session.execute(update(Feed).where(Feed.id == feed_id).values(**update_data))
 
     async def mark_feed_error(
         self, feed_id: int, error: str, base_delay_seconds: int = 3600
@@ -138,9 +130,7 @@ class FeedRepository:
 
     async def delete_feed(self, feed_id: int) -> bool:
         """Delete a feed and all its entries."""
-        result = await self.session.execute(
-            delete(Feed).where(Feed.id == feed_id)
-        )
+        result = await self.session.execute(delete(Feed).where(Feed.id == feed_id))
         return result.rowcount > 0
 
     # ===== FeedEntry Operations =====
@@ -285,15 +275,14 @@ class FeedRepository:
         Returns:
             Number of deleted entries
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        result = await self.session.execute(
-            delete(FeedEntry).where(FeedEntry.created_at < cutoff)
-        )
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        result = await self.session.execute(delete(FeedEntry).where(FeedEntry.created_at < cutoff))
         return result.rowcount
 
     async def count_entries(self, feed_id: int) -> int:
         """Count entries for a feed."""
         from sqlalchemy import func
+
         result = await self.session.execute(
             select(func.count(FeedEntry.id)).where(FeedEntry.feed_id == feed_id)
         )

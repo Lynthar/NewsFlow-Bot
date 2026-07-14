@@ -24,10 +24,7 @@ def _gnews(query: str) -> str | None:
     q = query.strip()
     if not q:
         return None
-    return (
-        f"https://news.google.com/rss/search?q={quote(q)}"
-        "&hl=en-US&gl=US&ceid=US:en"
-    )
+    return f"https://news.google.com/rss/search?q={quote(q)}" "&hl=en-US&gl=US&ceid=US:en"
 
 
 def _github(spec: str) -> str | None:

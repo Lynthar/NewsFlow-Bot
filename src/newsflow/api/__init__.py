@@ -8,8 +8,8 @@ Provides endpoints for:
 """
 
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from newsflow import __version__
 from newsflow.config import get_settings

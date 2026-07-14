@@ -5,7 +5,6 @@ Provides CRUD operations for feeds.
 """
 
 from datetime import datetime
-from typing import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, HttpUrl

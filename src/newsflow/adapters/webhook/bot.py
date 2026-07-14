@@ -97,9 +97,7 @@ class WebhookAdapter(BaseAdapter):
     async def send_message(self, channel_id: str, message: Message) -> bool:
         dest = self._destinations.get(channel_id)
         if dest is None:
-            logger.warning(
-                f"webhook send: destination {channel_id!r} not configured"
-            )
+            logger.warning(f"webhook send: destination {channel_id!r} not configured")
             return False
         wire = build_payload(dest.format, message)
         return await self._post(dest, wire)
@@ -126,9 +124,7 @@ class WebhookAdapter(BaseAdapter):
         if dest.secret:
             # Sign the exact bytes we're about to send. Receiver computes the
             # same HMAC and compares. Prevents tampering on open endpoints.
-            sig = hmac.new(
-                dest.secret.encode("utf-8"), wire.body, hashlib.sha256
-            ).hexdigest()
+            sig = hmac.new(dest.secret.encode("utf-8"), wire.body, hashlib.sha256).hexdigest()
             headers["X-NewsFlow-Signature"] = f"sha256={sig}"
 
         # Log host only — the full URL often contains a secret token (Slack,
@@ -144,18 +140,11 @@ class WebhookAdapter(BaseAdapter):
                     return True
                 # Read a small slice of the body for diagnostics without
                 # letting a misbehaving server push megabytes into our logs.
-                snippet = (await resp.content.read(512)).decode(
-                    "utf-8", errors="replace"
-                )
-                logger.warning(
-                    f"webhook {dest.name} ({host}) HTTP {resp.status}: "
-                    f"{snippet!r}"
-                )
+                snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
+                logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: " f"{snippet!r}")
                 return False
         except asyncio.TimeoutError:
-            logger.warning(
-                f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s"
-            )
+            logger.warning(f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s")
             return False
         except aiohttp.ClientError as e:
             logger.warning(f"webhook {dest.name} ({host}) client error: {e}")

@@ -105,9 +105,7 @@ def _parse_destinations(
     raw: Any,
 ) -> dict[str, WebhookConfigDestination]:
     if not isinstance(raw, dict):
-        raise WebhookConfigError(
-            "`destinations` must be a mapping of name -> {url, format, ...}"
-        )
+        raise WebhookConfigError("`destinations` must be a mapping of name -> {url, format, ...}")
 
     out: dict[str, WebhookConfigDestination] = {}
     for name, cfg in raw.items():
@@ -136,9 +134,7 @@ def _parse_destinations(
         try:
             timeout_s = int(cfg.get("timeout_s", 10))
         except (TypeError, ValueError) as e:
-            raise WebhookConfigError(
-                f"destination {name!r}: `timeout_s` must be an integer"
-            ) from e
+            raise WebhookConfigError(f"destination {name!r}: `timeout_s` must be an integer") from e
         if timeout_s > _MAX_WEBHOOK_TIMEOUT_S:
             logger.warning(
                 "destination %r: timeout_s=%d exceeds cap %ds; clamping",
@@ -179,9 +175,7 @@ def _parse_subscriptions(
                 f"Known: {sorted(known_destinations)}"
             )
         if not isinstance(feeds, list):
-            raise WebhookConfigError(
-                f"subscriptions[{dest_name!r}] must be a list of feed URLs"
-            )
+            raise WebhookConfigError(f"subscriptions[{dest_name!r}] must be a list of feed URLs")
         # dedupe while preserving order — lets users write the same feed twice
         # without producing a duplicate row.
         seen: set[str] = set()
@@ -220,9 +214,7 @@ async def sync_webhooks(path: Path) -> None:
         await session.commit()
 
 
-async def _sync_destinations(
-    session: AsyncSession, config: WebhookConfig
-) -> None:
+async def _sync_destinations(session: AsyncSession, config: WebhookConfig) -> None:
     result = await session.execute(select(WebhookDestination))
     existing = {d.name: d for d in result.scalars().all()}
 
@@ -268,9 +260,7 @@ async def _sync_destinations(
     await session.flush()
 
 
-async def _sync_subscriptions(
-    session: AsyncSession, config: WebhookConfig
-) -> None:
+async def _sync_subscriptions(session: AsyncSession, config: WebhookConfig) -> None:
     feed_service = FeedService(session)
     sub_repo = SubscriptionRepository(session)
 
@@ -283,14 +273,10 @@ async def _sync_subscriptions(
             if feed is None:
                 # New feed — add via the usual path so it gets fetched, parsed,
                 # and seeded with initial entries like any other feed.
-                logger.info(
-                    f"webhook_sync: fetching new feed {url!r} for {dest_name!r}"
-                )
+                logger.info(f"webhook_sync: fetching new feed {url!r} for {dest_name!r}")
                 add_result = await feed_service.add_feed(url)
                 if not add_result.success or add_result.feed is None:
-                    logger.warning(
-                        f"webhook_sync: skipping {url!r} — {add_result.message}"
-                    )
+                    logger.warning(f"webhook_sync: skipping {url!r} — {add_result.message}")
                     continue
                 feed = add_result.feed
             elif not feed.is_active:
@@ -324,12 +310,8 @@ async def _sync_subscriptions(
                 # Don't flood the webhook with the feed's entire backlog on
                 # first sync. Let the next dispatch cycle deliver from zero
                 # new entries onward (same policy as regular /feed add).
-                await sub_repo.seed_sent_entries(
-                    sub.id, feed.id, keep_latest=0
-                )
-                logger.info(
-                    f"webhook_sync: subscribed {dest_name!r} → {url!r}"
-                )
+                await sub_repo.seed_sent_entries(sub.id, feed.id, keep_latest=0)
+                logger.info(f"webhook_sync: subscribed {dest_name!r} → {url!r}")
             elif existing.platform_user_id != _OWNER:
                 # The same (destination, feed) pair is also declared in
                 # sources.yaml, which owns this row — mirror the ownership

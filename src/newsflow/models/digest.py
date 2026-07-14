@@ -39,9 +39,7 @@ class ChannelDigest(Base):
     max_articles: Mapped[int] = mapped_column(Integer, default=50)
 
     # Delivery tracking — window for the next digest is (last_delivered_at, now]
-    last_delivered_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    last_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Platform message id of the currently-pinned digest (if auto-pin is
     # enabled and the adapter supports it). Next delivery unpins this one
     # before pinning the new digest, so the channel's pin list stays at

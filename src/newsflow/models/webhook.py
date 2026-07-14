@@ -45,9 +45,7 @@ class WebhookDestination(Base):
     # stall the dispatch loop for all other platforms.
     timeout_s: Mapped[int] = mapped_column(Integer, default=10)
 
-    __table_args__ = (
-        Index("ix_webhook_destinations_name", "name", unique=True),
-    )
+    __table_args__ = (Index("ix_webhook_destinations_name", "name", unique=True),)
 
     def __repr__(self) -> str:
         return f"<WebhookDestination(name='{self.name}', format='{self.format}')>"

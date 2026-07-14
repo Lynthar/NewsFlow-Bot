@@ -74,8 +74,7 @@ class EmailSourceFetcher:
         except ImportError:
             return _fail(
                 req.url,
-                "email source needs the 'source-email' extra "
-                "(pip install imap-tools)",
+                "email source needs the 'source-email' extra " "(pip install imap-tools)",
             )
 
         port = _int(config.get("port"), 993)
@@ -106,12 +105,8 @@ class EmailSourceFetcher:
         """Blocking IMAP fetch, run in a worker thread. Newest first and
         read-only (mark_seen=False) — Message-ID dedupe makes re-fetching the
         same window each cycle harmless."""
-        with mailbox_cls(host, port).login(
-            user, password, initial_folder=mailbox
-        ) as mb:
-            return list(
-                mb.fetch(reverse=True, limit=limit, mark_seen=False, bulk=True)
-            )
+        with mailbox_cls(host, port).login(user, password, initial_folder=mailbox) as mb:
+            return list(mb.fetch(reverse=True, limit=limit, mark_seen=False, bulk=True))
 
     @staticmethod
     def _message_to_entry(msg: Any, feed_url: str) -> dict[str, Any]:

@@ -7,7 +7,7 @@ Handles fetching feeds and dispatching new entries to subscribed channels.
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -32,7 +32,7 @@ from newsflow.services.feed_service import FeedService
 from newsflow.services.translation.factory import get_translation_service
 
 if TYPE_CHECKING:
-    from newsflow.adapters.base import BaseAdapter
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +50,10 @@ class MessageSender(Protocol):
     async def send_text(self, channel_id: str, text: str) -> bool:
         ...
 
-    async def send_text_pinned(
-        self, channel_id: str, text: str
-    ) -> tuple[bool, str | None]:
+    async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
         ...
 
-    async def unpin_message(
-        self, channel_id: str, message_id: str
-    ) -> bool:
+    async def unpin_message(self, channel_id: str, message_id: str) -> bool:
         ...
 
     def is_connected(self) -> bool:
@@ -67,6 +63,7 @@ class MessageSender(Protocol):
 @dataclass
 class DispatchResult:
     """Result of a dispatch run."""
+
     feeds_fetched: int = 0
     new_entries: int = 0
     messages_sent: int = 0
@@ -145,9 +142,7 @@ class Dispatcher:
             await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
-            logger.warning(
-                f"Timed out waiting for adapters; missing: {self._expected_platforms}"
-            )
+            logger.warning(f"Timed out waiting for adapters; missing: {self._expected_platforms}")
             return False
 
     async def dispatch_once(self) -> DispatchResult:
@@ -282,9 +277,7 @@ class Dispatcher:
             return 0
 
         # Get unsent entries
-        entries = await sub_repo.get_unsent_entries_for_subscription(
-            subscription.id, limit=10
-        )
+        entries = await sub_repo.get_unsent_entries_for_subscription(subscription.id, limit=10)
 
         if not entries:
             return 0
@@ -345,9 +338,7 @@ class Dispatcher:
 
                 if success:
                     # Mark as sent
-                    await sub_repo.mark_entry_sent(
-                        subscription.id, entry.feed_id, entry.guid
-                    )
+                    await sub_repo.mark_entry_sent(subscription.id, entry.feed_id, entry.guid)
                     sent_count += 1
                     logger.debug(
                         f"Sent entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
@@ -380,12 +371,10 @@ class Dispatcher:
                 platform = subscription.platform
                 old_channel_id = subscription.platform_channel_id
 
-                moved = await sub_repo.migrate_channel(
+                moved = await sub_repo.migrate_channel(platform, old_channel_id, e.new_channel_id)
+                digests_moved = await ChannelDigestRepository(session).migrate_channel(
                     platform, old_channel_id, e.new_channel_id
                 )
-                digests_moved = await ChannelDigestRepository(
-                    session
-                ).migrate_channel(platform, old_channel_id, e.new_channel_id)
                 if dead_channels is not None:
                     # Remaining cached subs in this cycle still carry the
                     # old id — skip them; next cycle reads the migrated
@@ -425,9 +414,7 @@ class Dispatcher:
                 # still kept as defense-in-depth for callers that don't
                 # pass the set (preview path).
                 if dead_channels is not None:
-                    dead_channels.add(
-                        (subscription.platform, subscription.platform_channel_id)
-                    )
+                    dead_channels.add((subscription.platform, subscription.platform_channel_id))
                 if subs_flipped or digests_flipped:
                     logger.warning(
                         f"Channel {subscription.platform}/"
@@ -459,10 +446,7 @@ class Dispatcher:
         `plain_summary` (HTML already stripped) so we never translate markup.
         """
         # Check if already translated to this language
-        if (
-            entry.translation_language == target_language
-            and entry.title_translated
-        ):
+        if entry.translation_language == target_language and entry.title_translated:
             return entry.title_translated, entry.summary_translated
 
         # Get translation service
@@ -476,18 +460,14 @@ class Dispatcher:
         try:
             # Translate title
             if entry.title:
-                result = await translation_service.translate(
-                    entry.title, target_language
-                )
+                result = await translation_service.translate(entry.title, target_language)
                 if result.success:
                     title_translated = result.translated_text
 
             # Translate summary (cap length to keep token usage bounded)
             if plain_summary:
                 summary_text = plain_summary[:1000]
-                result = await translation_service.translate(
-                    summary_text, target_language
-                )
+                result = await translation_service.translate(summary_text, target_language)
                 if result.success:
                     summary_translated = result.translated_text
 
@@ -582,9 +562,7 @@ class Dispatcher:
                 try:
                     connected = adapter.is_connected()
                 except Exception:
-                    logger.exception(
-                        f"adapter.is_connected() raised for {platform}"
-                    )
+                    logger.exception(f"adapter.is_connected() raised for {platform}")
                     connected = False
 
                 if connected:
@@ -619,9 +597,7 @@ class Dispatcher:
             # bypass_silent: a freshly-subscribed silent channel should
             # still see one confirmation article so the user knows the
             # subscription took. Subsequent dispatch cycles honor silent.
-            sent = await self._dispatch_to_subscription(
-                session, sub, sub_repo, bypass_silent=True
-            )
+            sent = await self._dispatch_to_subscription(session, sub, sub_repo, bypass_silent=True)
             await session.commit()
             return sent
 
@@ -638,9 +614,7 @@ class Dispatcher:
             session_factory = get_session_factory()
             async with session_factory() as session:
                 sub_repo = SubscriptionRepository(session)
-                subs = await sub_repo.get_feed_subscriptions(
-                    feed_id, include_inactive=True
-                )
+                subs = await sub_repo.get_feed_subscriptions(feed_id, include_inactive=True)
 
             if not subs:
                 return
@@ -667,7 +641,7 @@ class Dispatcher:
                         "again, or /feed remove <url> to clean up."
                     )
                 return (
-                    f"⚠️ The RSS feed \"{name}\" has been auto-disabled after "
+                    f'⚠️ The RSS feed "{name}" has been auto-disabled after '
                     f"10 consecutive fetch errors. {hint}\nURL: {feed_url}"
                 )
 
@@ -676,9 +650,7 @@ class Dispatcher:
                 if adapter is None:
                     continue
                 try:
-                    await adapter.send_text(
-                        sub.platform_channel_id, _text_for(sub.platform)
-                    )
+                    await adapter.send_text(sub.platform_channel_id, _text_for(sub.platform))
                 except Exception:
                     logger.exception(
                         f"Failed to send deactivation notice to "
@@ -699,9 +671,7 @@ class Dispatcher:
                     f"Preview: delivered {sent} entry/entries to subscription {subscription_id}"
                 )
         except Exception:
-            logger.exception(
-                f"Preview dispatch failed for subscription {subscription_id}"
-            )
+            logger.exception(f"Preview dispatch failed for subscription {subscription_id}")
 
     def apply_digest_header(self, text: str, platform: str) -> str:
         """Prepend a visible header + platform-appropriate mention to
@@ -841,9 +811,7 @@ class Dispatcher:
         if not chunks:
             return 0, None
 
-        sent_first, new_pin_id = await adapter.send_text_pinned(
-            channel_id, chunks[0]
-        )
+        sent_first, new_pin_id = await adapter.send_text_pinned(channel_id, chunks[0])
         if not sent_first:
             return 0, None
         chunks_sent = 1
@@ -867,18 +835,14 @@ class Dispatcher:
 
         return chunks_sent, new_pin_id
 
-    async def run_digest_loop(
-        self, check_interval_seconds: int | None = None
-    ) -> None:
+    async def run_digest_loop(self, check_interval_seconds: int | None = None) -> None:
         """Periodically check for channels whose digest is due and deliver.
 
         Wakes every `digest_check_interval_minutes` by default. The loop
         itself is cheap; the is_due() check only fires heavy work (LLM +
         send) when a channel actually matches its schedule slot.
         """
-        interval = check_interval_seconds or (
-            self.settings.digest_check_interval_minutes * 60
-        )
+        interval = check_interval_seconds or (self.settings.digest_check_interval_minutes * 60)
         await self.wait_for_adapters(timeout=60.0)
         logger.info(f"Starting digest loop (check every {interval}s)")
 
@@ -903,7 +867,7 @@ class Dispatcher:
             # No LLM configured — not an error, just nothing to do.
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -937,6 +901,7 @@ class Dispatcher:
                     from newsflow.repositories.digest_repository import (
                         ChannelDigestRepository,
                     )
+
                     service = DigestService(session, summarizer)
                     service.repo = ChannelDigestRepository(session)
                     fresh_config = await service.repo.get(
@@ -964,9 +929,7 @@ class Dispatcher:
                         )
                         continue
 
-                    digest_text = self.apply_digest_header(
-                        result.text, config.platform
-                    )
+                    digest_text = self.apply_digest_header(result.text, config.platform)
 
                 # Phase 2: deliver to platform (no session held — Discord /
                 # Telegram IO can take several seconds; holding a pooled
@@ -998,10 +961,9 @@ class Dispatcher:
                         from newsflow.repositories.digest_repository import (
                             ChannelDigestRepository,
                         )
+
                         repo = ChannelDigestRepository(session)
-                        await repo.mark_delivered(
-                            config_id, now, pinned_message_id=new_pin_id
-                        )
+                        await repo.mark_delivered(config_id, now, pinned_message_id=new_pin_id)
                         await session.commit()
                 except Exception:
                     logger.exception(
@@ -1030,14 +992,10 @@ class Dispatcher:
 
                 try:
                     async with session_factory() as mig_session:
-                        moved = await SubscriptionRepository(
-                            mig_session
-                        ).migrate_channel(
+                        moved = await SubscriptionRepository(mig_session).migrate_channel(
                             platform, old_channel_id, e.new_channel_id
                         )
-                        digests_moved = await ChannelDigestRepository(
-                            mig_session
-                        ).migrate_channel(
+                        digests_moved = await ChannelDigestRepository(mig_session).migrate_channel(
                             platform, old_channel_id, e.new_channel_id
                         )
                         await mig_session.commit()
@@ -1048,10 +1006,7 @@ class Dispatcher:
                         f"config(s)"
                     )
                 except Exception:
-                    logger.exception(
-                        f"Failed to migrate channel "
-                        f"{platform}/{old_channel_id}"
-                    )
+                    logger.exception(f"Failed to migrate channel " f"{platform}/{old_channel_id}")
             except ChannelGoneError as e:
                 # Digest target channel is gone. Disable the digest config
                 # AND any remaining active subs pointing at this channel
@@ -1069,13 +1024,9 @@ class Dispatcher:
                         subs_flipped = await sub_repo.deactivate_channel(
                             config.platform, config.platform_channel_id
                         )
-                        cleanup_digest_repo = ChannelDigestRepository(
-                            cleanup_session
-                        )
-                        digests_flipped = (
-                            await cleanup_digest_repo.disable_for_channel(
-                                config.platform, config.platform_channel_id
-                            )
+                        cleanup_digest_repo = ChannelDigestRepository(cleanup_session)
+                        digests_flipped = await cleanup_digest_repo.disable_for_channel(
+                            config.platform, config.platform_channel_id
                         )
                         await cleanup_session.commit()
                     logger.warning(
@@ -1092,13 +1043,10 @@ class Dispatcher:
                     )
             except Exception:
                 logger.exception(
-                    f"Digest delivery failed for "
-                    f"{config.platform}/{config.platform_channel_id}"
+                    f"Digest delivery failed for " f"{config.platform}/{config.platform_channel_id}"
                 )
 
-    async def run_cleanup_loop(
-        self, heartbeat_tick_seconds: int = 300
-    ) -> None:
+    async def run_cleanup_loop(self, heartbeat_tick_seconds: int = 300) -> None:
         """Periodically delete old feed entries and sent-entry records.
 
         Cleanup work runs every `settings.cleanup_interval_hours` (default
@@ -1140,12 +1088,8 @@ class Dispatcher:
                         feed_repo = FeedRepository(session)
                         sub_repo = SubscriptionRepository(session)
 
-                        entries_deleted = await feed_repo.cleanup_old_entries(
-                            entry_retention_days
-                        )
-                        sent_deleted = await sub_repo.cleanup_old_sent_entries(
-                            sent_retention_days
-                        )
+                        entries_deleted = await feed_repo.cleanup_old_entries(entry_retention_days)
+                        sent_deleted = await sub_repo.cleanup_old_sent_entries(sent_retention_days)
                         await session.commit()
 
                         logger.info(

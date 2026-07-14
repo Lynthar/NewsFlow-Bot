@@ -1,8 +1,8 @@
 """Data access for ChannelDigest."""
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,9 +18,7 @@ class ChannelDigestRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get(
-        self, platform: str, channel_id: str
-    ) -> ChannelDigest | None:
+    async def get(self, platform: str, channel_id: str) -> ChannelDigest | None:
         result = await self.session.execute(
             select(ChannelDigest).where(
                 ChannelDigest.platform == platform,
@@ -59,13 +57,11 @@ class ChannelDigestRepository:
 
     async def list_enabled(self) -> Sequence[ChannelDigest]:
         result = await self.session.execute(
-            select(ChannelDigest).where(ChannelDigest.enabled == True)
+            select(ChannelDigest).where(ChannelDigest.enabled.is_(True))
         )
         return result.scalars().all()
 
-    async def disable_for_channel(
-        self, platform: str, channel_id: str
-    ) -> int:
+    async def disable_for_channel(self, platform: str, channel_id: str) -> int:
         """Flip enabled=False on the digest config for this channel.
 
         Paired with SubscriptionRepository.deactivate_channel — when
@@ -80,15 +76,13 @@ class ChannelDigestRepository:
             .where(
                 ChannelDigest.platform == platform,
                 ChannelDigest.platform_channel_id == channel_id,
-                ChannelDigest.enabled == True,  # noqa: E712
+                ChannelDigest.enabled.is_(True),
             )
             .values(enabled=False)
         )
         return result.rowcount
 
-    async def migrate_channel(
-        self, platform: str, old_channel_id: str, new_channel_id: str
-    ) -> int:
+    async def migrate_channel(self, platform: str, old_channel_id: str, new_channel_id: str) -> int:
         """Repoint this channel's digest config at a new platform channel
         id (Telegram group→supergroup migration). If the new id already
         has its own config, the incumbent wins and the old row is dropped.
@@ -126,9 +120,7 @@ class ChannelDigestRepository:
         if pinned_message_id is not None:
             values["last_pinned_message_id"] = pinned_message_id
         await self.session.execute(
-            update(ChannelDigest)
-            .where(ChannelDigest.id == digest_id)
-            .values(**values)
+            update(ChannelDigest).where(ChannelDigest.id == digest_id).values(**values)
         )
 
     async def get_channel_articles(
@@ -161,21 +153,18 @@ class ChannelDigestRepository:
             # channel — nothing to summarize. Exclude them unconditionally:
             # even an include_filtered digest must not surface entries the
             # user never received.
-            SentEntry.seeded == False,
+            SentEntry.seeded.is_(False),
         ]
         if not include_filtered:
-            conditions.append(SentEntry.was_filtered == False)
+            conditions.append(SentEntry.was_filtered.is_(False))
 
         stmt = (
             select(FeedEntry)
             .join(
                 SentEntry,
-                (SentEntry.feed_id == FeedEntry.feed_id)
-                & (SentEntry.guid == FeedEntry.guid),
+                (SentEntry.feed_id == FeedEntry.feed_id) & (SentEntry.guid == FeedEntry.guid),
             )
-            .join(
-                Subscription, Subscription.id == SentEntry.subscription_id
-            )
+            .join(Subscription, Subscription.id == SentEntry.subscription_id)
             .where(*conditions)
             .order_by(SentEntry.sent_at.desc())
             .limit(limit)

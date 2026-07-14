@@ -94,9 +94,7 @@ class SentEntry(Base):
     __tablename__ = "sent_entries"
 
     # Which subscription. CASCADE so unsubscribing wipes its SentEntry.
-    subscription_id: Mapped[int] = mapped_column(
-        ForeignKey("subscriptions.id", ondelete="CASCADE")
-    )
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("subscriptions.id", ondelete="CASCADE"))
 
     # Which entry — natural key (feed_id + guid). No FK to feed_entries:
     # the whole point is that this row outlives FeedEntry cleanup.

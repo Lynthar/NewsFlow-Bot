@@ -40,15 +40,13 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
-  # Informational for now (continue-on-error): ruff/mypy report existing
-  # debt across the codebase (unformatted files, strict-mypy gaps) that
-  # predates this workflow. Flip these to blocking in the dedicated
-  # cleanup change that runs `ruff format` / fixes the findings — doing
-  # that here would bury functional diffs under a 37-file reformat.
+  # ruff (check + format) is a hard gate now — the tree is clean and stays
+  # that way. mypy stays informational (continue-on-error): ~154 strict-mode
+  # findings (mostly Optional narrowing in the Telegram adapter) are their own
+  # cleanup; flip mypy to blocking once that lands.
   lint:
-    name: ruff + mypy (informational)
+    name: ruff (blocking) + mypy (informational)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -64,11 +62,9 @@ jobs:
           pip install "ruff>=0.1,<0.2" "mypy>=1.8,<2"
 
       - name: Ruff check
-        continue-on-error: true
         run: ruff check src/
 
       - name: Ruff format check
-        continue-on-error: true
         run: ruff format --check src/
 
       - name: Mypy

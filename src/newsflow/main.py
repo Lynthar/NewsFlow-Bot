@@ -10,6 +10,7 @@ import signal
 import sys
 
 import structlog
+from structlog.typing import Processor
 
 from newsflow.config import Settings, get_settings
 from newsflow.core import close_fetcher
@@ -19,16 +20,25 @@ from newsflow.services.dispatcher import get_dispatcher
 
 
 def setup_logging(settings: Settings) -> None:
-    """Configure structured logging."""
-    # Set log level
+    """Configure structured logging.
+
+    structlog events and plain stdlib records (aiohttp, discord, …) are
+    rendered through one shared ProcessorFormatter, so ``LOG_FORMAT`` selects
+    the output for both: ``json`` for machine-readable logs, ``console`` for
+    human-readable dev output.
+    """
     log_level = getattr(logging, settings.log_level)
 
-    # Configure structlog
+    timestamper = structlog.processors.TimeStamper(fmt="iso")
+    shared_processors: list[Processor] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        timestamper,
+    ]
+
     structlog.configure(
         processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
+            *shared_processors,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
@@ -37,14 +47,28 @@ def setup_logging(settings: Settings) -> None:
         cache_logger_on_first_use=True,
     )
 
-    # Configure standard logging
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler()],
+    renderer: Processor = (
+        structlog.processors.JSONRenderer()
+        if settings.log_format == "json"
+        else structlog.dev.ConsoleRenderer()
+    )
+    formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ],
     )
 
-    # Set third-party loggers to WARNING
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(log_level)
+
+    # Quiet noisy third-party loggers
     for logger_name in ["aiohttp", "discord", "telegram", "apscheduler"]:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 

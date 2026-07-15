@@ -318,7 +318,7 @@ class FeedService:
         Fetch all active feeds concurrently, then apply DB updates serially.
 
         Concurrency is bounded by FeedFetcher's internal semaphore
-        (max_concurrent=10). DB writes stay serial because a single
+        (the feed_max_concurrent setting, default 10). DB writes stay serial because a single
         AsyncSession is not safe to share across concurrent awaits.
         """
         feeds = await self.repo.get_feeds_due_for_fetch()

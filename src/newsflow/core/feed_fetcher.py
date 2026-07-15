@@ -20,6 +20,7 @@ import aiohttp
 import feedparser
 from dateutil import parser as date_parser
 
+from newsflow.config import get_settings
 from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
 
 logger = logging.getLogger(__name__)
@@ -551,7 +552,7 @@ def get_fetcher() -> FeedFetcher:
     """Get the global FeedFetcher instance."""
     global _fetcher
     if _fetcher is None:
-        _fetcher = FeedFetcher(max_concurrent=10)
+        _fetcher = FeedFetcher(max_concurrent=get_settings().feed_max_concurrent)
     return _fetcher
 
 

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
 
     # Scheduling
     fetch_interval_minutes: int = 60
+    # Max feeds fetched concurrently per round — bounds the FeedFetcher
+    # semaphore and the number of open HTTP connections. Raise for large
+    # feed counts on a fast host; lower to ease memory / upstream rate limits.
+    feed_max_concurrent: int = 10
     cleanup_interval_hours: int = 24
     entry_retention_days: int = 7
 

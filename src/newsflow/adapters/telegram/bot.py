@@ -8,10 +8,16 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from telegram import Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     AIORateLimiter,
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -39,46 +45,78 @@ logger = logging.getLogger(__name__)
 _adapter: "TelegramAdapter | None" = None
 
 
+WELCOME_TEXT = (
+    "🗞️ <b>Welcome to NewsFlow Bot!</b>\n\n"
+    "I can send you updates from RSS feeds.\n\n"
+    "<b>Feed management:</b>\n"
+    "/add &lt;url&gt; — Subscribe\n"
+    "/remove &lt;url&gt; — Unsubscribe\n"
+    "/pause &lt;url&gt; — Temporarily stop delivery\n"
+    "/resume &lt;url&gt; — Resume delivery (/resume all — every paused feed)\n"
+    "/list [page] — List subscribed feeds\n"
+    "/info &lt;url&gt; — Detailed status of one feed\n"
+    "/test &lt;url&gt; — Check if a URL is a valid feed\n\n"
+    "<b>OPML:</b>\n"
+    "/export — Download subscriptions as OPML\n"
+    "/import &lt;url&gt; — Import from a hosted OPML URL\n"
+    "(or just upload an .opml file to this chat)\n\n"
+    "<b>Settings (channel-wide):</b>\n"
+    "/language &lt;code&gt; — Default translation language\n"
+    "/translate &lt;on/off&gt; — Default translation toggle\n"
+    "/silent &lt;on/off&gt; — Channel-wide silent (digest-only)\n\n"
+    "<b>Settings (per-feed overrides):</b>\n"
+    "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
+    "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
+    "/setsilent &lt;url&gt; &lt;on/off&gt; — Per-feed silent\n"
+    "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
+    "<b>AI Digest:</b>\n"
+    "/digest show — Show current digest config\n"
+    "/digest enable daily &lt;hour_utc&gt; [lang] — Daily digest\n"
+    "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang] — Weekly digest\n"
+    "/digest disable — Turn off\n"
+    "/digest now — Generate and send one immediately\n\n"
+    "<b>Other:</b>\n"
+    "/status — Bot status\n"
+    "/help — This message"
+)
+
+# Commands surfaced in Telegram's command menu (the "/" list + Menu button).
+# Curated to the common actions; the full set stays in WELCOME_TEXT / /help.
+_MENU_COMMANDS: list[tuple[str, str]] = [
+    ("add", "Subscribe to an RSS feed URL"),
+    ("remove", "Unsubscribe from a feed"),
+    ("list", "List subscribed feeds"),
+    ("info", "Detailed status of one feed"),
+    ("pause", "Pause delivery for a feed"),
+    ("resume", "Resume a paused feed"),
+    ("test", "Check whether a URL is a valid feed"),
+    ("language", "Set the default translation language"),
+    ("translate", "Toggle translation on or off"),
+    ("digest", "Configure the AI daily/weekly digest"),
+    ("status", "Show bot status"),
+    ("help", "Show the full command list"),
+]
+
+
+def _start_menu_keyboard() -> InlineKeyboardMarkup:
+    """Quick-action buttons shown under /start and /help."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📰 My feeds", callback_data="menu:list"),
+                InlineKeyboardButton("📊 Status", callback_data="menu:status"),
+            ],
+            [InlineKeyboardButton("❓ Help", callback_data="menu:help")],
+        ]
+    )
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     msg = update.message
     if msg is None:
         return
-    await msg.reply_text(
-        "🗞️ <b>Welcome to NewsFlow Bot!</b>\n\n"
-        "I can send you updates from RSS feeds.\n\n"
-        "<b>Feed management:</b>\n"
-        "/add &lt;url&gt; — Subscribe\n"
-        "/remove &lt;url&gt; — Unsubscribe\n"
-        "/pause &lt;url&gt; — Temporarily stop delivery\n"
-        "/resume &lt;url&gt; — Resume delivery (/resume all — every paused feed)\n"
-        "/list [page] — List subscribed feeds\n"
-        "/info &lt;url&gt; — Detailed status of one feed\n"
-        "/test &lt;url&gt; — Check if a URL is a valid feed\n\n"
-        "<b>OPML:</b>\n"
-        "/export — Download subscriptions as OPML\n"
-        "/import &lt;url&gt; — Import from a hosted OPML URL\n"
-        "(or just upload an .opml file to this chat)\n\n"
-        "<b>Settings (channel-wide):</b>\n"
-        "/language &lt;code&gt; — Default translation language\n"
-        "/translate &lt;on/off&gt; — Default translation toggle\n"
-        "/silent &lt;on/off&gt; — Channel-wide silent (digest-only)\n\n"
-        "<b>Settings (per-feed overrides):</b>\n"
-        "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
-        "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
-        "/setsilent &lt;url&gt; &lt;on/off&gt; — Per-feed silent\n"
-        "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
-        "<b>AI Digest:</b>\n"
-        "/digest show — Show current digest config\n"
-        "/digest enable daily &lt;hour_utc&gt; [lang] — Daily digest\n"
-        "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang] — Weekly digest\n"
-        "/digest disable — Turn off\n"
-        "/digest now — Generate and send one immediately\n\n"
-        "<b>Other:</b>\n"
-        "/status — Bot status\n"
-        "/help — This message",
-        parse_mode="HTML",
-    )
+    await msg.reply_text(WELCOME_TEXT, parse_mode="HTML", reply_markup=_start_menu_keyboard())
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -212,19 +250,25 @@ def _format_sub_line(sub: Subscription) -> str:
     return f"<b>{title}</b> · {meta}\n{_escape_html(feed.url)}"
 
 
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /list [page]. Paginated: LIST_PAGE_SIZE feeds per page."""
-    msg = update.message
-    chat = update.effective_chat
-    if msg is None or chat is None:
-        return
-    chat_id = str(chat.id)
+def _list_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup | None:
+    """Prev/Next row for the paginated feed list. None when there's one page."""
+    if total_pages <= 1:
+        return None
+    row: list[InlineKeyboardButton] = []
+    if page > 1:
+        row.append(InlineKeyboardButton("◀ Prev", callback_data=f"list:{page - 1}"))
+    if page < total_pages:
+        row.append(InlineKeyboardButton("Next ▶", callback_data=f"list:{page + 1}"))
+    return InlineKeyboardMarkup([row])
 
-    try:
-        page = int(context.args[0]) if context.args else 1
-    except (ValueError, IndexError):
-        page = 1
 
+async def _render_list(chat_id: str, page: int) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Build the paginated feed-list text + prev/next keyboard for a chat.
+
+    Shared by /list and the pagination callback. Subscriptions are ordered by
+    id in the repository, so the same page renders identically across calls
+    and prev/next stays consistent.
+    """
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
@@ -239,11 +283,10 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     if not subs:
-        await msg.reply_text(
-            "📭 <b>No feeds subscribed</b>\n\n" "Use /add &lt;url&gt; to subscribe to an RSS feed.",
-            parse_mode="HTML",
+        return (
+            "📭 <b>No feeds subscribed</b>\n\nUse /add &lt;url&gt; to subscribe to an RSS feed.",
+            None,
         )
-        return
 
     total = len(subs)
     total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
@@ -254,17 +297,29 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     header = f"📰 <b>Subscribed Feeds ({total})</b>"
     if total_pages > 1:
         header += f" — page {page}/{total_pages}"
-
     body = "\n\n".join(_format_sub_line(s) for s in page_subs)
+    return header + "\n\n" + body, _list_keyboard(page, total_pages)
 
-    footer = ""
-    if page < total_pages:
-        footer = f"\n\n<i>Use /list {page + 1} for the next page.</i>"
 
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /list [page]. Paginated: LIST_PAGE_SIZE feeds per page, with
+    inline prev/next buttons."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+
+    try:
+        page = int(context.args[0]) if context.args else 1
+    except (ValueError, IndexError):
+        page = 1
+
+    text, keyboard = await _render_list(str(chat.id), page)
     await msg.reply_text(
-        header + "\n\n" + body + footer,
+        text,
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=keyboard,
     )
 
 
@@ -1166,15 +1221,9 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Failed to send error notice to user")
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /status command."""
-    msg = update.message
-    chat = update.effective_chat
-    if msg is None or chat is None:
-        return
-    chat_id = str(chat.id)
+async def _render_status(chat_id: str) -> str:
+    """Build the /status text for a chat. Shared by /status and the menu button."""
     settings = get_settings()
-
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
@@ -1182,10 +1231,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             platform="telegram",
             channel_id=chat_id,
         )
-
     translation_status = "Available ✅" if settings.can_translate() else "Not configured ❌"
-
-    message = (
+    return (
         "📊 <b>NewsFlow Bot Status</b>\n\n"
         f"Translation: {translation_status}\n"
         f"Fetch Interval: {settings.fetch_interval_minutes} min\n"
@@ -1193,7 +1240,75 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"\n🕐 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
-    await msg.reply_text(message, parse_mode="HTML")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /status command."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    await msg.reply_text(await _render_status(str(chat.id)), parse_mode="HTML")
+
+
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route inline-keyboard button presses.
+
+    ``list:<page>`` edits the feed list in place (pagination); ``menu:<view>``
+    posts the list/status/help view as a new message. Display-only — no
+    subscription state is changed here, so it's safe for any group member to
+    press.
+    """
+    query = update.callback_query
+    chat = update.effective_chat
+    if query is None or query.data is None or chat is None:
+        return
+    await query.answer()
+    data = query.data
+
+    if data.startswith("list:"):
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            page = 1
+        text, keyboard = await _render_list(str(chat.id), page)
+        from telegram.error import BadRequest
+
+        try:
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except BadRequest as e:
+            # Double-tapping the same page → "Message is not modified"; ignore.
+            if "not modified" not in str(e).lower():
+                raise
+        return
+
+    if data.startswith("menu:"):
+        action = data.split(":", 1)[1]
+        if action == "list":
+            text, keyboard = await _render_list(str(chat.id), 1)
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        elif action == "status":
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=await _render_status(str(chat.id)),
+                parse_mode="HTML",
+            )
+        elif action == "help":
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=WELCOME_TEXT,
+                parse_mode="HTML",
+            )
 
 
 class TelegramAdapter(BaseAdapter):
@@ -1247,6 +1362,8 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("import", import_command))
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))
+        # Inline-keyboard callbacks: /list pagination + /start quick-menu.
+        self.app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(list|menu):"))
         # Auto-import when user uploads an .opml/.xml file (no caption needed).
         self.app.add_handler(
             MessageHandler(
@@ -1261,6 +1378,13 @@ class TelegramAdapter(BaseAdapter):
         logger.info("Starting Telegram bot...")
         await self.app.initialize()
         await self.app.start()
+        # Register the "/" command menu (best-effort; a failed call must not
+        # abort startup). Done explicitly here because this adapter drives the
+        # PTB lifecycle manually rather than via run_polling()'s post_init hook.
+        try:
+            await self.app.bot.set_my_commands([BotCommand(c, d) for c, d in _MENU_COMMANDS])
+        except Exception:
+            logger.warning("Failed to register Telegram command menu", exc_info=True)
         updater = self.app.updater
         assert updater is not None  # polling bot always has an updater
         await updater.start_polling()

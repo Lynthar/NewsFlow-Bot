@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[all]"
-          pip install "pytest>=7.4,<8" "pytest-asyncio>=0.23,<0.24"
+          pip install "pytest>=9.0.3,<10" "pytest-asyncio>=1.4,<2"
 
       - name: Run tests
         run: pytest tests/ -v

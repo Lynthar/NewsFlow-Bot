@@ -1575,7 +1575,7 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 ```
 NewsFlow-Bot/
-├── .github/workflows/            # CI：test.yml（pytest 门禁）+ docker-publish.yml
+├── .github/workflows/            # CI：test.yml（pytest + ruff + mypy 三门禁）+ docker-publish.yml
 ├── alembic/                      # 迁移脚本 + env.py
 ├── docker/                       # Dockerfile + compose
 ├── samples/                      # 预置 OPML + webhooks/sources 示例 YAML
@@ -1622,7 +1622,8 @@ NewsFlow-Bot/
 │   └── api/                      # FastAPI 路由（feeds/stats/health/ingest）
 ├── tests/
 │   ├── conftest.py               # 内存 SQLite session fixture
-│   └── unit/                     # 全部单元测试（CI 在 3.11/3.13 上全量跑）
+│   ├── unit/                     # 单元测试（CI 在 3.11/3.13 上全量跑）
+│   └── integration/              # 端到端集成（真 dispatch → 捕获型假 adapter）
 ├── pyproject.toml                # 依赖权威
 ├── alembic.ini                   # 迁移配置
 ├── Makefile                      # 常用命令

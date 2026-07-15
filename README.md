@@ -205,7 +205,7 @@ Fast dev loop:
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 364 tests
+make test      # 365 tests
 make lint
 ```
 

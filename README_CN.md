@@ -205,7 +205,7 @@ API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 364 个测试
+make test      # 365 个测试
 make lint
 ```
 

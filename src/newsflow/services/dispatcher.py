@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,7 +99,7 @@ class Dispatcher:
         # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
         self._background_tasks: set[asyncio.Task] = set()
 
-    def spawn(self, coro, *, name: str | None = None) -> asyncio.Task:
+    def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
         until it completes. Use this instead of bare asyncio.create_task()
         anywhere the return value would otherwise be discarded."""

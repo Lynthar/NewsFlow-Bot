@@ -5,6 +5,7 @@ Subscription repository for database operations.
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from newsflow.config import get_settings
 from newsflow.models.subscription import SentEntry, Subscription
+from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +210,7 @@ class SubscriptionRepository:
         show_image: bool | None = None,
     ) -> None:
         """Update subscription settings."""
-        update_data = {}
+        update_data: dict[str, Any] = {}
         if translate is not None:
             update_data["translate"] = translate
         if target_language is not None:
@@ -252,7 +254,7 @@ class SubscriptionRepository:
             )
             .values(is_active=False)
         )
-        return result.rowcount > 0
+        return rowcount(result) > 0
 
     async def deactivate_channel(
         self,
@@ -280,7 +282,7 @@ class SubscriptionRepository:
             )
             .values(is_active=False)
         )
-        return result.rowcount
+        return rowcount(result)
 
     async def activate_subscription(
         self,
@@ -298,7 +300,7 @@ class SubscriptionRepository:
             )
             .values(is_active=True)
         )
-        return result.rowcount > 0
+        return rowcount(result) > 0
 
     async def set_silent(
         self,
@@ -318,7 +320,7 @@ class SubscriptionRepository:
             )
             .values(silent=silent)
         )
-        return result.rowcount > 0
+        return rowcount(result) > 0
 
     async def set_channel_silent(
         self,
@@ -338,7 +340,7 @@ class SubscriptionRepository:
             )
             .values(silent=silent)
         )
-        return result.rowcount
+        return rowcount(result)
 
     async def delete_subscription(
         self,
@@ -354,7 +356,7 @@ class SubscriptionRepository:
                 Subscription.feed_id == feed_id,
             )
         )
-        return result.rowcount > 0
+        return rowcount(result) > 0
 
     async def count_channel_subscriptions(
         self,
@@ -545,4 +547,4 @@ class SubscriptionRepository:
 
         cutoff = datetime.now(UTC) - timedelta(days=days)
         result = await self.session.execute(delete(SentEntry).where(SentEntry.sent_at < cutoff))
-        return result.rowcount
+        return rowcount(result)

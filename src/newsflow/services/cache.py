@@ -156,7 +156,8 @@ class RedisCache(CacheBackend):
     async def get(self, key: str) -> str | None:
         try:
             client = await self._get_client()
-            return await client.get(key)
+            value: str | None = await client.get(key)
+            return value
         except Exception as e:
             logger.exception(f"Redis get error: {e}")
             return None
@@ -176,7 +177,7 @@ class RedisCache(CacheBackend):
     async def delete(self, key: str) -> bool:
         try:
             client = await self._get_client()
-            result = await client.delete(key)
+            result: int = await client.delete(key)
             return result > 0
         except Exception as e:
             logger.exception(f"Redis delete error: {e}")
@@ -185,7 +186,7 @@ class RedisCache(CacheBackend):
     async def exists(self, key: str) -> bool:
         try:
             client = await self._get_client()
-            result = await client.exists(key)
+            result: int = await client.exists(key)
             return result > 0
         except Exception as e:
             logger.exception(f"Redis exists error: {e}")

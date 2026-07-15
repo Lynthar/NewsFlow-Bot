@@ -126,6 +126,8 @@ class SubscriptionService:
             )
 
         feed = add_result.feed
+        # add_feed succeeds only with a resolved feed attached
+        assert feed is not None
 
         # Inherit silent from the channel: if every existing active
         # subscription in this channel is silent, treat the channel as

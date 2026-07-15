@@ -77,7 +77,7 @@ class OpenAIProvider(TranslationProvider):
             try:
                 from openai import AsyncOpenAI
 
-                kwargs = {"api_key": self.api_key}
+                kwargs: dict[str, Any] = {"api_key": self.api_key}
                 if self.base_url:
                     kwargs["base_url"] = self.base_url
 

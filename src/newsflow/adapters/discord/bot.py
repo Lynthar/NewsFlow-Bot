@@ -232,6 +232,7 @@ class NewsFlowBot(commands.Bot):
 
     async def on_ready(self) -> None:
         """Called when bot is ready."""
+        assert self.user is not None  # populated once the client has logged in
         logger.info(f"Discord bot logged in as {self.user} (ID: {self.user.id})")
         logger.info(f"Connected to {len(self.guilds)} guilds")
 
@@ -249,7 +250,7 @@ class NewsFlowBot(commands.Bot):
         dispatcher.register_adapter("discord", adapter)
         logger.info("Discord adapter registered with dispatcher")
 
-    async def on_error(self, event: str, *args, **kwargs) -> None:
+    async def on_error(self, event: str, *args: object, **kwargs: object) -> None:
         """Handle errors."""
         logger.exception(f"Error in {event}")
 
@@ -293,6 +294,7 @@ class FeedCommands(commands.Cog):
             )
 
         if result.success:
+            assert result.feed is not None
             embed = discord.Embed(
                 title="Feed Added",
                 description=f"**{result.feed.title or url}**",
@@ -995,7 +997,9 @@ class DigestCommands(commands.Cog):
                 enabled=True,
                 schedule=schedule.value,
                 delivery_hour_utc=int(hour_utc),
-                delivery_weekday=(int(weekday) if schedule.value == "weekly" else None),
+                delivery_weekday=(
+                    int(weekday) if schedule.value == "weekly" and weekday is not None else None
+                ),
                 language=language,
                 include_filtered=bool(include_filtered),
                 max_articles=int(max_articles),
@@ -1207,7 +1211,7 @@ class DigestCommands(commands.Cog):
 class DiscordAdapter(BaseAdapter):
     """Discord adapter implementation."""
 
-    def __init__(self, bot_or_token) -> None:
+    def __init__(self, bot_or_token: NewsFlowBot | str) -> None:
         if isinstance(bot_or_token, NewsFlowBot):
             self.bot = bot_or_token
             self.token = None

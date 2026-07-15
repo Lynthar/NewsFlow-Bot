@@ -10,6 +10,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.models.feed import Feed, FeedEntry
+from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ class FeedRepository:
         await self.session.execute(update(Feed).where(Feed.id == feed_id).values(**update_data))
 
     async def mark_feed_error(
-        self, feed_id: int, error: str, base_delay_seconds: int = 3600
+        self, feed_id: int, error: str | None, base_delay_seconds: int = 3600
     ) -> None:
         """Mark a feed fetch error, scheduling exponential backoff."""
         feed = await self.get_feed_by_id(feed_id)
@@ -131,7 +132,7 @@ class FeedRepository:
     async def delete_feed(self, feed_id: int) -> bool:
         """Delete a feed and all its entries."""
         result = await self.session.execute(delete(Feed).where(Feed.id == feed_id))
-        return result.rowcount > 0
+        return rowcount(result) > 0
 
     # ===== FeedEntry Operations =====
 
@@ -277,7 +278,7 @@ class FeedRepository:
         """
         cutoff = datetime.now(UTC) - timedelta(days=days)
         result = await self.session.execute(delete(FeedEntry).where(FeedEntry.created_at < cutoff))
-        return result.rowcount
+        return rowcount(result)
 
     async def count_entries(self, feed_id: int) -> int:
         """Count entries for a feed."""

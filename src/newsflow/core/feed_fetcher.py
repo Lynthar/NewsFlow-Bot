@@ -13,7 +13,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urljoin
 
 import aiohttp
@@ -470,7 +470,10 @@ class FeedFetcher:
         # Try parsed time first
         if hasattr(entry, "published_parsed") and entry.published_parsed:
             try:
-                return datetime(*entry.published_parsed[:6], tzinfo=UTC)
+                return datetime(
+                    *cast("tuple[int, int, int, int, int, int]", entry.published_parsed[:6]),
+                    tzinfo=UTC,
+                )
             except (ValueError, TypeError):
                 pass
 
@@ -478,7 +481,7 @@ class FeedFetcher:
         for key in ["published", "updated", "created"]:
             if key in entry and entry[key]:
                 try:
-                    dt = date_parser.parse(entry[key])
+                    dt: datetime = date_parser.parse(entry[key])
                     # A date string with no offset parses to a naive datetime;
                     # .astimezone() would then assume the *host's* local tz.
                     # Treat naive as UTC, matching the published_parsed branch.
@@ -496,23 +499,23 @@ class FeedFetcher:
         if "media_content" in entry:
             for media in entry.media_content:
                 if media.get("medium") == "image" or media.get("type", "").startswith("image/"):
-                    return media.get("url")
+                    return cast("str | None", media.get("url"))
 
         # Check media_thumbnail
         if "media_thumbnail" in entry and entry.media_thumbnail:
-            return entry.media_thumbnail[0].get("url")
+            return cast("str | None", entry.media_thumbnail[0].get("url"))
 
         # Check enclosures
         if "enclosures" in entry:
             for enclosure in entry.enclosures:
                 if enclosure.get("type", "").startswith("image/"):
-                    return enclosure.get("href") or enclosure.get("url")
+                    return cast("str | None", enclosure.get("href") or enclosure.get("url"))
 
         # Check links
         if "links" in entry:
             for link in entry.links:
                 if link.get("type", "").startswith("image/"):
-                    return link.get("href")
+                    return cast("str | None", link.get("href"))
 
         return None
 

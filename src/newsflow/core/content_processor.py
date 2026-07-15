@@ -91,7 +91,7 @@ def clean_html(html: str) -> tuple[str, list[str]]:
     images = []
     for img in soup.find_all("img"):
         src = img.get("src")
-        if src and src.startswith(("http://", "https://")):
+        if isinstance(src, str) and src.startswith(("http://", "https://")):
             images.append(src)
 
     # Get text

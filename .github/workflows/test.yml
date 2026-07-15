@@ -40,12 +40,10 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
-  # ruff (check + format) is a hard gate now — the tree is clean and stays
-  # that way. mypy stays informational (continue-on-error): ~154 strict-mode
-  # findings (mostly Optional narrowing in the Telegram adapter) are their own
-  # cleanup; flip mypy to blocking once that lands.
+  # ruff (check + format) and mypy (strict) are all hard gates now — the
+  # tree is clean and stays that way. Keep new code lint- and type-clean.
   lint:
-    name: ruff (blocking) + mypy (informational)
+    name: ruff + mypy (blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,5 +66,4 @@ jobs:
         run: ruff format --check src/
 
       - name: Mypy
-        continue-on-error: true
         run: mypy src/

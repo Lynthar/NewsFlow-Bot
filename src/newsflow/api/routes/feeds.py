@@ -165,6 +165,7 @@ async def create_feed(
             detail=result.message,
         )
 
+    assert result.feed is not None
     return await _feed_to_response(result.feed, repo)
 
 

@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
+from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ class ChannelDigestRepository:
         platform: str,
         channel_id: str,
         guild_id: str | None,
-        **fields,
+        **fields: Any,
     ) -> ChannelDigest:
         """Insert or update the digest config for a channel."""
         existing = await self.get(platform, channel_id)
@@ -80,7 +82,7 @@ class ChannelDigestRepository:
             )
             .values(enabled=False)
         )
-        return result.rowcount
+        return rowcount(result)
 
     async def migrate_channel(self, platform: str, old_channel_id: str, new_channel_id: str) -> int:
         """Repoint this channel's digest config at a new platform channel

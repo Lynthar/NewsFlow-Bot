@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import aiohttp
-from dateutil import parser as date_parser  # type: ignore[import-untyped]
+from dateutil import parser as date_parser
 
 from newsflow.core.feed_fetcher import (
     DEFAULT_HEADERS,
@@ -84,7 +84,7 @@ class JsonApiSourceFetcher:
             return _fail(req.url, "json_api: config.items (JSONPath) is required")
 
         try:
-            from jsonpath_ng.ext import parse as jp_parse  # type: ignore[import-untyped]
+            from jsonpath_ng.ext import parse as jp_parse
         except ImportError:
             return _fail(
                 req.url,

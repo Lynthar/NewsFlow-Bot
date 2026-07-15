@@ -10,14 +10,18 @@ Provides endpoints for:
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from newsflow import __version__
 from newsflow.config import get_settings
 
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
 logger = logging.getLogger(__name__)
 
 
-def create_app():
+def create_app() -> "FastAPI":
     """
     Create and configure the FastAPI application.
 

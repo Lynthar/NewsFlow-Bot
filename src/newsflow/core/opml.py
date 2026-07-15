@@ -80,7 +80,7 @@ def build_opml(
             attrs["title"] = entry.title
         if entry.html_url:
             attrs["htmlUrl"] = entry.html_url
-        ET.SubElement(body, "outline", **attrs)
+        ET.SubElement(body, "outline", attrs)
 
     ET.indent(opml, space="  ")
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(opml, encoding="unicode")

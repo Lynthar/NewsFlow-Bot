@@ -89,7 +89,7 @@ class Feed(Base):
         if last_modified:
             self.last_modified = last_modified
 
-    def mark_error(self, error: str, base_delay_seconds: int = 3600) -> None:
+    def mark_error(self, error: str | None, base_delay_seconds: int = 3600) -> None:
         """Record a failed fetch and schedule the next retry with exponential
         backoff: delay = base_delay * 2^min(error_count, 5), capped so we
         don't overshoot before the error_count=10 auto-deactivate kicks in.

@@ -41,7 +41,10 @@ _adapter: "TelegramAdapter | None" = None
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
-    await update.message.reply_text(
+    msg = update.message
+    if msg is None:
+        return
+    await msg.reply_text(
         "🗞️ <b>Welcome to NewsFlow Bot!</b>\n\n"
         "I can send you updates from RSS feeds.\n\n"
         "<b>Feed management:</b>\n"
@@ -85,18 +88,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /add command."""
+    msg = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if msg is None or chat is None or user is None:
+        return
     if not context.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Usage: /add <rss_url>\n\n" "Example: /add https://example.com/feed.xml"
         )
         return
 
     url = context.args[0]
-    chat_id = str(update.effective_chat.id)
-    user_id = str(update.effective_user.id)
+    chat_id = str(chat.id)
+    user_id = str(user.id)
 
     # Send processing message
-    processing_msg = await update.message.reply_text("⏳ Adding feed...")
+    processing_msg = await msg.reply_text("⏳ Adding feed...")
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -126,6 +134,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # parse — leaving the user stuck on "Adding feed..." although the
     # subscription actually succeeded.
     if result.success:
+        assert result.feed is not None  # success guarantees a resolved feed
         feed_title = _escape_html(result.feed.title or url)
         if result.is_new:
             message = f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{_escape_html(url)}"
@@ -144,12 +153,16 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /remove command."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /remove <rss_url>")
+        await msg.reply_text("Usage: /remove <rss_url>")
         return
 
     url = context.args[0]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -168,7 +181,7 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         message = f"❌ <b>Failed to Remove Feed</b>\n\n{_escape_html(result.message)}"
 
-    await update.message.reply_text(message, parse_mode="HTML")
+    await msg.reply_text(message, parse_mode="HTML")
 
 
 def _escape_html(text: str) -> str:
@@ -201,7 +214,11 @@ def _format_sub_line(sub: Subscription) -> str:
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /list [page]. Paginated: LIST_PAGE_SIZE feeds per page."""
-    chat_id = str(update.effective_chat.id)
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    chat_id = str(chat.id)
 
     try:
         page = int(context.args[0]) if context.args else 1
@@ -222,7 +239,7 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     if not subs:
-        await update.message.reply_text(
+        await msg.reply_text(
             "📭 <b>No feeds subscribed</b>\n\n" "Use /add &lt;url&gt; to subscribe to an RSS feed.",
             parse_mode="HTML",
         )
@@ -244,7 +261,7 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if page < total_pages:
         footer = f"\n\n<i>Use /list {page + 1} for the next page.</i>"
 
-    await update.message.reply_text(
+    await msg.reply_text(
         header + "\n\n" + body + footer,
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -253,11 +270,15 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /pause <url>."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /pause <rss_url>")
+        await msg.reply_text("Usage: /pause <rss_url>")
         return
     url = context.args[0]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -268,16 +289,20 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await session.commit()
 
     prefix = "⏸" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /resume <url> (or `/resume all` for every paused feed)."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /resume <rss_url> (or: /resume all)")
+        await msg.reply_text("Usage: /resume <rss_url> (or: /resume all)")
         return
     url = context.args[0]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -291,16 +316,20 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await session.commit()
 
     prefix = "▶️" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /info <url> — detailed status of one subscribed feed."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /info <rss_url>")
+        await msg.reply_text("Usage: /info <rss_url>")
         return
     url = context.args[0]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -310,7 +339,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     if detail is None:
-        await update.message.reply_text(
+        await msg.reply_text(
             f"⚠️ No subscription to <code>{_escape_html(url)}</code> in this chat.",
             parse_mode="HTML",
         )
@@ -353,7 +382,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f'• <a href="{_escape_html(entry.link)}">' f"{_escape_html(title_line)}</a>{suffix}"
             )
 
-    await update.message.reply_text(
+    await msg.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -396,8 +425,12 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from newsflow.services.digest_service import DigestService
     from newsflow.services.summarization import get_summarizer
 
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Usage:\n"
             "/digest show\n"
             "/digest enable daily &lt;hour_utc&gt; [lang]\n"
@@ -410,7 +443,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     sub = context.args[0].lower()
     rest = context.args[1:]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
     session_factory = get_session_factory()
 
     if sub == "show":
@@ -418,9 +451,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             repo = ChannelDigestRepository(session)
             config = await repo.get("telegram", chat_id)
         if config is None:
-            await update.message.reply_text(
-                "No digest configured. Use /digest enable to set one up."
-            )
+            await msg.reply_text("No digest configured. Use /digest enable to set one up.")
             return
         lines = [
             "<b>Digest Configuration</b>",
@@ -433,7 +464,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Include filtered: {'yes' if config.include_filtered else 'no'}",
             f"Last delivered: {relative_time(config.last_delivered_at)}",
         ]
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        await msg.reply_text("\n".join(lines), parse_mode="HTML")
         return
 
     if sub == "disable":
@@ -441,17 +472,17 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             repo = ChannelDigestRepository(session)
             config = await repo.get("telegram", chat_id)
             if config is None:
-                await update.message.reply_text("No digest configured for this chat.")
+                await msg.reply_text("No digest configured for this chat.")
                 return
             config.enabled = False
             await session.commit()
-        await update.message.reply_text("⏸ Digest disabled. Use /digest enable to turn it back on.")
+        await msg.reply_text("⏸ Digest disabled. Use /digest enable to turn it back on.")
         return
 
     if sub == "now":
         summarizer = get_summarizer()
         if summarizer is None:
-            await update.message.reply_text(
+            await msg.reply_text(
                 "⚠️ Digest not available: LLM provider not configured " "(check OPENAI_API_KEY)."
             )
             return
@@ -460,25 +491,23 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             repo = ChannelDigestRepository(session)
             config = await repo.get("telegram", chat_id)
             if config is None:
-                await update.message.reply_text("No digest configured. Use /digest enable first.")
+                await msg.reply_text("No digest configured. Use /digest enable first.")
                 return
 
             service = DigestService(session, summarizer)
             now = datetime.now(UTC)
             result = await service.generate(config, now=now)
             if result is None:
-                await update.message.reply_text(
-                    "No articles in the current window — nothing to summarize."
-                )
+                await msg.reply_text("No articles in the current window — nothing to summarize.")
                 return
             if not result.success:
-                await update.message.reply_text(f"❌ Digest generation failed: {result.error}")
+                await msg.reply_text(f"❌ Digest generation failed: {result.error}")
                 return
 
             dispatcher = get_dispatcher()
             adapter = dispatcher._adapters.get("telegram")
             if adapter is None:
-                await update.message.reply_text("Telegram adapter not registered yet — try again.")
+                await msg.reply_text("Telegram adapter not registered yet — try again.")
                 return
             chunks, new_pin_id = await dispatcher.deliver_digest(
                 adapter,
@@ -497,7 +526,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         #   enable daily <hour> [lang]
         #   enable weekly <weekday> <hour> [lang]
         if not rest:
-            await update.message.reply_text(
+            await msg.reply_text(
                 "Usage: /digest enable daily &lt;hour_utc&gt; [lang]  OR\n"
                 "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang]",
                 parse_mode="HTML",
@@ -530,7 +559,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not 0 <= hour <= 23:
                 raise ValueError("hour must be 0-23")
         except ValueError as e:
-            await update.message.reply_text(f"❌ {e}")
+            await msg.reply_text(f"❌ {e}")
             return
 
         async with session_factory() as session:
@@ -552,10 +581,10 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if mode == "daily"
             else f"weekly on weekday {weekday} at {hour:02d}:00 UTC"
         )
-        await update.message.reply_text(f"✅ Digest enabled — {desc}, language {language}.")
+        await msg.reply_text(f"✅ Digest enabled — {desc}, language {language}.")
         return
 
-    await update.message.reply_text(
+    await msg.reply_text(
         f"Unknown subcommand <code>{_escape_html(sub)}</code>. " "Use /digest for help.",
         parse_mode="HTML",
     )
@@ -570,8 +599,12 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
       /filter <url> include=a,b exclude=c → set filter
       /filter <url> include=a,b           → set include only
     """
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Usage:\n"
             "/filter &lt;url&gt; — show current filter\n"
             "/filter &lt;url&gt; clear — remove filter\n"
@@ -582,7 +615,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     url = context.args[0]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
     rest = context.args[1:]
 
     session_factory = get_session_factory()
@@ -595,13 +628,13 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 platform="telegram", channel_id=chat_id, feed_url=url
             )
         if rule is None:
-            await update.message.reply_text(
+            await msg.reply_text(
                 f"⚠️ No subscription to <code>{_escape_html(url)}</code> in this chat.",
                 parse_mode="HTML",
             )
             return
         if rule.is_empty():
-            await update.message.reply_text("No filter set — every entry is delivered.")
+            await msg.reply_text("No filter set — every entry is delivered.")
             return
         lines = ["<b>Filter</b>"]
         if rule.include_keywords:
@@ -614,7 +647,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "<b>Exclude</b> (none of): "
                 + ", ".join(f"<code>{_escape_html(k)}</code>" for k in rule.exclude_keywords)
             )
-        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+        await msg.reply_text("\n".join(lines), parse_mode="HTML")
         return
 
     # Clear
@@ -626,9 +659,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             await session.commit()
         prefix = "✅" if result.success else "❌"
-        await update.message.reply_text(
-            f"{prefix} {_escape_html(result.message)}", parse_mode="HTML"
-        )
+        await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
         return
 
     # Set: parse include=... exclude=... tokens
@@ -636,7 +667,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     exclude_csv: str | None = None
     for token in rest:
         if "=" not in token:
-            await update.message.reply_text(
+            await msg.reply_text(
                 f"❌ Can't parse <code>{_escape_html(token)}</code>. "
                 "Expected <code>include=a,b</code> or <code>exclude=a,b</code>.",
                 parse_mode="HTML",
@@ -649,7 +680,7 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif key == "exclude":
             exclude_csv = value
         else:
-            await update.message.reply_text(
+            await msg.reply_text(
                 f"❌ Unknown key <code>{_escape_html(key)}</code>. "
                 "Use <code>include=</code> or <code>exclude=</code>.",
                 parse_mode="HTML",
@@ -671,13 +702,18 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /setlang <url> <code> — per-feed translation language override."""
-    if len(context.args) != 2:
-        await update.message.reply_text(
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    args = context.args
+    if args is None or len(args) != 2:
+        await msg.reply_text(
             "Usage: /setlang <rss_url> <language_code>\n"
             "Example: /setlang https://example.com/feed zh-CN\n\n"
             "Sets the translation language for ONE feed. Use /language for "
@@ -685,8 +721,8 @@ async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    url, code = context.args
-    chat_id = str(update.effective_chat.id)
+    url, code = args
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -697,13 +733,18 @@ async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /settrans <url> <on|off> — per-feed translation toggle."""
-    if len(context.args) != 2:
-        await update.message.reply_text(
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    args = context.args
+    if args is None or len(args) != 2:
+        await msg.reply_text(
             "Usage: /settrans <rss_url> <on|off>\n"
             "Example: /settrans https://example.com/feed off\n\n"
             "Toggles translation for ONE feed. Use /translate for the "
@@ -711,12 +752,12 @@ async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    url = context.args[0]
-    enabled = context.args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
-    chat_id = str(update.effective_chat.id)
+    url = args[0]
+    enabled = args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    chat_id = str(chat.id)
 
     if enabled and not get_settings().can_translate():
-        await update.message.reply_text(
+        await msg.reply_text(
             "⚠️ <b>Translation Not Available</b>\n\n"
             "Translation is not configured on this bot instance.",
             parse_mode="HTML",
@@ -732,7 +773,7 @@ async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -741,8 +782,12 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     Silent channels don't get instant feed pushes, but entries still flow
     into the digest pipeline. Use /setsilent <url> for per-feed control.
     """
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Usage: /silent <on|off>\n\n"
             "Channel-wide: silences every feed in this chat. Entries still "
             "go into the digest. Use /setsilent <url> <on|off> for one feed."
@@ -750,7 +795,7 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     enabled = context.args[0].lower() in ("on", "true", "yes", "1", "enable", "enabled")
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -761,13 +806,18 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /setsilent <url> <on|off> — per-feed silent toggle."""
-    if len(context.args) != 2:
-        await update.message.reply_text(
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    args = context.args
+    if args is None or len(args) != 2:
+        await msg.reply_text(
             "Usage: /setsilent <rss_url> <on|off>\n"
             "Example: /setsilent https://example.com/feed on\n\n"
             "Silent feeds don't push instant messages but still feed the "
@@ -775,9 +825,9 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
-    url = context.args[0]
-    enabled = context.args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
-    chat_id = str(update.effective_chat.id)
+    url = args[0]
+    enabled = args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -788,21 +838,25 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await session.commit()
 
     prefix = "✅" if result.success else "❌"
-    await update.message.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
 
 
 async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /export — send the subscription list as an OPML file."""
     import io
 
-    chat_id = str(update.effective_chat.id)
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    chat_id = str(chat.id)
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
         opml_xml = await service.export_opml(platform="telegram", channel_id=chat_id)
 
     buf = io.BytesIO(opml_xml.encode("utf-8"))
-    await update.message.reply_document(
+    await msg.reply_document(
         document=buf,
         filename=f"newsflow-{chat_id}.opml",
         caption="Your subscription list",
@@ -811,7 +865,10 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _do_opml_import(update: Update, chat_id: str, user_id: str, opml_content: str) -> None:
     """Shared core for /import with URL and document-upload handlers."""
-    processing = await update.message.reply_text("⏳ Importing…")
+    msg = update.message
+    if msg is None:
+        return
+    processing = await msg.reply_text("⏳ Importing…")
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -846,10 +903,13 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     File-upload imports are handled by import_document below.
     """
-    if update.message is None:
+    msg = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if msg is None or chat is None or user is None:
         return
     if not context.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Usage: /import &lt;url&gt;\n\n"
             "Or upload an .opml file directly to this chat — I'll pick it up.",
             parse_mode="HTML",
@@ -866,7 +926,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         validate_feed_url(url)
     except InvalidFeedURLError as e:
-        await update.message.reply_text(f"❌ Rejected URL: {e}")
+        await msg.reply_text(f"❌ Rejected URL: {e}")
         return
 
     # Follow redirects manually, re-validating each hop, so a redirect can't
@@ -882,7 +942,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if response.status in REDIRECT_STATUSES:
                     location = response.headers.get("Location")
                     if not location:
-                        await update.message.reply_text(
+                        await msg.reply_text(
                             f"❌ Failed to fetch OPML: HTTP {response.status} "
                             "redirect without Location"
                         )
@@ -891,31 +951,29 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     try:
                         validate_feed_url(current)
                     except InvalidFeedURLError as e:
-                        await update.message.reply_text(f"❌ Rejected redirect target: {e}")
+                        await msg.reply_text(f"❌ Rejected redirect target: {e}")
                         return
                     continue
                 if response.status != 200:
-                    await update.message.reply_text(
-                        f"❌ Failed to fetch OPML: HTTP {response.status}"
-                    )
+                    await msg.reply_text(f"❌ Failed to fetch OPML: HTTP {response.status}")
                     return
                 data = await response.content.read(1024 * 1024 + 1)
                 if len(data) > 1024 * 1024:
-                    await update.message.reply_text("❌ OPML file too large (1 MB cap)")
+                    await msg.reply_text("❌ OPML file too large (1 MB cap)")
                     return
                 content = data.decode("utf-8", errors="replace")
                 break
         else:
-            await update.message.reply_text("❌ Failed to fetch OPML: too many redirects")
+            await msg.reply_text("❌ Failed to fetch OPML: too many redirects")
             return
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to fetch OPML: {e}")
+        await msg.reply_text(f"❌ Failed to fetch OPML: {e}")
         return
 
     await _do_opml_import(
         update,
-        chat_id=str(update.effective_chat.id),
-        user_id=str(update.effective_user.id),
+        chat_id=str(chat.id),
+        user_id=str(user.id),
         opml_content=content,
     )
 
@@ -927,14 +985,19 @@ async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     not by /import text command — PTB's CommandHandler doesn't inspect
     captions, and requiring `/import` as caption would be error-prone UX.
     """
-    doc = update.message.document
+    msg = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if msg is None or chat is None or user is None:
+        return
+    doc = msg.document
     if doc is None:
         return
     name = (doc.file_name or "").lower()
     if not name.endswith((".opml", ".xml")):
         return
     if doc.file_size and doc.file_size > 1024 * 1024:
-        await update.message.reply_text("❌ OPML file too large (1 MB cap)")
+        await msg.reply_text("❌ OPML file too large (1 MB cap)")
         return
 
     try:
@@ -942,28 +1005,31 @@ async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         data = await tg_file.download_as_bytearray()
         content = data.decode("utf-8")
     except UnicodeDecodeError:
-        await update.message.reply_text("❌ OPML file is not valid UTF-8")
+        await msg.reply_text("❌ OPML file is not valid UTF-8")
         return
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to read OPML: {e}")
+        await msg.reply_text(f"❌ Failed to read OPML: {e}")
         return
 
     await _do_opml_import(
         update,
-        chat_id=str(update.effective_chat.id),
-        user_id=str(update.effective_user.id),
+        chat_id=str(chat.id),
+        user_id=str(user.id),
         opml_content=content,
     )
 
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /test command - test an RSS feed."""
+    msg = update.message
+    if msg is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /test <rss_url>")
+        await msg.reply_text("Usage: /test <rss_url>")
         return
 
     url = context.args[0]
-    processing_msg = await update.message.reply_text("⏳ Testing feed...")
+    processing_msg = await msg.reply_text("⏳ Testing feed...")
 
     from newsflow.core import get_fetcher
     from newsflow.core.source_shortcuts import expand_source_shortcut
@@ -996,8 +1062,12 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /language command."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text(
+        await msg.reply_text(
             "Usage: /language <language_code>\n\n"
             "Examples:\n"
             "/language zh-CN (Simplified Chinese)\n"
@@ -1008,7 +1078,7 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     language = context.args[0]
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -1028,21 +1098,25 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         message = "⚠️ <b>No Subscriptions</b>\n\nNo feeds subscribed in this chat."
 
-    await update.message.reply_text(message, parse_mode="HTML")
+    await msg.reply_text(message, parse_mode="HTML")
 
 
 async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /translate command."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
     if not context.args:
-        await update.message.reply_text("Usage: /translate <on/off>")
+        await msg.reply_text("Usage: /translate <on/off>")
         return
 
     enabled = context.args[0].lower() in ("on", "true", "yes", "1")
-    chat_id = str(update.effective_chat.id)
+    chat_id = str(chat.id)
 
     settings = get_settings()
     if enabled and not settings.can_translate():
-        await update.message.reply_text(
+        await msg.reply_text(
             "⚠️ <b>Translation Not Available</b>\n\n"
             "Translation is not configured on this bot instance.\n"
             "The bot owner needs to set up translation API keys.",
@@ -1066,7 +1140,7 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         message = "⚠️ <b>No Subscriptions</b>\n\nNo feeds subscribed in this chat."
 
-    await update.message.reply_text(message, parse_mode="HTML")
+    await msg.reply_text(message, parse_mode="HTML")
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1094,7 +1168,11 @@ async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /status command."""
-    chat_id = str(update.effective_chat.id)
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    chat_id = str(chat.id)
     settings = get_settings()
 
     session_factory = get_session_factory()
@@ -1115,7 +1193,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"\n🕐 {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
-    await update.message.reply_text(message, parse_mode="HTML")
+    await msg.reply_text(message, parse_mode="HTML")
 
 
 class TelegramAdapter(BaseAdapter):
@@ -1183,7 +1261,9 @@ class TelegramAdapter(BaseAdapter):
         logger.info("Starting Telegram bot...")
         await self.app.initialize()
         await self.app.start()
-        await self.app.updater.start_polling()
+        updater = self.app.updater
+        assert updater is not None  # polling bot always has an updater
+        await updater.start_polling()
 
         # Register adapter with dispatcher (dispatch loop is managed by main.py)
         dispatcher = get_dispatcher()
@@ -1197,7 +1277,9 @@ class TelegramAdapter(BaseAdapter):
         global _adapter
 
         if self.app:
-            await self.app.updater.stop()
+            updater = self.app.updater
+            if updater is not None:
+                await updater.stop()
             await self.app.stop()
             await self.app.shutdown()
 

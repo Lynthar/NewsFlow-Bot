@@ -3,7 +3,7 @@ Feed service - Business logic for feed management.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,12 +45,8 @@ class FetchFeedResult:
 
     success: bool
     feed: Feed | None = None
-    new_entries: list[FeedEntry] = None
+    new_entries: list[FeedEntry] = field(default_factory=list)
     message: str = ""
-
-    def __post_init__(self):
-        if self.new_entries is None:
-            self.new_entries = []
 
 
 class FeedService:

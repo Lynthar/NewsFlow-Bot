@@ -8,7 +8,12 @@ from typing import Any
 
 from sqlalchemy import DateTime, MetaData, event
 from sqlalchemy.engine import Engine
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from newsflow.config import get_settings
@@ -90,7 +95,7 @@ _engine = None
 _async_session_factory = None
 
 
-def get_engine():
+def get_engine() -> AsyncEngine:
     """Get or create the database engine."""
     global _engine
     if _engine is None:

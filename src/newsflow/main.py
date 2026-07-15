@@ -66,6 +66,7 @@ async def start_discord_bot(settings: Settings) -> None:
     # Import here to avoid loading discord.py if not needed
     from newsflow.adapters.discord.bot import start_discord
 
+    assert settings.discord_token is not None
     await start_discord(settings.discord_token)
 
 
@@ -78,6 +79,7 @@ async def start_telegram_bot(settings: Settings) -> None:
     # Import here to avoid loading telegram if not needed
     from newsflow.adapters.telegram.bot import start_telegram
 
+    assert settings.telegram_token is not None
     await start_telegram(settings.telegram_token)
 
 

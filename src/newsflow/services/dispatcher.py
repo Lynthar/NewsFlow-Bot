@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError, Message
@@ -185,17 +186,31 @@ class Dispatcher:
                 # one indexed SELECT per active subscription.
                 sub_repo = SubscriptionRepository(session)
                 subscriptions = await sub_repo.get_all_active_subscriptions()
+                # Iterate over a plain-id snapshot and re-fetch each row at
+                # the top of the loop. A failed per-sub commit below rolls
+                # the transaction back, which expires EVERY ORM instance in
+                # the session (regardless of expire_on_commit=False) — the
+                # next attribute access on a cached object would raise
+                # MissingGreenlet and abort the rest of the round. The
+                # re-fetch is one indexed SELECT per subscription and makes
+                # each iteration self-healing after a rollback.
+                sub_ids = [s.id for s in subscriptions]
                 # Channels that surfaced as gone earlier in THIS cycle.
                 # The first ChannelGoneError already flipped every sub
-                # for the channel via deactivate_channel, but the
-                # cached `subscriptions` list still holds the rest with
-                # is_active=True (not refreshed). Skipping them here
-                # avoids N-1 doomed adapter calls + N-1 redundant no-op
-                # UPDATEs per dead channel per cycle. Next cycle's
+                # for the channel via a bulk UPDATE, but that doesn't
+                # sync identity-mapped instances, so the re-fetch above
+                # still sees is_active=True for the rest. Skipping them
+                # here avoids N-1 doomed adapter calls + N-1 redundant
+                # no-op UPDATEs per dead channel per cycle. Next cycle's
                 # get_all_active_subscriptions filters them out at the
                 # source.
                 dead_channels: set[tuple[str, str]] = set()
-                for sub in subscriptions:
+                for sub_id in sub_ids:
+                    sub = await sub_repo.get_subscription_by_id(sub_id)
+                    if sub is None or not sub.is_active:
+                        # Deleted or deactivated since the snapshot (only
+                        # visible here after a rollback refreshed the row).
+                        continue
                     if (sub.platform, sub.platform_channel_id) in dead_channels:
                         continue
                     sent = await self._dispatch_to_subscription(
@@ -426,6 +441,19 @@ class Dispatcher:
                 # Stop processing remaining entries for this sub — the
                 # channel is dead, further attempts would just re-raise.
                 return sent_count
+
+            except SQLAlchemyError:
+                # A failed mark/flush has likely poisoned the transaction:
+                # every later mark in this batch would fail too while its
+                # message had already been pushed to the platform — each one
+                # a guaranteed duplicate next cycle. Stop the batch; the
+                # per-subscription commit path rolls back and the round
+                # continues with the next subscription.
+                logger.exception(
+                    f"DB error marking entry {entry.id} for subscription "
+                    f"{subscription.id}; aborting this subscription's batch"
+                )
+                break
 
             except Exception as e:
                 logger.exception(f"Error sending entry {entry.id}: {e}")

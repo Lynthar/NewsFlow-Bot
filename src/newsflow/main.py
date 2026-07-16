@@ -34,6 +34,15 @@ def setup_logging(settings: Settings) -> None:
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         timestamper,
+        structlog.processors.StackInfoRenderer(),
+        # Without this, exc_info never becomes a rendered traceback in json
+        # mode: JSONRenderer falls back to repr() ("<traceback object ...>")
+        # for stdlib records and drops the stack entirely for structlog
+        # events. Shared between both chains: at configure time it resolves
+        # exc_info=True while the except block is still active; in
+        # foreign_pre_chain it formats the concrete tuple ProcessorFormatter
+        # copies off the LogRecord.
+        structlog.processors.format_exc_info,
     ]
 
     structlog.configure(
@@ -68,8 +77,12 @@ def setup_logging(settings: Settings) -> None:
     root.addHandler(handler)
     root.setLevel(log_level)
 
-    # Quiet noisy third-party loggers
-    for logger_name in ["aiohttp", "discord", "telegram", "apscheduler"]:
+    # Quiet noisy third-party loggers. httpx/httpcore are not just noise:
+    # python-telegram-bot routes every Bot API call through httpx, whose
+    # INFO-level request line contains the full URL — with the bot token in
+    # the path — so leaving them at INFO writes the token into the logs on
+    # every poll.
+    for logger_name in ["aiohttp", "discord", "telegram", "apscheduler", "httpx", "httpcore"]:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 

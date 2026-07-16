@@ -102,6 +102,11 @@ async def run_api_server() -> None:
         host=settings.api_host,
         port=settings.api_port,
         log_level=settings.log_level.lower(),
+        # Uvicorn's default dictConfig attaches its own plain-text handlers
+        # with propagate=False, which interleaves non-JSON lines into the
+        # LOG_FORMAT=json stream. None skips that config entirely so uvicorn
+        # records propagate to the root handler's shared formatter.
+        log_config=None,
     )
     server = uvicorn.Server(config)
 

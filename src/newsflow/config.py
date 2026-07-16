@@ -190,6 +190,16 @@ class Settings(BaseSettings):
             raise ValueError("fetch_interval_minutes must be at least 1")
         return v
 
+    @field_validator("feed_max_concurrent")
+    @classmethod
+    def validate_feed_max_concurrent(cls, v: int) -> int:
+        if v < 1:
+            # 0 would build an asyncio.Semaphore(0): every fetch blocks
+            # forever while the bot looks alive — until the container
+            # healthcheck finally trips hours later.
+            raise ValueError("feed_max_concurrent must be at least 1")
+        return v
+
     @field_validator("entry_retention_days")
     @classmethod
     def validate_retention_days(cls, v: int) -> int:

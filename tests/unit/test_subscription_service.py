@@ -4,7 +4,6 @@ from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
 from newsflow.services.subscription_service import SubscriptionService
 
-
 FEED_URL = "https://example.com/feed"
 
 
@@ -693,3 +692,30 @@ async def test_resume_all_empty_channel_fails(session):
     svc = SubscriptionService(session)
     result = await svc.resume_all_subscriptions("discord", "empty-channel")
     assert result.success is False
+
+
+async def test_resume_all_notes_disabled_digest(session):
+    """ChannelGone deactivation also disables the channel digest, but
+    resume-all can't re-enable it blindly (a manual /digest disable looks
+    identical) — so the reply must at least say it's still off."""
+    from newsflow.models.digest import ChannelDigest
+
+    await _seed_two_subs(session)
+    session.add(ChannelDigest(platform="discord", platform_channel_id="c1", enabled=False))
+    await session.flush()
+
+    svc = SubscriptionService(session)
+    result = await svc.resume_all_subscriptions("discord", "c1")
+
+    assert result.success is True
+    assert "digest is still disabled" in result.message
+
+
+async def test_resume_all_no_digest_note_when_absent(session):
+    await _seed_two_subs(session)
+
+    svc = SubscriptionService(session)
+    result = await svc.resume_all_subscriptions("discord", "c1")
+
+    assert result.success is True
+    assert "digest" not in result.message

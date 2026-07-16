@@ -907,6 +907,10 @@ class SettingsCommands(commands.Cog):
             subs = await service.get_channel_subscriptions(
                 platform="discord",
                 channel_id=str(interaction.channel_id),
+                # Same counting basis as /feed list, which shows paused subs
+                # too — otherwise the two views disagree when anything is
+                # paused.
+                include_inactive=True,
             )
 
         embed = discord.Embed(

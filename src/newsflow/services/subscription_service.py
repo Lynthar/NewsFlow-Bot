@@ -325,20 +325,38 @@ class SubscriptionService:
                 sub.feed.reactivate()
                 feeds_revived += 1
 
+        digest_note = await self._digest_still_disabled_note(platform, channel_id)
+
         if resumed == 0 and feeds_revived == 0:
             return SubscriptionActionResult(
                 success=True,
-                message=f"All {len(subs)} subscription(s) already active",
+                message=f"All {len(subs)} subscription(s) already active" + digest_note,
             )
 
         message = f"Resumed {resumed} subscription(s)"
         if feeds_revived:
             message += f"; re-enabled {feeds_revived} auto-disabled feed(s)"
+        message += digest_note
         logger.info(
             f"Resume all: {platform}/{channel_id} — {resumed} subs, "
             f"{feeds_revived} feeds revived"
         )
         return SubscriptionActionResult(success=True, message=message)
+
+    async def _digest_still_disabled_note(self, platform: str, channel_id: str) -> str:
+        """Appended to resume-all replies. ChannelGone deactivation disables
+        the channel digest too, but resume-all can't re-enable it blindly —
+        a digest the user turned off manually looks identical in the DB. A
+        visible note beats a digest that silently never fires again."""
+        from newsflow.repositories.digest_repository import ChannelDigestRepository
+
+        config = await ChannelDigestRepository(self.session).get(platform, channel_id)
+        if config is not None and not config.enabled:
+            return (
+                "\nNote: the channel digest is still disabled — "
+                "use /digest enable to turn it back on."
+            )
+        return ""
 
     async def get_subscription_detail(
         self,

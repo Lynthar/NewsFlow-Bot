@@ -239,15 +239,51 @@ def _sub_status_chip(sub: Subscription) -> str | None:
     return None
 
 
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _format_sub_line(sub: Subscription) -> str:
     feed = sub.feed
-    title = _escape_html(feed.title or "Untitled")
-    parts = [f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"]
+    # Clip BEFORE escaping so an entity can't be cut in half. Bounds matter:
+    # feed.title is up to 512 chars and feed.url up to 2048 — unclipped, a
+    # page of those would blow Telegram's 4096-char message cap and the whole
+    # /list would 400. The full URL stays available via /export (OPML).
+    title = _escape_html(_clip(feed.title or "Untitled", 80))
+    # target_language is stored verbatim from user input — unescaped, a value
+    # like `<b` breaks the HTML parse for every subsequent /list in the chat.
+    parts = [f"🌐 {_escape_html(sub.target_language)}" if sub.translate else "📰 no translate"]
     chip = _sub_status_chip(sub)
     if chip:
         parts.append(chip)
     meta = " · ".join(parts)
-    return f"<b>{title}</b> · {meta}\n{_escape_html(feed.url)}"
+    return f"<b>{title}</b> · {meta}\n{_escape_html(_clip(feed.url, 200))}"
+
+
+# Telegram rejects messages over 4096 chars. Pages are packed greedily by
+# character budget (with LIST_PAGE_SIZE as a secondary item cap), so a page
+# can never exceed the limit even with worst-case escaped titles/URLs. The
+# budget leaves headroom for the header line.
+_LIST_CHAR_BUDGET = 3500
+
+
+def _paginate_lines(lines: list[str]) -> list[list[str]]:
+    """Deterministically pack rendered lines into pages. Same input order →
+    same page boundaries, so prev/next navigation stays stable across
+    renders (subscriptions are id-ordered upstream)."""
+    pages: list[list[str]] = []
+    current: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + 2  # "\n\n" separator
+        if current and (used + cost > _LIST_CHAR_BUDGET or len(current) >= LIST_PAGE_SIZE):
+            pages.append(current)
+            current, used = [], 0
+        current.append(line)
+        used += cost
+    if current:
+        pages.append(current)
+    return pages
 
 
 def _list_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup | None:
@@ -289,15 +325,14 @@ async def _render_list(chat_id: str, page: int) -> tuple[str, InlineKeyboardMark
         )
 
     total = len(subs)
-    total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    pages = _paginate_lines([_format_sub_line(s) for s in subs])
+    total_pages = len(pages)
     page = max(1, min(page, total_pages))
-    start = (page - 1) * LIST_PAGE_SIZE
-    page_subs = subs[start : start + LIST_PAGE_SIZE]
 
     header = f"📰 <b>Subscribed Feeds ({total})</b>"
     if total_pages > 1:
         header += f" — page {page}/{total_pages}"
-    body = "\n\n".join(_format_sub_line(s) for s in page_subs)
+    body = "\n\n".join(pages[page - 1])
     return header + "\n\n" + body, _list_keyboard(page, total_pages)
 
 
@@ -416,7 +451,8 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"🔗 {_escape_html(feed.url)}",
         "",
         f"<b>State:</b> {state}",
-        f"<b>Translation:</b> " f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
+        f"<b>Translation:</b> "
+        f"{'On' if sub.translate else 'Off'} ({_escape_html(sub.target_language)})",
         f"<b>Last OK fetch:</b> {relative_time(feed.last_successful_fetch_at)}",
         f"<b>Last attempt:</b> {relative_time(feed.last_fetched_at)}",
     ]
@@ -514,7 +550,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Schedule: {config.schedule}"
             + (f" (weekday {config.delivery_weekday})" if config.schedule == "weekly" else ""),
             f"Delivery time: {config.delivery_hour_utc:02d}:00 UTC",
-            f"Language: {config.language}",
+            f"Language: {_escape_html(config.language)}",
             f"Max articles: {config.max_articles}",
             f"Include filtered: {'yes' if config.include_filtered else 'no'}",
             f"Last delivered: {relative_time(config.last_delivered_at)}",
@@ -1230,6 +1266,9 @@ async def _render_status(chat_id: str) -> str:
         subs = await service.get_channel_subscriptions(
             platform="telegram",
             channel_id=chat_id,
+            # Same counting basis as /list, which shows paused subs too —
+            # otherwise the two views disagree whenever anything is paused.
+            include_inactive=True,
         )
     translation_status = "Available ✅" if settings.can_translate() else "Not configured ❌"
     return (
@@ -1276,6 +1315,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         try:
             await query.edit_message_text(
                 text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except TypeError:
+            # PTB 20.8: editing a message older than 48h (InaccessibleMessage)
+            # raises TypeError("Cannot edit an inaccessible message"). Fall
+            # back to a fresh message, like the menu: branch does.
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
                 parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_markup=keyboard,

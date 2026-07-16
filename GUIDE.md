@@ -268,6 +268,15 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 |---|---|---|
 | `MAX_FEEDS_PER_CHANNEL` | `0` | 单频道最多订阅数 |
 
+### 2.10 权限
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `TELEGRAM_ADMIN_ONLY` | `true` | Telegram **群组**里的变更型命令（/add、/remove、/pause、/resume、/language、/translate、/setlang、/settrans、/silent、/setsilent、/import、/filter 的 set/clear 形式、/digest 的 enable/disable/now）仅群主/管理员可用；只读命令（/list、/info、/status、/export、/test、/digest show 等）所有成员可用。**私聊永不受限**。设为 `false` 恢复旧的任何成员可管理行为 |
+| `ADMIN_USER_IDS` | 空 | 全局管理员用户 id 列表（数字 id），**始终**通过 Telegram 群管理员检查。支持逗号分隔（`123,456`）或 JSON 数组两种写法。Discord 端不消费此项——Discord 用原生命令权限（见下） |
+
+Discord 端无需配置：`/feed`、`/settings`、`/digest` 三个命令组自带 `default_permissions`（Manage Server），普通成员默认看不到这些命令；服务器管理员可在 **服务器设置 → 整合（Integrations）** 里按角色/频道放宽整组。顶级 `/status` 保持公开。Discord 平台限制：权限只能设到命令组一级，无法给组内单个子命令单独放行。管理员身份判断结果在 bot 侧缓存 60 秒（Telegram），提升/撤销管理员最迟 1 分钟生效。
+
 ---
 
 ## 三、AI 功能详解

@@ -261,7 +261,16 @@ class FeedCommands(commands.Cog):
     def __init__(self, bot: NewsFlowBot) -> None:
         self.bot = bot
 
-    feed_group = app_commands.Group(name="feed", description="Manage RSS feeds")
+    # Native permission gate: without it any member could remove feeds,
+    # silence the channel, or rewrite filters. Discord can't set permissions
+    # per SUBcommand, so the whole group defaults to Manage Server; server
+    # admins can re-grant it per role/channel under Server Settings →
+    # Integrations. DMs are unaffected (no member permissions there).
+    feed_group = app_commands.Group(
+        name="feed",
+        description="Manage RSS feeds",
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
     @feed_group.command(name="add", description="Add an RSS feed to this channel")
     @app_commands.describe(url="The RSS feed URL to add")
@@ -791,7 +800,12 @@ class SettingsCommands(commands.Cog):
     def __init__(self, bot: NewsFlowBot) -> None:
         self.bot = bot
 
-    settings_group = app_commands.Group(name="settings", description="Configure bot settings")
+    settings_group = app_commands.Group(
+        name="settings",
+        description="Configure bot settings",
+        # All subcommands mutate channel-wide state; see feed_group's note.
+        default_permissions=discord.Permissions(manage_guild=True),
+    )
 
     @settings_group.command(name="language", description="Set translation target language")
     @app_commands.describe(language="Language code (e.g., zh-CN, ja, ko, en)")
@@ -948,6 +962,10 @@ class DigestCommands(commands.Cog):
     digest_group = app_commands.Group(
         name="digest",
         description="Daily / weekly AI digest of what was pushed to this channel",
+        # enable/disable/now mutate state and spend LLM tokens; the group
+        # gate necessarily takes /digest show along with them (Discord has
+        # no per-subcommand permissions) — see feed_group's note.
+        default_permissions=discord.Permissions(manage_guild=True),
     )
 
     @digest_group.command(

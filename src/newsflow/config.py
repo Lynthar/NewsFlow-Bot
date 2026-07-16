@@ -7,10 +7,10 @@ All other settings have sensible defaults.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -129,6 +129,23 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "console"
 
+    # ===== Permissions =====
+
+    # Require group owner/administrator for state-changing Telegram commands
+    # in group chats. Private chats are never restricted. Discord has no
+    # equivalent flag: its command groups carry native default_permissions
+    # (Manage Server) that server admins can retune per role/channel in
+    # Server Settings → Integrations.
+    telegram_admin_only: bool = True
+
+    # Global admin user ids (numeric id strings) that always pass the
+    # Telegram group-admin gate. Optional — empty means no bypass. Discord
+    # is governed by its native command permissions instead. NoDecode +
+    # the before-validator accept both `ADMIN_USER_IDS=123,456` and a JSON
+    # list; pydantic-settings' default JSON-only decoding would otherwise
+    # crash startup on the comma form.
+    admin_user_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
     # ===== Hosting service extensions (self-hosted users can ignore) =====
 
     # Multi-tenant mode
@@ -136,10 +153,6 @@ class Settings(BaseSettings):
 
     # Quota limits (0 = unlimited)
     max_feeds_per_channel: int = 0
-
-    # Admin user IDs (platform-specific). default_factory avoids the
-    # mutable-default warning pydantic v2 raises on bare `[]`.
-    admin_user_ids: list[str] = Field(default_factory=list)
 
     # ===== Derived properties =====
 
@@ -188,6 +201,18 @@ class Settings(BaseSettings):
     def validate_fetch_interval(cls, v: int) -> int:
         if v < 1:
             raise ValueError("fetch_interval_minutes must be at least 1")
+        return v
+
+    @field_validator("admin_user_ids", mode="before")
+    @classmethod
+    def parse_admin_user_ids(cls, v: object) -> object:
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("["):
+                import json
+
+                return json.loads(s)
+            return [part.strip() for part in s.split(",") if part.strip()]
         return v
 
     @field_validator("feed_max_concurrent")

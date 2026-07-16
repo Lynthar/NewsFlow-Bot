@@ -34,6 +34,9 @@ def _update_with_processing_msg():
     update = MagicMock()
     update.message.reply_text = AsyncMock(return_value=processing_msg)
     update.effective_chat.id = -100123
+    # Private chat: the group-admin gate never applies (its behavior is
+    # pinned separately in test_permissions.py; these tests pin escaping).
+    update.effective_chat.type = "private"
     update.effective_user.id = 42
     return update, processing_msg
 

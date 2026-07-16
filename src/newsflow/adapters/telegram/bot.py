@@ -6,6 +6,7 @@ Implements Telegram-specific functionality using python-telegram-bot.
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 
 from telegram import (
@@ -14,6 +15,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     AIORateLimiter,
     Application,
@@ -43,6 +45,62 @@ logger = logging.getLogger(__name__)
 
 # Global adapter reference for command handlers
 _adapter: "TelegramAdapter | None" = None
+
+# Group-admin gate for state-changing commands. get_chat_member costs a Bot
+# API round-trip, so verdicts are cached briefly per (chat, user); a
+# promotion/demotion becomes visible after at most the TTL.
+_ADMIN_CACHE_TTL_SECONDS = 60.0
+_admin_cache: dict[tuple[int, int], tuple[float, bool]] = {}
+
+
+async def _require_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """True if the sender may run a state-changing command in this chat.
+
+    Private chats are always allowed — the user manages their own feeds.
+    In groups (TELEGRAM_ADMIN_ONLY, default on) only the owner and
+    administrators pass, plus ADMIN_USER_IDS as a global bypass. Sends the
+    denial reply itself; fails closed when the membership lookup errors.
+    """
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return False
+    if chat.type == ChatType.PRIVATE:
+        return True
+    settings = get_settings()
+    if not settings.telegram_admin_only:
+        return True
+    # A message sent "as the group" (sender_chat == the chat itself) comes
+    # from an anonymous admin — Telegram hides who, but only admins can post
+    # that way, and get_chat_member can't resolve them anyway.
+    if msg.sender_chat is not None and msg.sender_chat.id == chat.id:
+        return True
+    user = update.effective_user
+    if user is None:
+        return False
+    if str(user.id) in settings.admin_user_ids:
+        return True
+
+    key = (chat.id, user.id)
+    now = time.monotonic()
+    cached = _admin_cache.get(key)
+    if cached is not None and cached[0] > now:
+        allowed = cached[1]
+    else:
+        try:
+            member = await context.bot.get_chat_member(chat.id, user.id)
+        except Exception:
+            logger.exception(f"get_chat_member({chat.id}, {user.id}) failed; denying")
+            await msg.reply_text("⚠️ Couldn't verify your admin status — please try again.")
+            return False
+        allowed = member.status in (
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        )
+        _admin_cache[key] = (now + _ADMIN_CACHE_TTL_SECONDS, allowed)
+    if not allowed:
+        await msg.reply_text("⛔ Only group admins can use this command here.")
+    return allowed
 
 
 WELCOME_TEXT = (
@@ -131,6 +189,8 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = update.effective_user
     if msg is None or chat is None or user is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     if not context.args:
         await msg.reply_text(
             "Usage: /add <rss_url>\n\n" "Example: /add https://example.com/feed.xml"
@@ -194,6 +254,8 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     msg = update.message
     chat = update.effective_chat
     if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
         return
     if not context.args:
         await msg.reply_text("Usage: /remove <rss_url>")
@@ -364,6 +426,8 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat = update.effective_chat
     if msg is None or chat is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     if not context.args:
         await msg.reply_text("Usage: /pause <rss_url>")
         return
@@ -387,6 +451,8 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     msg = update.message
     chat = update.effective_chat
     if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
         return
     if not context.args:
         await msg.reply_text("Usage: /resume <rss_url> (or: /resume all)")
@@ -534,6 +600,10 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     sub = context.args[0].lower()
     rest = context.args[1:]
+    # `show` is read-only and stays open; the mutating subcommands need
+    # group-admin rights.
+    if sub in ("enable", "disable", "now") and not await _require_group_admin(update, context):
+        return
     chat_id = str(chat.id)
     session_factory = get_session_factory()
 
@@ -708,6 +778,9 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     url = context.args[0]
     chat_id = str(chat.id)
     rest = context.args[1:]
+    # Bare `/filter <url>` just shows the filter; the set/clear forms mutate.
+    if rest and not await _require_group_admin(update, context):
+        return
 
     session_factory = get_session_factory()
 
@@ -802,6 +875,8 @@ async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat = update.effective_chat
     if msg is None or chat is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     args = context.args
     if args is None or len(args) != 2:
         await msg.reply_text(
@@ -832,6 +907,8 @@ async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     msg = update.message
     chat = update.effective_chat
     if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
         return
     args = context.args
     if args is None or len(args) != 2:
@@ -877,6 +954,8 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat = update.effective_chat
     if msg is None or chat is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     if not context.args:
         await msg.reply_text(
             "Usage: /silent <on|off>\n\n"
@@ -905,6 +984,8 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     msg = update.message
     chat = update.effective_chat
     if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
         return
     args = context.args
     if args is None or len(args) != 2:
@@ -999,6 +1080,8 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     if msg is None or chat is None or user is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     if not context.args:
         await msg.reply_text(
             "Usage: /import &lt;url&gt;\n\n"
@@ -1084,6 +1167,8 @@ async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     doc = msg.document
     if doc is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     name = (doc.file_name or "").lower()
     if not name.endswith((".opml", ".xml")):
         return
@@ -1157,6 +1242,8 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     chat = update.effective_chat
     if msg is None or chat is None:
         return
+    if not await _require_group_admin(update, context):
+        return
     if not context.args:
         await msg.reply_text(
             "Usage: /language <language_code>\n\n"
@@ -1197,6 +1284,8 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     msg = update.message
     chat = update.effective_chat
     if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
         return
     if not context.args:
         await msg.reply_text("Usage: /translate <on/off>")

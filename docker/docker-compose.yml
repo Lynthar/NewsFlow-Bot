@@ -72,7 +72,7 @@ services:
   # ============================================
   # Redis Cache (Optional)
   # ============================================
-  # Enable with: docker-compose --profile with-redis up -d
+  # Enable with: docker compose -f docker/docker-compose.yml --profile with-redis up -d
   redis:
     image: redis:7-alpine
     container_name: newsflow-redis

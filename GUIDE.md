@@ -733,7 +733,7 @@ DATABASE_URL=postgresql+asyncpg://newsflow:newsflow@postgres/newsflow
 ### 7.2 systemd + venv（无 Docker）
 
 ```bash
-sudo apt install -y python3 python3-venv python3-pip libxml2-dev libxslt1-dev build-essential
+sudo apt install -y git python3 python3-venv python3-pip libxml2-dev libxslt1-dev build-essential
 
 cd /opt && sudo git clone https://github.com/Lynthar/NewsFlow-Bot.git
 cd NewsFlow-Bot
@@ -1397,7 +1397,7 @@ cp .env.example .env
 | `make db-upgrade` | 手动运行迁移（main.py 启动时也会自动跑）|
 | `make db-migrate msg="..."` | 从模型变更 autogenerate 一个新 migration |
 | `make db-stamp` | 把现有 DB 标记为最新，不跑任何 migration（老 DB 接入 alembic 时用）|
-| `make docker-up` | docker-compose up -d |
+| `make docker-up` | docker compose -f docker/docker-compose.yml up -d |
 
 ### 13.3 跑单个测试
 

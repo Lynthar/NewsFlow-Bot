@@ -217,6 +217,13 @@ async def refresh_feed(
 
     # Reload feed to get updated data
     await db.refresh(feed)
+    # The fetch just succeeded — proof the source works again. Revive an
+    # auto-disabled feed, same contract as /feed resume and re-add (the
+    # dispatch loop skips inactive feeds, so nothing else could clear it).
+    # After db.refresh so the reload can't discard the in-memory change;
+    # get_db commits it when the request completes.
+    if not feed.is_active:
+        feed.reactivate()
     return await _feed_to_response(feed, repo)
 
 

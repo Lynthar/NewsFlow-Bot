@@ -6,10 +6,8 @@ non-owned subscriptions are never touched.
 """
 
 import pytest
-from sqlalchemy import select
-
 from newsflow.models.feed import Feed
-from newsflow.models.subscription import Subscription
+from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.services.source_sync import (
     SourceCfg,
     SourceConfigError,
@@ -17,6 +15,7 @@ from newsflow.services.source_sync import (
     _reconcile,
     parse_sources_yaml,
 )
+from sqlalchemy import select
 
 # ── parsing ──────────────────────────────────────────────────────────────────
 
@@ -182,6 +181,57 @@ async def test_reconcile_removes_dropped_subscriber(session):
     subs = await _subs(session)
     assert len(subs) == 1 and subs[0].platform == "discord"
     assert len(await _feeds(session)) == 1  # source itself kept
+
+
+async def test_removed_source_keeps_feed_with_foreign_subscribers(session):
+    """Dropping a source from the file must not cascade-delete subscriptions
+    other owners created on the same feed (interactive /feed add, or
+    webhooks.yaml rows) — nor their SentEntry dedupe history. Only the
+    source-yaml subscriptions go."""
+    await _reconcile(session, [_src()])
+    await session.commit()
+    feed = (await _feeds(session))[0]
+
+    foreign = Subscription(
+        platform="discord",
+        platform_user_id="a-real-human",  # not "source-yaml"
+        platform_channel_id="999",
+        feed_id=feed.id,
+        is_active=True,
+    )
+    session.add(foreign)
+    await session.flush()
+    session.add(SentEntry(subscription_id=foreign.id, feed_id=feed.id, guid="seen-1"))
+    await session.commit()
+
+    await _reconcile(session, [])  # source removed from the file
+    await session.commit()
+
+    feeds = await _feeds(session)
+    assert len(feeds) == 1  # feed survives for the foreign subscriber
+    subs = await _subs(session)
+    assert len(subs) == 1 and subs[0].platform_user_id == "a-real-human"
+    sent = (await session.execute(select(SentEntry))).scalars().all()
+    assert len(sent) == 1 and sent[0].guid == "seen-1"  # dedupe history intact
+
+
+async def test_reconcile_reactivates_auto_disabled_source_feed(session):
+    """A source feed auto-disabled by consecutive fetch errors must come back
+    on the next reconcile while still declared in the file — the dispatch loop
+    skips inactive feeds, so nothing else can revive it."""
+    await _reconcile(session, [_src()])
+    await session.commit()
+    feed = (await _feeds(session))[0]
+    feed.is_active = False
+    feed.error_count = 10
+    await session.commit()
+
+    await _reconcile(session, [_src()])
+    await session.commit()
+
+    feed = (await _feeds(session))[0]
+    assert feed.is_active is True
+    assert feed.error_count == 0
 
 
 async def test_reconcile_leaves_rss_feeds_untouched(session):

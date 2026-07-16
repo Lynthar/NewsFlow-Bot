@@ -162,19 +162,3 @@ class FeedEntry(Base):
 
     def __repr__(self) -> str:
         return f"<FeedEntry(id={self.id}, title='{self.title[:30]}...')>"
-
-    @property
-    def display_title(self) -> str:
-        """Get title, preferring translated version if available."""
-        return self.title_translated or self.title
-
-    @property
-    def display_summary(self) -> str:
-        """Get summary, preferring translated version if available."""
-        return self.summary_translated or self.summary or ""
-
-    def set_translation(self, title: str, summary: str, language: str) -> None:
-        """Set translated content."""
-        self.title_translated = title
-        self.summary_translated = summary
-        self.translation_language = language

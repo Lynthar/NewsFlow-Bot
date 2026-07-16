@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.core.source_fetcher import declarable_source_types
@@ -240,13 +240,40 @@ async def _remove_stale(
 ) -> None:
     known = declarable_source_types()
 
-    # 1. Drop non-RSS feeds that left the file. Deleting the feed cascades to
-    #    its subscriptions and entries (and SentEntry via the DB FK).
+    # 1. Drop non-RSS feeds that left the file. Deleting a feed cascades to
+    #    ALL of its subscriptions and their SentEntry dedupe history —
+    #    including rows this sync does not own (an interactive /feed add on
+    #    the same URL, or webhooks.yaml's "yaml" rows). A feed with foreign
+    #    subscribers is therefore kept alive (it keeps fetching for them);
+    #    step 2 below still removes the source-yaml subscriptions, which is
+    #    all we own.
     feeds_result = await session.execute(select(Feed).where(Feed.source_type.in_(known)))
     for feed in feeds_result.scalars().all():
-        if feed.url not in desired_urls:
-            logger.info(f"source_sync: removing source feed {feed.url!r}")
-            await session.delete(feed)
+        if feed.url in desired_urls:
+            continue
+        # Explicit COUNT rather than feed.subscriptions: the selectin
+        # collection is not refreshed for a feed already in this session's
+        # identity map, so it can miss subscriptions created after the feed
+        # was first loaded.
+        foreign_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(Subscription)
+                .where(
+                    Subscription.feed_id == feed.id,
+                    Subscription.platform_user_id != _OWNER,
+                )
+            )
+        ).scalar_one()
+        if foreign_count:
+            logger.warning(
+                f"source_sync: {feed.url!r} left sources.yaml but has "
+                f"{foreign_count} subscription(s) owned elsewhere; keeping "
+                f"the feed, removing only source-yaml subscriptions"
+            )
+            continue
+        logger.info(f"source_sync: removing source feed {feed.url!r}")
+        await session.delete(feed)
     await session.flush()
 
     # 2. Drop our subscriptions whose (platform, channel, feed) left the file

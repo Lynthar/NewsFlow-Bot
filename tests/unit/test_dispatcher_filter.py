@@ -7,11 +7,10 @@ Entries matched out by the filter must:
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from sqlalchemy import select
-
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.services.dispatcher import Dispatcher
+from sqlalchemy import select
 
 
 def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
@@ -122,3 +121,87 @@ async def test_empty_filter_passes_everything(session):
 
     assert sent_count == 1
     assert adapter.send_message.await_count == 1
+
+
+async def test_filter_matches_cleaned_text_not_raw_markup(session):
+    """An exclude word living only inside HTML markup (an href) must not
+    fire anymore: matching runs on the cleaned text, so URLs and tag
+    attributes are invisible to filters."""
+    feed = Feed(url="https://example.com/feed", title="Example", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    session.add(
+        FeedEntry(
+            feed_id=feed.id,
+            guid="a",
+            title="Daily roundup",
+            summary='<a href="https://adservice.example.com/x">Read more</a>',
+            link="https://example.com/a",
+        )
+    )
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+        translate=False,
+        filter_rule={"include_keywords": [], "exclude_keywords": ["adservice"]},
+    )
+    session.add(sub)
+    await session.commit()
+
+    adapter = MagicMock()
+    adapter.send_message = AsyncMock(return_value=True)
+    adapter.send_text = AsyncMock(return_value=True)
+    adapter.is_connected = MagicMock(return_value=True)
+    d = _dispatcher_with_adapter("discord", adapter)
+
+    from newsflow.repositories.subscription_repository import SubscriptionRepository
+
+    sent_count = await d._dispatch_to_subscription(session, sub, SubscriptionRepository(session))
+    await session.commit()
+
+    assert sent_count == 1  # not excluded — "adservice" only exists in markup
+
+
+async def test_filter_sees_article_content_field(session):
+    """An include keyword appearing only in `content` (not title/summary)
+    now matches — the article body used to be invisible to filters."""
+    feed = Feed(url="https://example.com/feed", title="Example", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    session.add(
+        FeedEntry(
+            feed_id=feed.id,
+            guid="a",
+            title="Weekly roundup",
+            summary="Assorted items",
+            content="<p>A deep dive into quantum computing this week.</p>",
+            link="https://example.com/a",
+        )
+    )
+    sub = Subscription(
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+        translate=False,
+        filter_rule={"include_keywords": ["quantum"], "exclude_keywords": []},
+    )
+    session.add(sub)
+    await session.commit()
+
+    adapter = MagicMock()
+    adapter.send_message = AsyncMock(return_value=True)
+    adapter.send_text = AsyncMock(return_value=True)
+    adapter.is_connected = MagicMock(return_value=True)
+    d = _dispatcher_with_adapter("discord", adapter)
+
+    from newsflow.repositories.subscription_repository import SubscriptionRepository
+
+    sent_count = await d._dispatch_to_subscription(session, sub, SubscriptionRepository(session))
+    await session.commit()
+
+    assert sent_count == 1

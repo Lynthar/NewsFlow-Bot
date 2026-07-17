@@ -3,6 +3,7 @@ Database models for NewsFlow Bot.
 """
 
 from newsflow.models.base import Base, close_db, get_session, init_db
+from newsflow.models.channel_settings import ChannelSettings
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
@@ -15,6 +16,7 @@ __all__ = [
     "Subscription",
     "SentEntry",
     "ChannelDigest",
+    "ChannelSettings",
     "WebhookDestination",
     "init_db",
     "close_db",

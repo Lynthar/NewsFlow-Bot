@@ -14,6 +14,7 @@ from newsflow.core.opml import OpmlEntry, OpmlParseError, build_opml, parse_opml
 from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
+from newsflow.repositories.channel_settings_repository import ChannelSettingsRepository
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.feed_service import FeedService
@@ -81,6 +82,7 @@ class SubscriptionService:
         self.sub_repo = SubscriptionRepository(session)
         self.feed_repo = FeedRepository(session)
         self.feed_service = FeedService(session)
+        self.channel_settings_repo = ChannelSettingsRepository(session)
         self.settings = get_settings()
 
     async def subscribe(
@@ -129,14 +131,26 @@ class SubscriptionService:
         # add_feed succeeds only with a resolved feed attached
         assert feed is not None
 
-        # Inherit silent from the channel: if every existing active
-        # subscription in this channel is silent, treat the channel as
-        # a silent channel and silence the new sub too. Empty channel
-        # returns False — we don't persist a channel-level silent
-        # preference yet, so the very first /add in an empty channel
-        # always defaults to non-silent regardless of any prior
-        # `/silent on` (see GUIDE.md).
-        inherit_silent = await self._channel_silent_default(platform, channel_id)
+        # Inherit the channel's persisted defaults (ChannelSettings) for a
+        # NEW subscription. A recorded preference wins; otherwise silent
+        # falls back to the legacy all-existing-subs-silent heuristic and
+        # language/translate to the model defaults. Per-feed overrides
+        # still apply afterwards — inheritance happens once, here.
+        defaults = await self.channel_settings_repo.get(platform, channel_id)
+        if defaults is not None and defaults.default_silent is not None:
+            inherit_silent = defaults.default_silent
+        else:
+            inherit_silent = await self._channel_silent_default(platform, channel_id)
+        inherit_translate = (
+            defaults.default_translate
+            if defaults is not None and defaults.default_translate is not None
+            else True
+        )
+        inherit_language = (
+            defaults.default_language
+            if defaults is not None and defaults.default_language is not None
+            else "zh-CN"
+        )
 
         # Create subscription
         subscription, created = await self.sub_repo.get_or_create_subscription(
@@ -146,6 +160,8 @@ class SubscriptionService:
             feed_id=feed.id,
             guild_id=guild_id,
             silent=inherit_silent,
+            translate=inherit_translate,
+            target_language=inherit_language,
         )
 
         if not created:
@@ -186,11 +202,11 @@ class SubscriptionService:
         )
 
     async def _channel_silent_default(self, platform: str, channel_id: str) -> bool:
-        """Return True iff every existing active subscription in this
-        channel is silent. Empty channel returns False — subscribers
-        starting from an empty channel get a non-silent first sub even
-        if they ran `/silent on` first; documented in GUIDE.md as a
-        known limitation of the lightweight inheritance scheme.
+        """Legacy silent-inheritance heuristic: True iff every existing
+        active subscription in this channel is silent. Only consulted
+        when the channel has no recorded default_silent (ChannelSettings)
+        — an explicit preference always wins. Empty channel returns
+        False.
         """
         subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
         if not subs:
@@ -392,6 +408,12 @@ class SubscriptionService:
             platform, channel_id, include_inactive=include_inactive
         )
 
+    async def get_subscription_by_id(self, subscription_id: int) -> Subscription | None:
+        """Fetch one subscription (feed eager-loaded) by primary key.
+        Used by inline-button UIs whose callback data can only carry an
+        id — a URL doesn't fit in Telegram's 64-byte callback payload."""
+        return await self.sub_repo.get_subscription_by_id(subscription_id)
+
     async def get_subscription_feeds(
         self,
         platform: str,
@@ -408,14 +430,28 @@ class SubscriptionService:
         feed_url: str | None = None,
         translate: bool | None = None,
         target_language: str | None = None,
-    ) -> bool:
+    ) -> int:
         """
-        Update subscription settings.
+        Update subscription settings; returns how many subscriptions were
+        updated.
 
-        If feed_url is None, updates all subscriptions for the channel.
+        If feed_url is None this is channel-wide: the preference is ALSO
+        persisted as the channel default (ChannelSettings) so future
+        subscriptions inherit it — which makes running this in a channel
+        with zero subscriptions meaningful rather than an error.
         """
         if feed_url:
             feed_url = expand_source_shortcut(feed_url)
+        else:
+            # Channel-wide call → record the preference for future /adds.
+            fields: dict[str, object] = {}
+            if translate is not None:
+                fields["default_translate"] = translate
+            if target_language is not None:
+                fields["default_language"] = target_language
+            if fields:
+                await self.channel_settings_repo.upsert(platform, channel_id, **fields)
+
         # Paused subscriptions get the new settings too — otherwise a channel
         # language change silently skips them and they resume with stale
         # settings later.
@@ -423,9 +459,7 @@ class SubscriptionService:
             platform, channel_id, include_inactive=True
         )
 
-        if not subs:
-            return False
-
+        updated = 0
         for sub in subs:
             if feed_url and sub.feed.url != feed_url:
                 continue
@@ -435,8 +469,9 @@ class SubscriptionService:
                 translate=translate,
                 target_language=target_language,
             )
+            updated += 1
 
-        return True
+        return updated
 
     async def set_feed_language(
         self,
@@ -475,10 +510,14 @@ class SubscriptionService:
         feed_url: str,
         include_keywords: tuple[str, ...] = (),
         exclude_keywords: tuple[str, ...] = (),
+        include_regex: str | None = None,
+        exclude_regex: str | None = None,
     ) -> SubscriptionActionResult:
-        """Set a keyword filter on a subscription.
+        """Set a keyword and/or regex filter on a subscription.
 
-        Passing both keyword lists empty clears any existing filter.
+        Passing everything empty clears any existing filter. Regex
+        patterns arrive pre-validated (adapters parse them via
+        `parse_filter_field`).
         """
         feed_url = expand_source_shortcut(feed_url)
         feed = await self.feed_repo.get_feed_by_url(feed_url)
@@ -493,6 +532,8 @@ class SubscriptionService:
         rule = FilterRule(
             include_keywords=include_keywords,
             exclude_keywords=exclude_keywords,
+            include_regex=include_regex,
+            exclude_regex=exclude_regex,
         )
         await self.sub_repo.set_subscription_filter(
             subscription_id=sub.id, filter_rule=rule.to_json()
@@ -502,9 +543,13 @@ class SubscriptionService:
             msg = f"Filter cleared for {feed.title or feed_url}"
         else:
             parts = []
-            if rule.include_keywords:
+            if rule.include_regex:
+                parts.append(f"include=/{rule.include_regex}/")
+            elif rule.include_keywords:
                 parts.append(f"include=[{', '.join(rule.include_keywords)}]")
-            if rule.exclude_keywords:
+            if rule.exclude_regex:
+                parts.append(f"exclude=/{rule.exclude_regex}/")
+            elif rule.exclude_keywords:
                 parts.append(f"exclude=[{', '.join(rule.exclude_keywords)}]")
             msg = f"Filter set for {feed.title or feed_url}: " + " · ".join(parts)
         return SubscriptionActionResult(success=True, message=msg)
@@ -578,9 +623,11 @@ class SubscriptionService:
         channel_id: str,
         silent: bool,
     ) -> SubscriptionActionResult:
-        """Bulk-toggle silent on every subscription in this channel. Reports
-        how many rows actually changed; zero is fine (channel already in
-        the target state, or empty channel)."""
+        """Bulk-toggle silent on every subscription in this channel and
+        persist it as the channel default so future subscriptions inherit
+        it (this is what makes `/silent on` in an empty channel stick).
+        Reports how many rows actually changed; zero is fine."""
+        await self.channel_settings_repo.upsert(platform, channel_id, default_silent=silent)
         flipped = await self.sub_repo.set_channel_silent(
             platform=platform, channel_id=channel_id, silent=silent
         )
@@ -589,11 +636,12 @@ class SubscriptionService:
         if flipped == 0:
             return SubscriptionActionResult(
                 success=True,
-                message=f"All subscriptions already silent={state}",
+                message=f"Silent {state} saved as the channel default "
+                f"(no existing subscriptions changed)",
             )
         return SubscriptionActionResult(
             success=True,
-            message=f"Silent {state} on {flipped} subscription(s)",
+            message=f"Silent {state} on {flipped} subscription(s); saved as channel default",
         )
 
     async def set_feed_translate(

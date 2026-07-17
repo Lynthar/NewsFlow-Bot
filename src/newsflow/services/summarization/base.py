@@ -66,6 +66,11 @@ class SummarizationProvider(ABC):
     ) -> DigestResult:
         """Produce a digest string from the given articles.
 
+        The returned text is the digest BODY only, citing articles inline
+        as `[N]` (1-based index into `articles`). The caller
+        (DigestService) appends the actual source list in code — providers
+        must not ask the model to reproduce URLs.
+
         Args:
             articles: Ordered list of articles, typically newest-last.
             language: Target language code (e.g. "zh-CN"). Output must be in

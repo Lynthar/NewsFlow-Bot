@@ -442,14 +442,18 @@ async def test_set_channel_silent_bulk_toggles(session):
 
 
 async def test_set_channel_silent_no_op_when_already_in_state(session):
-    """Empty channel (or all-already-target) returns success with the
-    'already silent=...' message instead of flipping anything."""
+    """Empty channel (or all-already-target) returns success, flips
+    nothing, and records the preference as the channel default so
+    future subscriptions inherit it."""
     svc = SubscriptionService(session)
     result = await svc.set_channel_silent(
         platform="discord", channel_id="empty", silent=True
     )
     assert result.success is True
-    assert "already" in result.message.lower()
+    assert "default" in result.message.lower()
+    defaults = await svc.channel_settings_repo.get("discord", "empty")
+    assert defaults is not None
+    assert defaults.default_silent is True
 
 
 # ===== silent inheritance on subscribe =====
@@ -648,11 +652,11 @@ async def test_update_settings_reaches_paused_subscriptions(session):
     _, sub_b, *_ = await _seed_two_subs(session)
     svc = SubscriptionService(session)
 
-    ok = await svc.update_settings(
+    updated = await svc.update_settings(
         platform="discord", channel_id="c1", target_language="ja"
     )
 
-    assert ok is True
+    assert updated == 2  # both subs, paused included
     assert sub_b.target_language == "ja"
 
 

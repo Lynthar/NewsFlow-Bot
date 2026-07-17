@@ -1,8 +1,7 @@
 """Tests for the FilterRule rule engine."""
 
 import pytest
-
-from newsflow.core.filter import FilterRule, parse_keyword_csv
+from newsflow.core.filter import FilterRule, parse_filter_field, parse_keyword_csv
 
 
 def test_empty_rule_passes_everything():
@@ -42,10 +41,97 @@ def test_include_and_exclude_both_apply():
     assert rule.matches("Rust tutorial") is False  # doesn't pass include
 
 
-def test_include_substring_match():
-    """Matches should find the keyword anywhere in the text."""
+# ===== word-boundary semantics (ASCII) vs substring (CJK / symbols) =====
+
+
+def test_ascii_keyword_matches_whole_words_only():
+    """`ai` must not fire on "brain"/"said" — the audit's canonical trap."""
+    rule = FilterRule(include_keywords=("ai",))
+    assert rule.matches("New AI model released") is True
+    assert rule.matches("The brain said nothing") is False
+
+
+def test_ascii_keyword_no_longer_matches_inside_longer_words():
     rule = FilterRule(include_keywords=("bench",))
-    assert rule.matches("Performance benchmark results") is True
+    assert rule.matches("A new park bench design") is True
+    assert rule.matches("Performance benchmark results") is False
+
+
+def test_ascii_phrase_keyword_matches_on_word_boundaries():
+    rule = FilterRule(include_keywords=("machine learning",))
+    assert rule.matches("Advances in machine learning today") is True
+    assert rule.matches("machine learnings") is False
+
+
+def test_cjk_keyword_keeps_substring_semantics():
+    rule = FilterRule(include_keywords=("人工智能",))
+    assert rule.matches("最新人工智能模型发布") is True
+
+
+def test_ascii_keyword_matches_flush_against_cjk():
+    """Boundaries are ASCII-only: unspaced CJK context ("AI芯片") must
+    still hit, while an ASCII-embedded use ("OpenAI芯片") must not."""
+    rule = FilterRule(include_keywords=("ai",))
+    assert rule.matches("AI芯片竞赛升级") is True
+    assert rule.matches("OpenAI芯片订单") is False
+
+
+def test_symbol_keyword_keeps_substring_semantics():
+    # "c++" isn't word-ish (trailing +), so it stays a plain substring.
+    rule = FilterRule(include_keywords=("c++",))
+    assert rule.matches("Modern C++ features") is True
+
+
+# ===== regex rules =====
+
+
+def test_include_regex_must_match():
+    rule = FilterRule(include_regex=r"\bGPT-\d+")
+    assert rule.matches("OpenAI ships GPT-6") is True
+    assert rule.matches("OpenAI ships a new model") is False
+
+
+def test_exclude_regex_drops_matches():
+    rule = FilterRule(exclude_regex=r"rumou?r")
+    assert rule.matches("Confirmed: launch date") is True
+    assert rule.matches("Rumor: new device") is False
+    assert rule.matches("Rumour: new device") is False
+
+
+def test_invalid_stored_regex_fails_open():
+    # A pattern that reaches storage invalid must not block dispatch.
+    rule = FilterRule(include_regex="([unclosed")
+    assert rule.matches("anything") is True
+
+
+def test_regex_roundtrips_through_json():
+    original = FilterRule(include_regex=r"\bGPT-\d+", exclude_keywords=("sponsored",))
+    recovered = FilterRule.from_json(original.to_json())
+    assert recovered == original
+
+
+# ===== parse_filter_field =====
+
+
+def test_parse_filter_field_keywords_vs_regex():
+    assert parse_filter_field("a, b") == (("a", "b"), None)
+    assert parse_filter_field("/GPT-\\d+|Claude/") == ((), "GPT-\\d+|Claude")
+    assert parse_filter_field("") == ((), None)
+    assert parse_filter_field(None) == ((), None)
+
+
+def test_parse_filter_field_regex_may_contain_commas():
+    # The whole-field form exists exactly so {2,3} never fights the CSV split.
+    assert parse_filter_field("/a{2,3}/") == ((), "a{2,3}")
+
+
+def test_parse_filter_field_rejects_bad_regex():
+    with pytest.raises(ValueError):
+        parse_filter_field("/([unclosed/")
+    with pytest.raises(ValueError):
+        parse_filter_field("//")
+    with pytest.raises(ValueError):
+        parse_filter_field("/" + "a" * 300 + "/")
 
 
 @pytest.mark.parametrize(

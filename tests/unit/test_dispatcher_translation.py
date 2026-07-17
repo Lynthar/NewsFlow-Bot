@@ -183,3 +183,125 @@ async def test_translate_on_ignores_cache_for_other_language(session):
 
     assert msg.title_translated == "こんにちは"
     assert fake_service.translate.await_count > 0
+
+
+# ===== same-language short-circuits =====
+
+
+async def _make_zh_entry(session) -> FeedEntry:
+    feed = Feed(url="https://example.com/zhfeed", is_active=True, error_count=0)
+    session.add(feed)
+    await session.flush()
+    entry = FeedEntry(
+        feed_id=feed.id,
+        guid="zh1",
+        title="苹果公司今日发布全新产品线",
+        summary="定价策略引发市场热议,这次没有意外",
+        link="https://example.com/zh1",
+    )
+    session.add(entry)
+    await session.commit()
+    return entry
+
+
+async def test_script_shortcut_skips_provider_entirely(session):
+    """Chinese entry + zh-CN target → zero provider calls, originals used."""
+    entry = await _make_zh_entry(session)
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock()
+
+    d = _dispatcher()
+    with patch(
+        "newsflow.services.dispatcher.get_translation_service",
+        return_value=fake_service,
+    ):
+        title_t, summary_t = await d._translate_entry(
+            entry, "zh-CN", session, entry.summary
+        )
+
+    assert (title_t, summary_t) == (None, None)
+    fake_service.translate.assert_not_awaited()
+
+
+async def test_script_shortcut_respects_variant_boundary(session):
+    """Simplified entry + zh-TW target must still hit the provider."""
+    entry = await _make_zh_entry(session)
+
+    def fake_translate(text, target_lang, source_lang=None):
+        return TranslationResult(success=True, translated_text=f"譯:{text}")
+
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock(side_effect=fake_translate)
+
+    d = _dispatcher()
+    with patch(
+        "newsflow.services.dispatcher.get_translation_service",
+        return_value=fake_service,
+    ):
+        title_t, summary_t = await d._translate_entry(
+            entry, "zh-TW", session, entry.summary
+        )
+
+    assert title_t and title_t.startswith("譯:")
+    assert fake_service.translate.await_count == 2
+
+
+async def test_provider_detected_same_language_skips_summary_and_caches(session):
+    """Provider detects EN == en target: drop the identity translation,
+    skip the summary call, cache originals so later same-target
+    subscriptions short-circuit at the top check."""
+    entry = await _make_entry(session)  # English title/summary
+
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock(
+        return_value=TranslationResult(
+            success=True, translated_text="Hello.", source_language="EN"
+        )
+    )
+
+    d = _dispatcher()
+    with patch(
+        "newsflow.services.dispatcher.get_translation_service",
+        return_value=fake_service,
+    ):
+        title_t, summary_t = await d._translate_entry(
+            entry, "en", session, "World body text"
+        )
+    await session.commit()
+
+    assert (title_t, summary_t) == (None, None)
+    fake_service.translate.assert_awaited_once()  # summary call skipped
+
+    # Originals were cached as the "translation" → the next dispatch's
+    # top check returns them without any provider call.
+    await session.refresh(entry)
+    assert entry.translation_language == "en"
+    assert entry.title_translated == "Hello"
+    assert entry.summary_translated == "World body text"
+
+
+async def test_provider_detection_never_shortcuts_zh(session):
+    """Detectors report bare ZH, which can't see the simplified↔
+    traditional boundary — the zh path must keep translating."""
+    entry = await _make_entry(session)  # latin text, script check won't fire
+
+    def fake_translate(text, target_lang, source_lang=None):
+        return TranslationResult(
+            success=True, translated_text=f"译:{text}", source_language="ZH"
+        )
+
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock(side_effect=fake_translate)
+
+    d = _dispatcher()
+    with patch(
+        "newsflow.services.dispatcher.get_translation_service",
+        return_value=fake_service,
+    ):
+        title_t, summary_t = await d._translate_entry(
+            entry, "zh-CN", session, "World body text"
+        )
+
+    assert title_t == "译:Hello"
+    assert summary_t == "译:World body text"
+    assert fake_service.translate.await_count == 2

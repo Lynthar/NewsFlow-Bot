@@ -6,8 +6,10 @@ Implements Telegram-specific functionality using python-telegram-bot.
 
 import asyncio
 import logging
+import re
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from telegram import (
     BotCommand,
@@ -15,6 +17,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+from telegram import Message as TelegramMessage
 from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     AIORateLimiter,
@@ -33,11 +36,18 @@ from newsflow.adapters.base import (
     Message,
 )
 from newsflow.config import get_settings
-from newsflow.core.filter import parse_keyword_csv
+from newsflow.core.filter import parse_filter_field
+from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
+from newsflow.core.telegram_markdown import markdown_to_telegram_html
 from newsflow.core.timeutil import relative_time, time_until
+from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
+from newsflow.services.subscription_service import (
+    SubscriptionActionResult,
+    UnsubscribeResult,
+)
 
 LIST_PAGE_SIZE = 20
 
@@ -51,6 +61,23 @@ _adapter: "TelegramAdapter | None" = None
 # promotion/demotion becomes visible after at most the TTL.
 _ADMIN_CACHE_TTL_SECONDS = 60.0
 _admin_cache: dict[tuple[int, int], tuple[float, bool]] = {}
+
+
+async def _cached_is_admin(bot: Any, chat_id: int, user_id: int) -> bool:
+    """Owner/administrator check with the shared TTL cache. Raises on
+    lookup failure — callers decide the fail-closed reaction."""
+    key = (chat_id, user_id)
+    now = time.monotonic()
+    cached = _admin_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    member = await bot.get_chat_member(chat_id, user_id)
+    allowed = member.status in (
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.OWNER,
+    )
+    _admin_cache[key] = (now + _ADMIN_CACHE_TTL_SECONDS, allowed)
+    return allowed
 
 
 async def _require_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -81,26 +108,81 @@ async def _require_group_admin(update: Update, context: ContextTypes.DEFAULT_TYP
     if str(user.id) in settings.admin_user_ids:
         return True
 
-    key = (chat.id, user.id)
-    now = time.monotonic()
-    cached = _admin_cache.get(key)
-    if cached is not None and cached[0] > now:
-        allowed = cached[1]
-    else:
-        try:
-            member = await context.bot.get_chat_member(chat.id, user.id)
-        except Exception:
-            logger.exception(f"get_chat_member({chat.id}, {user.id}) failed; denying")
-            await msg.reply_text("⚠️ Couldn't verify your admin status — please try again.")
-            return False
-        allowed = member.status in (
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.OWNER,
-        )
-        _admin_cache[key] = (now + _ADMIN_CACHE_TTL_SECONDS, allowed)
+    try:
+        allowed = await _cached_is_admin(context.bot, chat.id, user.id)
+    except Exception:
+        logger.exception(f"get_chat_member({chat.id}, {user.id}) failed; denying")
+        await msg.reply_text("⚠️ Couldn't verify your admin status — please try again.")
+        return False
     if not allowed:
         await msg.reply_text("⛔ Only group admins can use this command here.")
     return allowed
+
+
+# Channel reference accepted as a command's first argument in private chat:
+# a public @username or a raw -100… chat id (private channels have no
+# username; the id is visible in the channel's web-client URL).
+_CHANNEL_REF_RE = re.compile(r"^(@\w{4,32}|-100\d+)$")
+
+
+async def _resolve_target(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> tuple[str, list[str]] | None:
+    """Resolve which chat a command targets — the private-chat channel
+    binding (F4): channels can't host commands (no sender, and PTB's
+    CommandHandler ignores channel_post anyway), so admins manage a
+    channel by DM-ing the bot with a leading channel reference:
+
+        /add @mychannel https://example.com/feed
+
+    Requirements enforced here: the bot can see the channel (it must be
+    added as a channel ADMIN to be able to post at all) and the caller
+    is one of the channel's admins (ADMIN_USER_IDS bypasses, mirroring
+    _require_group_admin; verdicts share the same TTL cache). Outside
+    private chat — or without a leading channel ref — the current chat
+    is the target and args pass through untouched.
+
+    Returns (chat_id, remaining_args); None when channel validation
+    failed (the error reply has already been sent).
+    """
+    msg = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if msg is None or chat is None:
+        return None
+    args = list(context.args or [])
+    if chat.type != ChatType.PRIVATE or not args or not _CHANNEL_REF_RE.match(args[0]):
+        return str(chat.id), args
+
+    ref = args[0]
+    try:
+        target = await context.bot.get_chat(ref if ref.startswith("@") else int(ref))
+    except Exception:
+        await msg.reply_text(
+            f"⚠️ Can't access {ref}. Add the bot to that channel as an "
+            "administrator first (it needs posting rights anyway), then retry."
+        )
+        return None
+    if target.type != ChatType.CHANNEL:
+        await msg.reply_text(f"⚠️ {ref} is not a channel. This form only targets channels.")
+        return None
+    if user is None:
+        return None
+
+    if str(user.id) not in get_settings().admin_user_ids:
+        try:
+            allowed = await _cached_is_admin(context.bot, target.id, user.id)
+        except Exception:
+            logger.exception(f"get_chat_member({target.id}, {user.id}) failed; denying")
+            await msg.reply_text(
+                "⚠️ Couldn't verify your admin status in that channel — please try again."
+            )
+            return None
+        if not allowed:
+            await msg.reply_text("⛔ Only that channel's admins can manage its feeds.")
+            return None
+
+    return str(target.id), args[1:]
 
 
 WELCOME_TEXT = (
@@ -112,6 +194,7 @@ WELCOME_TEXT = (
     "/pause &lt;url&gt; — Temporarily stop delivery\n"
     "/resume &lt;url&gt; — Resume delivery (/resume all — every paused feed)\n"
     "/list [page] — List subscribed feeds\n"
+    "/manage — Per-feed buttons: pause/resume/silence/remove, no URL typing\n"
     "/info &lt;url&gt; — Detailed status of one feed\n"
     "/test &lt;url&gt; — Check if a URL is a valid feed\n\n"
     "<b>OPML:</b>\n"
@@ -129,13 +212,18 @@ WELCOME_TEXT = (
     "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
     "<b>AI Digest:</b>\n"
     "/digest show — Show current digest config\n"
-    "/digest enable daily &lt;hour_utc&gt; [lang] — Daily digest\n"
-    "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang] — Weekly digest\n"
+    "/digest enable daily &lt;hour&gt; [lang] [tz] — Daily digest\n"
+    "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] — Weekly digest\n"
     "/digest disable — Turn off\n"
     "/digest now — Generate and send one immediately\n\n"
     "<b>Other:</b>\n"
     "/status — Bot status\n"
-    "/help — This message"
+    "/help — This message\n\n"
+    "<b>Channels:</b> add me to your channel as an administrator, then "
+    "manage it from this private chat by putting the channel first:\n"
+    "/add @channelusername &lt;url&gt; · /list @channelusername · "
+    "/digest @channelusername enable …\n"
+    "(private channels: use the -100… id instead of @username)"
 )
 
 # Commands surfaced in Telegram's command menu (the "/" list + Menu button).
@@ -144,6 +232,7 @@ _MENU_COMMANDS: list[tuple[str, str]] = [
     ("add", "Subscribe to an RSS feed URL"),
     ("remove", "Unsubscribe from a feed"),
     ("list", "List subscribed feeds"),
+    ("manage", "Manage feeds with buttons (no URL typing)"),
     ("info", "Detailed status of one feed"),
     ("pause", "Pause delivery for a feed"),
     ("resume", "Resume a paused feed"),
@@ -162,9 +251,12 @@ def _start_menu_keyboard() -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton("📰 My feeds", callback_data="menu:list"),
-                InlineKeyboardButton("📊 Status", callback_data="menu:status"),
+                InlineKeyboardButton("🛠 Manage", callback_data="menu:manage"),
             ],
-            [InlineKeyboardButton("❓ Help", callback_data="menu:help")],
+            [
+                InlineKeyboardButton("📊 Status", callback_data="menu:status"),
+                InlineKeyboardButton("❓ Help", callback_data="menu:help"),
+            ],
         ]
     )
 
@@ -191,14 +283,19 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text(
-            "Usage: /add <rss_url>\n\n" "Example: /add https://example.com/feed.xml"
+            "Usage: /add <rss_url>\n"
+            "       /add @channelusername <rss_url> (manage a channel from DM)\n\n"
+            "Example: /add https://example.com/feed.xml"
         )
         return
 
-    url = context.args[0]
-    chat_id = str(chat.id)
+    url = args[0]
     user_id = str(user.id)
 
     # Send processing message
@@ -257,12 +354,15 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text("Usage: /remove <rss_url>")
         return
 
-    url = context.args[0]
-    chat_id = str(chat.id)
+    url = args[0]
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -348,19 +448,29 @@ def _paginate_lines(lines: list[str]) -> list[list[str]]:
     return pages
 
 
-def _list_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup | None:
-    """Prev/Next row for the paginated feed list. None when there's one page."""
+def _list_keyboard(
+    page: int, total_pages: int, target: str | None = None
+) -> InlineKeyboardMarkup | None:
+    """Prev/Next row for the paginated feed list. None when there's one page.
+
+    `target` carries a channel id when the list was requested via the
+    private-chat channel binding (`/list @channel`), so pagination keeps
+    rendering THAT channel's list instead of flipping to the DM's own.
+    """
     if total_pages <= 1:
         return None
+    suffix = f":{target}" if target else ""
     row: list[InlineKeyboardButton] = []
     if page > 1:
-        row.append(InlineKeyboardButton("◀ Prev", callback_data=f"list:{page - 1}"))
+        row.append(InlineKeyboardButton("◀ Prev", callback_data=f"list:{page - 1}{suffix}"))
     if page < total_pages:
-        row.append(InlineKeyboardButton("Next ▶", callback_data=f"list:{page + 1}"))
+        row.append(InlineKeyboardButton("Next ▶", callback_data=f"list:{page + 1}{suffix}"))
     return InlineKeyboardMarkup([row])
 
 
-async def _render_list(chat_id: str, page: int) -> tuple[str, InlineKeyboardMarkup | None]:
+async def _render_list(
+    chat_id: str, page: int, target: str | None = None
+) -> tuple[str, InlineKeyboardMarkup | None]:
     """Build the paginated feed-list text + prev/next keyboard for a chat.
 
     Shared by /list and the pagination callback. Subscriptions are ordered by
@@ -395,7 +505,7 @@ async def _render_list(chat_id: str, page: int) -> tuple[str, InlineKeyboardMark
     if total_pages > 1:
         header += f" — page {page}/{total_pages}"
     body = "\n\n".join(pages[page - 1])
-    return header + "\n\n" + body, _list_keyboard(page, total_pages)
+    return header + "\n\n" + body, _list_keyboard(page, total_pages, target)
 
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -406,12 +516,224 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if msg is None or chat is None:
         return
 
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
     try:
-        page = int(context.args[0]) if context.args else 1
+        page = int(args[0]) if args else 1
     except (ValueError, IndexError):
         page = 1
 
-    text, keyboard = await _render_list(str(chat.id), page)
+    # Carry the channel id through pagination buttons when the list was
+    # requested via the private-chat channel binding.
+    target = chat_id if chat_id != str(chat.id) else None
+    text, keyboard = await _render_list(chat_id, page, target)
+    await msg.reply_text(
+        text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=keyboard,
+    )
+
+
+# --- /manage: per-feed inline actions (no URL retyping) ---------------------
+#
+# Callback data formats (Telegram caps callback_data at 64 bytes, so views
+# carry the subscription id, never the URL):
+#   mg:p:<page>[:target]                 manage list page
+#   mg:v:<sub_id>:<page>[:target]        one feed's action view
+#   mg:a:<action>:<sub_id>:<page>[:target]  action: pause|resume|sil0|sil1|rm|rmc
+# `target` is the -100… channel id when the panel was opened via the
+# private-chat channel binding (/manage @channel).
+
+MANAGE_PAGE_SIZE = 8
+
+
+def _manage_chip(sub: Subscription) -> str:
+    if not sub.is_active:
+        return "⏸"
+    if not sub.feed.is_active:
+        return "🛑"
+    if sub.silent:
+        return "🔇"
+    return "📰"
+
+
+def _mg_suffix(target: str | None) -> str:
+    return f":{target}" if target else ""
+
+
+def _mg_target(parts: list[str], index: int) -> str | None:
+    if len(parts) > index and re.fullmatch(r"-100\d+", parts[index]):
+        return parts[index]
+    return None
+
+
+def _int_or(raw: str, default: int) -> int:
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+async def _load_channel_subs(chat_id: str) -> list[Subscription]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        return list(
+            await service.get_channel_subscriptions(
+                platform="telegram", channel_id=chat_id, include_inactive=True
+            )
+        )
+
+
+async def _load_sub(sub_id: int) -> Subscription | None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        return await service.get_subscription_by_id(sub_id)
+
+
+def _manage_list_view(
+    subs: list[Subscription], page: int, target: str | None
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """One button per subscription; tapping opens its action view."""
+    if not subs:
+        return (
+            "📭 <b>No feeds subscribed</b>\n\nUse /add &lt;url&gt; to subscribe first.",
+            None,
+        )
+    total_pages = max(1, (len(subs) + MANAGE_PAGE_SIZE - 1) // MANAGE_PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * MANAGE_PAGE_SIZE
+    suffix = _mg_suffix(target)
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{_manage_chip(s)} {_clip(s.feed.title or s.feed.url, 32)}",
+                callback_data=f"mg:v:{s.id}:{page}{suffix}",
+            )
+        ]
+        for s in subs[start : start + MANAGE_PAGE_SIZE]
+    ]
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mg:p:{page - 1}{suffix}"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:p:{page + 1}{suffix}"))
+    if nav:
+        rows.append(nav)
+    text = f"🛠 <b>Manage feeds</b> — tap one ({len(subs)} total"
+    if total_pages > 1:
+        text += f", page {page}/{total_pages}"
+    text += ")"
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _manage_detail_view(
+    sub: Subscription, page: int, target: str | None
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Action buttons for one subscription."""
+    feed = sub.feed
+    chip = _sub_status_chip(sub)
+    lines = [
+        f"<b>{_escape_html(_clip(feed.title or 'Untitled', 80))}</b>",
+        f"<code>{_escape_html(_clip(feed.url, 200))}</code>",
+        f"State: {chip or '✅ active'}",
+        f"Translate: {'on → ' + _escape_html(sub.target_language) if sub.translate else 'off'}",
+    ]
+    tail = f"{sub.id}:{page}{_mg_suffix(target)}"
+    pause_btn = (
+        InlineKeyboardButton("⏸ Pause", callback_data=f"mg:a:pause:{tail}")
+        if sub.is_active
+        else InlineKeyboardButton("▶️ Resume", callback_data=f"mg:a:resume:{tail}")
+    )
+    silent_btn = (
+        InlineKeyboardButton("🔔 Unsilence", callback_data=f"mg:a:sil0:{tail}")
+        if sub.silent
+        else InlineKeyboardButton("🔇 Silence", callback_data=f"mg:a:sil1:{tail}")
+    )
+    rows = [
+        [pause_btn, silent_btn],
+        [InlineKeyboardButton("🗑 Remove…", callback_data=f"mg:a:rm:{tail}")],
+        [InlineKeyboardButton("◀ Back", callback_data=f"mg:p:{page}{_mg_suffix(target)}")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _manage_confirm_view(
+    sub: Subscription, page: int, target: str | None
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Remove needs a second tap — it cascades filter + dedupe history."""
+    tail = f"{sub.id}:{page}{_mg_suffix(target)}"
+    text = (
+        f"Remove <b>{_escape_html(_clip(sub.feed.title or sub.feed.url, 80))}</b>?\n\n"
+        "This also deletes its keyword filter and delivery history "
+        "(re-adding later starts fresh)."
+    )
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🗑 Yes, remove", callback_data=f"mg:a:rmc:{tail}")],
+            [InlineKeyboardButton("◀ Cancel", callback_data=f"mg:v:{tail}")],
+        ]
+    )
+    return text, keyboard
+
+
+async def _callback_user_may_manage(
+    sub: Subscription, chat: Any, user: Any, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    """Mutating manage-button gate — mirrors the command-side rules.
+
+    A private chat manages its own subscriptions freely; a channel's
+    subscriptions (panel opened via /manage @channel) require the presser
+    to be that channel's admin; group subscriptions follow the
+    TELEGRAM_ADMIN_ONLY rule. Fails closed on lookup errors.
+    """
+    settings = get_settings()
+    if user is not None and str(user.id) in settings.admin_user_ids:
+        return True
+    if user is None:
+        return False
+    sub_chat = sub.platform_channel_id
+    try:
+        if chat.type == ChatType.PRIVATE:
+            if sub_chat == str(chat.id):
+                return True
+            return await _cached_is_admin(context.bot, int(sub_chat), user.id)
+        if sub_chat != str(chat.id):
+            return False
+        if not settings.telegram_admin_only:
+            return True
+        return await _cached_is_admin(context.bot, chat.id, user.id)
+    except Exception:
+        logger.exception(f"manage-button admin check failed for {sub_chat}; denying")
+        return False
+
+
+async def manage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /manage [page] — button-driven per-feed operations.
+
+    Opening the panel is read-only (same information as /list); every
+    mutating button press is gated in _callback_user_may_manage.
+    """
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    try:
+        page = int(args[0]) if args else 1
+    except (ValueError, IndexError):
+        page = 1
+
+    target = chat_id if chat_id != str(chat.id) else None
+    subs = await _load_channel_subs(chat_id)
+    text, keyboard = _manage_list_view(subs, page, target)
     await msg.reply_text(
         text,
         parse_mode="HTML",
@@ -428,11 +750,14 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text("Usage: /pause <rss_url>")
         return
-    url = context.args[0]
-    chat_id = str(chat.id)
+    url = args[0]
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -454,11 +779,14 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text("Usage: /resume <rss_url> (or: /resume all)")
         return
-    url = context.args[0]
-    chat_id = str(chat.id)
+    url = args[0]
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -481,11 +809,14 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     chat = update.effective_chat
     if msg is None or chat is None:
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text("Usage: /info <rss_url>")
         return
-    url = context.args[0]
-    chat_id = str(chat.id)
+    url = args[0]
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -564,6 +895,58 @@ _WEEKDAY_NAMES = {
 }
 
 
+def _parse_digest_enable_args(rest: list[str]) -> tuple[str, int, int | None, str, str]:
+    """Parse `/digest enable` args → (mode, hour, weekday, language, tz).
+
+    Forms: `daily <hour>` / `weekly <weekday> <hour>`, then up to two
+    optional trailing tokens in either order — a language code and/or a
+    timezone. A token counts as a timezone only when it parses as one
+    (Region/City, ±offset, or "utc"), so language codes can't be eaten.
+    hour/weekday are LOCAL to the timezone (default UTC). Raises
+    ValueError with a user-facing message.
+    """
+    mode = rest[0].lower()
+    if mode == "daily":
+        if len(rest) < 2:
+            raise ValueError("hour required")
+        hour = int(rest[1])
+        weekday: int | None = None
+        tail = rest[2:]
+    elif mode == "weekly":
+        if len(rest) < 3:
+            raise ValueError("weekday and hour required")
+        wd_raw = rest[1].lower()
+        if wd_raw in _WEEKDAY_NAMES:
+            weekday = _WEEKDAY_NAMES[wd_raw]
+        else:
+            weekday = int(wd_raw)
+            if not 0 <= weekday <= 6:
+                raise ValueError("weekday must be 0-6 or name")
+        hour = int(rest[2])
+        tail = rest[3:]
+    else:
+        raise ValueError(f"unknown schedule '{mode}'")
+
+    if not 0 <= hour <= 23:
+        raise ValueError("hour must be 0-23")
+    if len(tail) > 2:
+        raise ValueError("too many arguments")
+
+    language = "zh-CN"
+    tz_raw = "UTC"
+    lang_seen = tz_seen = False
+    for token in tail:
+        if not tz_seen and parse_timezone(token) is not None:
+            tz_raw = token
+            tz_seen = True
+        elif not lang_seen:
+            language = token
+            lang_seen = True
+        else:
+            raise ValueError(f"can't parse extra argument '{token}'")
+    return mode, hour, weekday, language, tz_raw
+
+
 async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /digest <subcommand> …
 
@@ -571,8 +954,8 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
       /digest show
       /digest disable
       /digest now
-      /digest enable daily <hour_utc> [lang]
-      /digest enable weekly <weekday> <hour_utc> [lang]
+      /digest enable daily <hour> [lang] [tz]
+      /digest enable weekly <weekday> <hour> [lang] [tz]
     """
     from datetime import datetime
 
@@ -586,25 +969,29 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat = update.effective_chat
     if msg is None or chat is None:
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, dargs = resolved
+    if not dargs:
         await msg.reply_text(
             "Usage:\n"
             "/digest show\n"
-            "/digest enable daily &lt;hour_utc&gt; [lang]\n"
-            "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang]\n"
+            "/digest enable daily &lt;hour&gt; [lang] [tz]\n"
+            "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz]\n"
             "/digest disable\n"
             "/digest now",
             parse_mode="HTML",
         )
         return
 
-    sub = context.args[0].lower()
-    rest = context.args[1:]
+    sub = dargs[0].lower()
+    rest = dargs[1:]
     # `show` is read-only and stays open; the mutating subcommands need
-    # group-admin rights.
+    # group-admin rights (channel targeting already verified channel
+    # admin inside _resolve_target).
     if sub in ("enable", "disable", "now") and not await _require_group_admin(update, context):
         return
-    chat_id = str(chat.id)
     session_factory = get_session_factory()
 
     if sub == "show":
@@ -684,44 +1071,38 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if sub == "enable":
         # Forms:
-        #   enable daily <hour> [lang]
-        #   enable weekly <weekday> <hour> [lang]
+        #   enable daily <hour> [lang] [tz]
+        #   enable weekly <weekday> <hour> [lang] [tz]
         if not rest:
             await msg.reply_text(
-                "Usage: /digest enable daily &lt;hour_utc&gt; [lang]  OR\n"
-                "/digest enable weekly &lt;weekday&gt; &lt;hour_utc&gt; [lang]",
+                "Usage: /digest enable daily &lt;hour&gt; [lang] [tz]  OR\n"
+                "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz]\n\n"
+                "tz: IANA name (Asia/Shanghai) or offset (+8); default UTC.",
                 parse_mode="HTML",
             )
             return
 
-        mode = rest[0].lower()
         try:
-            if mode == "daily":
-                if len(rest) < 2:
-                    raise ValueError("hour required")
-                hour = int(rest[1])
-                weekday = None
-                language = rest[2] if len(rest) >= 3 else "zh-CN"
-            elif mode == "weekly":
-                if len(rest) < 3:
-                    raise ValueError("weekday and hour required")
-                wd_raw = rest[1].lower()
-                if wd_raw in _WEEKDAY_NAMES:
-                    weekday = _WEEKDAY_NAMES[wd_raw]
-                else:
-                    weekday = int(wd_raw)
-                    if not 0 <= weekday <= 6:
-                        raise ValueError("weekday must be 0-6 or name")
-                hour = int(rest[2])
-                language = rest[3] if len(rest) >= 4 else "zh-CN"
-            else:
-                raise ValueError(f"unknown schedule '{mode}'")
-
-            if not 0 <= hour <= 23:
-                raise ValueError("hour must be 0-23")
+            mode, hour, local_weekday, language, tz_raw = _parse_digest_enable_args(rest)
         except ValueError as e:
             await msg.reply_text(f"❌ {e}")
             return
+
+        normalized_lang = normalize_language_code(language)
+        if normalized_lang is None:
+            await msg.reply_text(
+                f"❌ <code>{_escape_html(language)}</code> doesn't look like a "
+                f"language code. Try one of: {LANGUAGE_CODE_EXAMPLES}.",
+                parse_mode="HTML",
+            )
+            return
+        language = normalized_lang
+
+        # Given in the user's timezone, stored as UTC — converted once,
+        # here (see core/timezones.py for the DST caveat).
+        tz = parse_timezone(tz_raw)
+        assert tz is not None  # _parse_digest_enable_args validated it
+        utc_hour, utc_weekday = local_schedule_to_utc(hour, local_weekday, tz)
 
         async with session_factory() as session:
             repo = ChannelDigestRepository(session)
@@ -731,17 +1112,21 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 guild_id=None,
                 enabled=True,
                 schedule=mode,
-                delivery_hour_utc=hour,
-                delivery_weekday=weekday,
+                delivery_hour_utc=utc_hour,
+                delivery_weekday=utc_weekday,
                 language=language,
             )
             await session.commit()
 
-        desc = (
-            f"daily at {hour:02d}:00 UTC"
-            if mode == "daily"
-            else f"weekly on weekday {weekday} at {hour:02d}:00 UTC"
+        local_desc = f"{hour:02d}:00 {tz_raw}" + (
+            f" (weekday {local_weekday})" if local_weekday is not None else ""
         )
+        utc_desc = f"{utc_hour:02d}:00 UTC" + (
+            f" (weekday {utc_weekday})" if utc_weekday is not None else ""
+        )
+        desc = f"{mode} at {local_desc}"
+        if utc_desc != local_desc:
+            desc += f" = {utc_desc}"
         await msg.reply_text(f"✅ Digest enabled — {desc}, language {language}.")
         return
 
@@ -764,20 +1149,27 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat = update.effective_chat
     if msg is None or chat is None:
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, fargs = resolved
+    if not fargs:
         await msg.reply_text(
             "Usage:\n"
             "/filter &lt;url&gt; — show current filter\n"
             "/filter &lt;url&gt; clear — remove filter\n"
-            "/filter &lt;url&gt; include=a,b exclude=c,d — set filter\n\n"
-            "Matching is case-insensitive substring on title + summary.",
+            "/filter &lt;url&gt; include=a,b exclude=c,d — set filter\n"
+            "/filter &lt;url&gt; include=/regex/ — whole field as one regex\n\n"
+            "Matching is case-insensitive on the cleaned title + summary + "
+            "article body. ASCII keywords match whole words (ai no longer "
+            "hits brain); CJK keywords match substrings; /.../ is a regex "
+            "(no spaces — use \\s).",
             parse_mode="HTML",
         )
         return
 
-    url = context.args[0]
-    chat_id = str(chat.id)
-    rest = context.args[1:]
+    url = fargs[0]
+    rest = fargs[1:]
     # Bare `/filter <url>` just shows the filter; the set/clear forms mutate.
     if rest and not await _require_group_admin(update, context):
         return
@@ -801,12 +1193,20 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await msg.reply_text("No filter set — every entry is delivered.")
             return
         lines = ["<b>Filter</b>"]
-        if rule.include_keywords:
+        if rule.include_regex:
+            lines.append(
+                f"<b>Include</b> (regex): <code>/{_escape_html(rule.include_regex)}/</code>"
+            )
+        elif rule.include_keywords:
             lines.append(
                 "<b>Include</b> (any of): "
                 + ", ".join(f"<code>{_escape_html(k)}</code>" for k in rule.include_keywords)
             )
-        if rule.exclude_keywords:
+        if rule.exclude_regex:
+            lines.append(
+                f"<b>Exclude</b> (regex): <code>/{_escape_html(rule.exclude_regex)}/</code>"
+            )
+        elif rule.exclude_keywords:
             lines.append(
                 "<b>Exclude</b> (none of): "
                 + ", ".join(f"<code>{_escape_html(k)}</code>" for k in rule.exclude_keywords)
@@ -851,8 +1251,12 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-    include_kw = parse_keyword_csv(include_csv)
-    exclude_kw = parse_keyword_csv(exclude_csv)
+    try:
+        include_kw, include_re = parse_filter_field(include_csv)
+        exclude_kw, exclude_re = parse_filter_field(exclude_csv)
+    except ValueError as e:
+        await msg.reply_text(f"❌ {_escape_html(str(e))}", parse_mode="HTML")
+        return
 
     async with session_factory() as session:
         service = SubscriptionService(session)
@@ -862,6 +1266,8 @@ async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             feed_url=url,
             include_keywords=include_kw,
             exclude_keywords=exclude_kw,
+            include_regex=include_re,
+            exclude_regex=exclude_re,
         )
         await session.commit()
 
@@ -877,8 +1283,11 @@ async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     if not await _require_group_admin(update, context):
         return
-    args = context.args
-    if args is None or len(args) != 2:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if len(args) != 2:
         await msg.reply_text(
             "Usage: /setlang <rss_url> <language_code>\n"
             "Example: /setlang https://example.com/feed zh-CN\n\n"
@@ -888,13 +1297,21 @@ async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     url, code = args
-    chat_id = str(chat.id)
+
+    normalized = normalize_language_code(code)
+    if normalized is None:
+        await msg.reply_text(
+            f"❌ <code>{_escape_html(code)}</code> doesn't look like a language "
+            f"code. Try one of: {LANGUAGE_CODE_EXAMPLES}.",
+            parse_mode="HTML",
+        )
+        return
 
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
         result = await service.set_feed_language(
-            platform="telegram", channel_id=chat_id, feed_url=url, language=code
+            platform="telegram", channel_id=chat_id, feed_url=url, language=normalized
         )
         await session.commit()
 
@@ -910,8 +1327,11 @@ async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if not await _require_group_admin(update, context):
         return
-    args = context.args
-    if args is None or len(args) != 2:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if len(args) != 2:
         await msg.reply_text(
             "Usage: /settrans <rss_url> <on|off>\n"
             "Example: /settrans https://example.com/feed off\n\n"
@@ -922,7 +1342,6 @@ async def settrans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     url = args[0]
     enabled = args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
-    chat_id = str(chat.id)
 
     if enabled and not get_settings().can_translate():
         await msg.reply_text(
@@ -956,7 +1375,11 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text(
             "Usage: /silent <on|off>\n\n"
             "Channel-wide: silences every feed in this chat. Entries still "
@@ -964,8 +1387,7 @@ async def silent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    enabled = context.args[0].lower() in ("on", "true", "yes", "1", "enable", "enabled")
-    chat_id = str(chat.id)
+    enabled = args[0].lower() in ("on", "true", "yes", "1", "enable", "enabled")
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -987,8 +1409,11 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     if not await _require_group_admin(update, context):
         return
-    args = context.args
-    if args is None or len(args) != 2:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if len(args) != 2:
         await msg.reply_text(
             "Usage: /setsilent <rss_url> <on|off>\n"
             "Example: /setsilent https://example.com/feed on\n\n"
@@ -999,7 +1424,6 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     url = args[0]
     enabled = args[1].lower() in ("on", "true", "yes", "1", "enable", "enabled")
-    chat_id = str(chat.id)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -1021,7 +1445,10 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat = update.effective_chat
     if msg is None or chat is None:
         return
-    chat_id = str(chat.id)
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, _args = resolved
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
@@ -1244,7 +1671,11 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text(
             "Usage: /language <language_code>\n\n"
             "Examples:\n"
@@ -1255,26 +1686,33 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    language = context.args[0]
-    chat_id = str(chat.id)
+    language = args[0]
+
+    normalized = normalize_language_code(language)
+    if normalized is None:
+        await msg.reply_text(
+            f"❌ <code>{_escape_html(language)}</code> doesn't look like a "
+            f"language code. Try one of: {LANGUAGE_CODE_EXAMPLES}.",
+            parse_mode="HTML",
+        )
+        return
 
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
-        success = await service.update_settings(
+        updated = await service.update_settings(
             platform="telegram",
             channel_id=chat_id,
-            target_language=language,
+            target_language=normalized,
         )
         await session.commit()
 
-    if success:
-        message = (
-            f"✅ <b>Language Updated</b>\n\n"
-            f"Translation language set to: <b>{_escape_html(language)}</b>"
-        )
-    else:
-        message = "⚠️ <b>No Subscriptions</b>\n\nNo feeds subscribed in this chat."
+    message = (
+        f"✅ <b>Language Updated</b>\n\n"
+        f"Translation language set to: <b>{_escape_html(normalized)}</b>\n"
+        f"Saved as the channel default (new subscriptions inherit it); "
+        f"{updated} existing subscription(s) updated."
+    )
 
     await msg.reply_text(message, parse_mode="HTML")
 
@@ -1287,12 +1725,15 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     if not await _require_group_admin(update, context):
         return
-    if not context.args:
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    if not args:
         await msg.reply_text("Usage: /translate <on/off>")
         return
 
-    enabled = context.args[0].lower() in ("on", "true", "yes", "1")
-    chat_id = str(chat.id)
+    enabled = args[0].lower() in ("on", "true", "yes", "1")
 
     settings = get_settings()
     if enabled and not settings.can_translate():
@@ -1307,7 +1748,7 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     session_factory = get_session_factory()
     async with session_factory() as session:
         service = SubscriptionService(session)
-        success = await service.update_settings(
+        updated = await service.update_settings(
             platform="telegram",
             channel_id=chat_id,
             translate=enabled,
@@ -1315,10 +1756,11 @@ async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await session.commit()
 
     status = "enabled" if enabled else "disabled"
-    if success:
-        message = f"✅ <b>Translation Updated</b>\n\nTranslation <b>{status}</b> for all feeds in this chat."
-    else:
-        message = "⚠️ <b>No Subscriptions</b>\n\nNo feeds subscribed in this chat."
+    message = (
+        f"✅ <b>Translation Updated</b>\n\n"
+        f"Translation <b>{status}</b> — saved as the channel default; "
+        f"{updated} existing subscription(s) updated."
+    )
 
     await msg.reply_text(message, parse_mode="HTML")
 
@@ -1390,15 +1832,27 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat = update.effective_chat
     if query is None or query.data is None or chat is None:
         return
-    await query.answer()
     data = query.data
 
+    if data.startswith("mg:"):
+        # Manage buttons answer the query themselves (toasts / alerts).
+        await _on_manage_callback(query, chat, context, data)
+        return
+
+    await query.answer()
+
     if data.startswith("list:"):
+        parts = data.split(":")
         try:
-            page = int(data.split(":", 1)[1])
-        except ValueError:
+            page = int(parts[1])
+        except (ValueError, IndexError):
             page = 1
-        text, keyboard = await _render_list(str(chat.id), page)
+        # Optional third segment: the bound channel id a private-chat
+        # /list @channel targeted. Validated by shape; the buttons only
+        # exist in the DM of someone who passed the admin check at /list
+        # time, and the view is display-only.
+        target = parts[2] if len(parts) > 2 and re.fullmatch(r"-100\d+", parts[2]) else None
+        text, keyboard = await _render_list(target or str(chat.id), page, target)
         from telegram.error import BadRequest
 
         try:
@@ -1427,7 +1881,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if data.startswith("menu:"):
         action = data.split(":", 1)[1]
-        if action == "list":
+        if action == "manage":
+            subs = await _load_channel_subs(str(chat.id))
+            text, keyboard = _manage_list_view(subs, 1, None)
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        elif action == "list":
             text, keyboard = await _render_list(str(chat.id), 1)
             await context.bot.send_message(
                 chat_id=chat.id,
@@ -1448,6 +1912,135 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 text=WELCOME_TEXT,
                 parse_mode="HTML",
             )
+
+
+async def _on_manage_callback(
+    query: Any, chat: Any, context: ContextTypes.DEFAULT_TYPE, data: str
+) -> None:
+    """Route mg:* button presses (see the format comment at MANAGE_PAGE_SIZE).
+
+    Navigation (list page / detail view) is display-only and open like the
+    other callbacks; the mutating actions re-check admin rights on every
+    press via _callback_user_may_manage — button visibility is not access
+    control (anyone in a group can see the panel someone else opened).
+    """
+    from telegram.error import BadRequest
+
+    async def render(text: str, keyboard: InlineKeyboardMarkup | None) -> None:
+        try:
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except TypeError:
+            # >48h-old message (InaccessibleMessage) — send fresh instead.
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except BadRequest as e:
+            if "not modified" not in str(e).lower():
+                raise
+
+    parts = data.split(":")
+    kind = parts[1] if len(parts) > 1 else ""
+
+    if kind == "p":  # mg:p:<page>[:target]
+        await query.answer()
+        page = _int_or(parts[2] if len(parts) > 2 else "", 1)
+        target = _mg_target(parts, 3)
+        chat_id = target or str(chat.id)
+        subs = await _load_channel_subs(chat_id)
+        text, keyboard = _manage_list_view(subs, page, target)
+        await render(text, keyboard)
+        return
+
+    if kind == "v":  # mg:v:<sub_id>:<page>[:target]
+        await query.answer()
+        sub_id = _int_or(parts[2] if len(parts) > 2 else "", 0)
+        page = _int_or(parts[3] if len(parts) > 3 else "", 1)
+        target = _mg_target(parts, 4)
+        chat_id = target or str(chat.id)
+        sub = await _load_sub(sub_id)
+        if sub is None or sub.platform != "telegram" or sub.platform_channel_id != chat_id:
+            subs = await _load_channel_subs(chat_id)
+            text, keyboard = _manage_list_view(subs, page, target)
+            await render(text, keyboard)
+            return
+        text, keyboard = _manage_detail_view(sub, page, target)
+        await render(text, keyboard)
+        return
+
+    if kind != "a" or len(parts) < 5:
+        await query.answer()
+        return
+
+    # mg:a:<action>:<sub_id>:<page>[:target]
+    action = parts[2]
+    sub_id = _int_or(parts[3], 0)
+    page = _int_or(parts[4], 1)
+    target = _mg_target(parts, 5)
+    chat_id = target or str(chat.id)
+
+    sub = await _load_sub(sub_id)
+    if sub is None or sub.platform != "telegram" or sub.platform_channel_id != chat_id:
+        await query.answer("That subscription no longer exists.", show_alert=True)
+        subs = await _load_channel_subs(chat_id)
+        text, keyboard = _manage_list_view(subs, page, target)
+        await render(text, keyboard)
+        return
+
+    if not await _callback_user_may_manage(sub, chat, query.from_user, context):
+        await query.answer("⛔ Only admins can use these buttons here.", show_alert=True)
+        return
+
+    if action == "rm":  # confirmation step, nothing mutated yet
+        await query.answer()
+        text, keyboard = _manage_confirm_view(sub, page, target)
+        await render(text, keyboard)
+        return
+
+    feed_url = sub.feed.url
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result: SubscriptionActionResult | UnsubscribeResult
+        if action == "pause":
+            result = await service.pause_subscription("telegram", chat_id, feed_url)
+        elif action == "resume":
+            result = await service.resume_subscription("telegram", chat_id, feed_url)
+        elif action in ("sil0", "sil1"):
+            result = await service.set_feed_silent(
+                "telegram", chat_id, feed_url, silent=(action == "sil1")
+            )
+        elif action == "rmc":
+            result = await service.unsubscribe("telegram", chat_id, feed_url)
+        else:
+            await query.answer()
+            return
+        await session.commit()
+
+    prefix = "✅ " if result.success else "❌ "
+    await query.answer((prefix + result.message)[:190])
+
+    if action == "rmc" and result.success:
+        subs = await _load_channel_subs(chat_id)
+        text, keyboard = _manage_list_view(subs, page, target)
+        await render(text, keyboard)
+        return
+
+    fresh = await _load_sub(sub_id)
+    if fresh is None:
+        subs = await _load_channel_subs(chat_id)
+        text, keyboard = _manage_list_view(subs, page, target)
+    else:
+        text, keyboard = _manage_detail_view(fresh, page, target)
+    await render(text, keyboard)
 
 
 class TelegramAdapter(BaseAdapter):
@@ -1502,7 +2095,8 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("export", export_command))
         self.app.add_handler(CommandHandler("status", status_command))
         # Inline-keyboard callbacks: /list pagination + /start quick-menu.
-        self.app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(list|menu):"))
+        self.app.add_handler(CommandHandler("manage", manage_command))
+        self.app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(list|menu|mg):"))
         # Auto-import when user uploads an .opml/.xml file (no caption needed).
         self.app.add_handler(
             MessageHandler(
@@ -1681,6 +2275,87 @@ class TelegramAdapter(BaseAdapter):
             # bot isn't an admin in a group. Don't fail the delivery.
             logger.warning(f"Telegram pin failed in {channel_id}: {e}")
             return True, None
+
+    async def send_digest_text(self, channel_id: str, text: str) -> bool:
+        """Digest-specific send: Markdown rendered to Telegram HTML with
+        link previews disabled (otherwise the last source URL grows a
+        random preview card). See send_message for the ChannelGoneError /
+        ChannelMigratedError contract."""
+        if not self.app:
+            return False
+        try:
+            await self._send_digest_message(channel_id, text)
+            return True
+        except Exception as e:
+            new_id = self._migrated_chat_id(e)
+            if new_id is not None:
+                raise ChannelMigratedError(channel_id, new_id, reason=str(e)) from e
+            if self._is_chat_gone(e):
+                raise ChannelGoneError(channel_id, reason=str(e)) from e
+            logger.exception(f"Failed to send digest to {channel_id}: {e}")
+            return False
+
+    async def send_digest_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
+        """Digest counterpart of send_text_pinned: identical pin
+        semantics, digest rendering (HTML + previews off) for the
+        message itself."""
+        if not self.app:
+            return False, None
+        if not get_settings().digest_auto_pin:
+            sent = await self.send_digest_text(channel_id, text)
+            return sent, None
+
+        try:
+            msg = await self._send_digest_message(channel_id, text)
+        except Exception as e:
+            new_id = self._migrated_chat_id(e)
+            if new_id is not None:
+                raise ChannelMigratedError(channel_id, new_id, reason=str(e)) from e
+            if self._is_chat_gone(e):
+                raise ChannelGoneError(channel_id, reason=str(e)) from e
+            logger.exception(f"Failed to send digest to {channel_id}: {e}")
+            return False, None
+
+        try:
+            await self.app.bot.pin_chat_message(
+                chat_id=int(channel_id),
+                message_id=msg.message_id,
+                disable_notification=True,
+            )
+            return True, str(msg.message_id)
+        except Exception as e:
+            logger.warning(f"Telegram pin failed in {channel_id}: {e}")
+            return True, None
+
+    async def _send_digest_message(self, channel_id: str, text: str) -> TelegramMessage:
+        """Render digest Markdown to HTML and send. If Telegram rejects
+        the rendered entities (converter blind spot or pathological LLM
+        output), fall back to the raw text — a plain-looking digest
+        beats a lost one. Previews stay off in both paths."""
+        assert self.app is not None
+        from telegram.error import BadRequest
+
+        html = markdown_to_telegram_html(text)
+        try:
+            sent: TelegramMessage = await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except BadRequest as e:
+            if "parse entities" not in str(e).lower():
+                raise
+            logger.warning(
+                f"Digest HTML rejected by Telegram for {channel_id}; "
+                f"falling back to plain text: {e}"
+            )
+            sent = await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=text,
+                disable_web_page_preview=True,
+            )
+        return sent
 
     async def unpin_message(self, channel_id: str, message_id: str) -> bool:
         """Unpin a specific message. Returns False on error; the caller

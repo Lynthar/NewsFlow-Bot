@@ -14,6 +14,10 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
+# CJK unified ideographs + kana + hangul — used to pick the dedup
+# threshold that matches the script's information density.
+_CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힯]")
+
 # Maximum lengths for Discord/Telegram
 MAX_TITLE_LENGTH = 256
 MAX_SUMMARY_LENGTH = 1024
@@ -166,10 +170,14 @@ def dedup_summary(title: str, summary: str) -> str:
     # If only a few chars of punctuation / source name remain, it's
     # not a real summary. Threshold 30 chars chosen so "Fed cuts - CNBC
     # 3 hours ago" (~25 chars after strip) gets dropped but
-    # "Fed cuts to stave off inflation risk" (~35 chars) stays.
+    # "Fed cuts to stave off inflation risk" (~35 chars) stays. CJK
+    # packs ~3x the information per char (30 hanzi is a full sentence
+    # of pricing/dates — real increment, not attribution noise), so a
+    # remainder containing CJK uses a 12-char threshold instead.
     if norm_summary.startswith(norm_title):
         remainder = norm_summary[len(norm_title) :].strip(" -—…|·,.")
-        if len(remainder) < 30:
+        threshold = 12 if _CJK_RE.search(remainder) else 30
+        if len(remainder) < threshold:
             return ""
 
     return summary

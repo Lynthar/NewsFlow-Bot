@@ -24,6 +24,7 @@ from newsflow.core.content_processor import (
     truncate_text,
 )
 from newsflow.core.filter import FilterRule
+from newsflow.core.languages import same_primary_language, text_clearly_in_language
 from newsflow.models.base import get_session_factory
 from newsflow.models.feed import FeedEntry
 from newsflow.models.subscription import Subscription
@@ -41,9 +42,9 @@ logger = logging.getLogger(__name__)
 class MessageSender(Protocol):
     """Protocol for message sending. Adapters supply send_message (for
     structured feed entries), send_text (for system notifications like
-    feed-auto-disabled notices), send_text_pinned + unpin_message (for
-    digest auto-pin — default implementations on BaseAdapter degrade to
-    send-without-pin), and is_connected (for HEALTHCHECK)."""
+    feed-auto-disabled notices), send_digest_text + send_digest_text_pinned
+    + unpin_message (for digest delivery — BaseAdapter defaults degrade to
+    plain send_text without pin), and is_connected (for HEALTHCHECK)."""
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
         ...
@@ -52,6 +53,12 @@ class MessageSender(Protocol):
         ...
 
     async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
+        ...
+
+    async def send_digest_text(self, channel_id: str, text: str) -> bool:
+        ...
+
+    async def send_digest_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
         ...
 
     async def unpin_message(self, channel_id: str, message_id: str) -> bool:
@@ -307,8 +314,13 @@ class Dispatcher:
                 # Apply filter before the (potentially expensive) translation
                 # and send path. Filtered entries are marked "processed" so
                 # the loop doesn't re-evaluate them every dispatch cycle.
+                # Match on CLEANED text (title + summary + content): raw
+                # markup made exclude words fire on URLs/tag attributes,
+                # and the article body was invisible to filters entirely.
                 if not filter_rule.is_empty():
-                    haystack = f"{entry.title} {entry.summary or ''}"
+                    summary_text, _ = clean_html(entry.summary or "")
+                    content_text, _ = clean_html(entry.content or "")
+                    haystack = f"{entry.title} {summary_text} {content_text}"
                     if not filter_rule.matches(haystack):
                         await sub_repo.mark_entry_sent(
                             subscription.id,
@@ -477,6 +489,16 @@ class Dispatcher:
         if entry.translation_language == target_language and entry.title_translated:
             return entry.title_translated, entry.summary_translated
 
+        # Same-language short-circuit #1 (free): the script already tells
+        # us the text is in the target language, so there's nothing to
+        # translate. Only fires for script-unique languages (zh/ja/ko) and
+        # never across the simplified↔traditional boundary — a zh-TW
+        # target with a simplified source still goes to the provider.
+        combined = f"{entry.title or ''} {plain_summary}".strip()
+        if combined and text_clearly_in_language(combined, target_language):
+            logger.debug(f"Entry {entry.id} already in {target_language}; skipping translation")
+            return None, None
+
         # Get translation service
         translation_service = get_translation_service()
         if not translation_service:
@@ -490,6 +512,31 @@ class Dispatcher:
             if entry.title:
                 result = await translation_service.translate(entry.title, target_language)
                 if result.success:
+                    # Same-language short-circuit #2 (provider-informed):
+                    # the provider detected source == target (covers what
+                    # the script check can't — e.g. an English feed with
+                    # target en). Drop the provider's output rather than
+                    # adopt a "polished" identity translation, skip the
+                    # summary call, and cache the originals so every other
+                    # same-target subscription short-circuits at the top
+                    # check with zero further API calls. zh is excluded:
+                    # detectors report bare "ZH", which can't see the
+                    # simplified↔traditional boundary.
+                    if same_primary_language(
+                        result.source_language, target_language
+                    ) and not target_language.lower().startswith("zh"):
+                        feed_repo = FeedRepository(session)
+                        await feed_repo.update_entry_translation(
+                            entry_id=entry.id,
+                            title_translated=entry.title,
+                            summary_translated=plain_summary,
+                            language=target_language,
+                        )
+                        logger.debug(
+                            f"Entry {entry.id} detected as {result.source_language} == "
+                            f"{target_language}; skipping translation"
+                        )
+                        return None, None
                     title_translated = result.translated_text
 
             # Translate summary (cap length to keep token usage bounded)
@@ -839,14 +886,17 @@ class Dispatcher:
         if not chunks:
             return 0, None
 
-        sent_first, new_pin_id = await adapter.send_text_pinned(channel_id, chunks[0])
+        # Digest-specific send methods: platforms that can't render the
+        # digest's Markdown natively re-render per chunk (Telegram →
+        # HTML + previews off); everyone else falls through to send_text.
+        sent_first, new_pin_id = await adapter.send_digest_text_pinned(channel_id, chunks[0])
         if not sent_first:
             return 0, None
         chunks_sent = 1
 
         for chunk in chunks[1:]:
             await asyncio.sleep(0.1)  # smoothing, mirrors _send_text_split
-            if await adapter.send_text(channel_id, chunk):
+            if await adapter.send_digest_text(channel_id, chunk):
                 chunks_sent += 1
 
         # Only unpin the prior digest if a new pin actually took its

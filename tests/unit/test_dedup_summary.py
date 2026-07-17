@@ -100,3 +100,20 @@ def test_unrelated_summary_kept():
         )
         == "Markets rose sharply as investors priced in further easing"
     )
+
+
+# ===== CJK-aware threshold =====
+
+
+def test_cjk_remainder_threshold_keeps_real_increments():
+    # ~20 hanzi of pricing/date detail is a real increment — the English
+    # 30-char threshold used to swallow it as "attribution noise".
+    title = "苹果发布新品"
+    summary = title + " 定价一万二千元起售,十月十五日全国门店同步开卖"
+    assert dedup_summary(title, summary) == summary
+
+
+def test_cjk_attribution_noise_still_dropped():
+    title = "苹果发布新品"
+    summary = title + " - 路透社"
+    assert dedup_summary(title, summary) == ""

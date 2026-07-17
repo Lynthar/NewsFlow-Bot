@@ -33,10 +33,13 @@ def _mock_adapter(
     send_text_result: bool = True,
     unpin_result: bool = True,
 ):
-    """Build a MagicMock adapter satisfying the MessageSender protocol."""
+    """Build a MagicMock adapter satisfying the MessageSender protocol.
+
+    deliver_digest goes through the digest-specific send methods (so
+    Telegram can re-render Markdown); the mocks pin that wiring."""
     adapter = MagicMock()
-    adapter.send_text = AsyncMock(return_value=send_text_result)
-    adapter.send_text_pinned = AsyncMock(return_value=pin_result)
+    adapter.send_digest_text = AsyncMock(return_value=send_text_result)
+    adapter.send_digest_text_pinned = AsyncMock(return_value=pin_result)
     adapter.unpin_message = AsyncMock(return_value=unpin_result)
     adapter.is_connected = MagicMock(return_value=True)
     return adapter
@@ -55,8 +58,8 @@ async def test_single_chunk_pin_succeeds_no_prior():
 
     assert sent == 1
     assert pin_id == "msg-1"
-    adapter.send_text_pinned.assert_awaited_once_with("chan", "short body")
-    adapter.send_text.assert_not_awaited()
+    adapter.send_digest_text_pinned.assert_awaited_once_with("chan", "short body")
+    adapter.send_digest_text.assert_not_awaited()
     adapter.unpin_message.assert_not_awaited()
 
 
@@ -99,7 +102,7 @@ async def test_send_fails_returns_zero():
 
     assert sent == 0
     assert pin_id is None
-    adapter.send_text.assert_not_awaited()
+    adapter.send_digest_text.assert_not_awaited()
     adapter.unpin_message.assert_not_awaited()
 
 
@@ -121,9 +124,9 @@ async def test_multi_chunk_only_first_pinned():
 
     assert sent >= 2, "multi-chunk test requires at least 2 chunks"
     assert pin_id == "msg-first"
-    # First chunk pinned; remainder sent as plain text.
-    adapter.send_text_pinned.assert_awaited_once()
-    assert adapter.send_text.await_count == sent - 1
+    # First chunk pinned; remainder sent as plain digest chunks.
+    adapter.send_digest_text_pinned.assert_awaited_once()
+    assert adapter.send_digest_text.await_count == sent - 1
 
 
 async def test_multi_chunk_partial_tail_failure_still_counts_pin():
@@ -140,7 +143,7 @@ async def test_multi_chunk_partial_tail_failure_still_counts_pin():
         # Fail the 2nd tail send; succeed otherwise.
         return call_num["n"] != 2
 
-    adapter.send_text = AsyncMock(side_effect=tail_send)
+    adapter.send_digest_text = AsyncMock(side_effect=tail_send)
 
     paragraphs = ["P" + str(i) * 40 for i in range(6)]
     text = "\n\n".join(paragraphs)
@@ -151,7 +154,7 @@ async def test_multi_chunk_partial_tail_failure_still_counts_pin():
 
     # 1 pinned (first chunk) + (tail_total - 1) successful tail sends.
     assert sent >= 2
-    assert sent == 1 + adapter.send_text.await_count - 1  # pinned + successes
+    assert sent == 1 + adapter.send_digest_text.await_count - 1  # pinned + successes
     assert pin_id == "msg-first"
 
 
@@ -168,8 +171,8 @@ async def test_empty_text_is_noop():
 
     assert sent == 0
     assert pin_id is None
-    adapter.send_text_pinned.assert_not_awaited()
-    adapter.send_text.assert_not_awaited()
+    adapter.send_digest_text_pinned.assert_not_awaited()
+    adapter.send_digest_text.assert_not_awaited()
 
 
 # ===== adapter default (no pin support) falls back gracefully =====

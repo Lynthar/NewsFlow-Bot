@@ -14,8 +14,10 @@ from discord.ext import commands
 
 from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
 from newsflow.config import get_settings
-from newsflow.core.filter import parse_keyword_csv
+from newsflow.core.filter import parse_filter_field
+from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
 from newsflow.core.timeutil import relative_time, time_until
+from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
@@ -23,6 +25,13 @@ from newsflow.services import SubscriptionService, get_dispatcher
 # Max subscriptions per /feed list page. Discord embed description caps
 # at 4096 chars; 20 entries × ~150 chars each leaves comfortable headroom.
 LIST_PAGE_SIZE = 20
+
+# Discord caps an autocomplete response at 25 choices and each choice's
+# name/value at 100 chars. discord.py enforces neither — an oversized
+# response is rejected wholesale by the API — so the callback must stay
+# within both limits itself.
+AUTOCOMPLETE_MAX_CHOICES = 25
+AUTOCOMPLETE_MAX_LEN = 100
 
 
 def _sub_status_chip(sub: Subscription) -> str | None:
@@ -524,6 +533,16 @@ class FeedCommands(commands.Cog):
         code: str,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+
+        normalized = normalize_language_code(code)
+        if normalized is None:
+            await interaction.followup.send(
+                f"⚠️ `{code}` doesn't look like a language code. "
+                f"Try one of: {LANGUAGE_CODE_EXAMPLES}.",
+                ephemeral=True,
+            )
+            return
+
         session_factory = get_session_factory()
         async with session_factory() as session:
             service = SubscriptionService(session)
@@ -531,7 +550,7 @@ class FeedCommands(commands.Cog):
                 platform="discord",
                 channel_id=str(interaction.channel_id),
                 feed_url=url,
-                language=code,
+                language=normalized,
             )
             await session.commit()
 
@@ -602,12 +621,12 @@ class FeedCommands(commands.Cog):
 
     @feed_group.command(
         name="filter-set",
-        description="Set a keyword filter for one feed (comma-separated lists)",
+        description="Set a keyword or /regex/ filter for one feed",
     )
     @app_commands.describe(
         url="The RSS feed URL",
-        include="Entries must contain at least one of these (csv). Leave blank for no include filter.",
-        exclude="Entries containing any of these are skipped (csv). Leave blank for no exclude filter.",
+        include="Keep only matching entries: keywords (csv) or /regex/. Blank = no include filter.",
+        exclude="Drop matching entries: keywords (csv) or /regex/. Blank = no exclude filter.",
     )
     async def feed_filter_set(
         self,
@@ -618,8 +637,17 @@ class FeedCommands(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        include_kw = parse_keyword_csv(include)
-        exclude_kw = parse_keyword_csv(exclude)
+        try:
+            include_kw, include_re = parse_filter_field(include)
+            exclude_kw, exclude_re = parse_filter_field(exclude)
+        except ValueError as e:
+            embed = discord.Embed(
+                title="Failed",
+                description=f"⚠️ {e}",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -630,6 +658,8 @@ class FeedCommands(commands.Cog):
                 feed_url=url,
                 include_keywords=include_kw,
                 exclude_keywords=exclude_kw,
+                include_regex=include_re,
+                exclude_regex=exclude_re,
             )
             await session.commit()
 
@@ -670,11 +700,15 @@ class FeedCommands(commands.Cog):
             )
         else:
             lines = []
-            if rule.include_keywords:
+            if rule.include_regex:
+                lines.append(f"**Include** (regex): `/{rule.include_regex}/`")
+            elif rule.include_keywords:
                 lines.append(
                     "**Include** (any of): " + ", ".join(f"`{k}`" for k in rule.include_keywords)
                 )
-            if rule.exclude_keywords:
+            if rule.exclude_regex:
+                lines.append(f"**Exclude** (regex): `/{rule.exclude_regex}/`")
+            elif rule.exclude_keywords:
                 lines.append(
                     "**Exclude** (none of): " + ", ".join(f"`{k}`" for k in rule.exclude_keywords)
                 )
@@ -683,7 +717,10 @@ class FeedCommands(commands.Cog):
                 description="\n".join(lines),
                 color=discord.Color.blue(),
             )
-            embed.set_footer(text="Matching is case-insensitive on title + summary")
+            embed.set_footer(
+                text="Case-insensitive on cleaned title + summary + body. ASCII keywords "
+                "match whole words; CJK matches substrings; /…/ is a regex"
+            )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -793,6 +830,78 @@ class FeedCommands(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @feed_remove.autocomplete("url")
+    @feed_pause.autocomplete("url")
+    @feed_resume.autocomplete("url")
+    @feed_silent.autocomplete("url")
+    @feed_status.autocomplete("url")
+    @feed_language.autocomplete("url")
+    @feed_translate.autocomplete("url")
+    @feed_filter_set.autocomplete("url")
+    @feed_filter_show.autocomplete("url")
+    @feed_filter_clear.autocomplete("url")
+    async def _url_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Suggest this channel's subscribed feed URLs for `url` parameters.
+
+        The suggestion value is the STORED feed URL — what every per-feed
+        command matches on — so users never retype a URL that add-time
+        discovery may have rewritten (an HTML page URL is stored as its
+        advertised feed URL). Deliberately not wired to /feed add or
+        /feed test: both take URLs that are new by nature.
+
+        Command-aware: pause suggests only active subs, resume only paused
+        ones (plus the literal 'all'). Best-effort — the tree suppresses
+        autocomplete exceptions instead of routing them to the command
+        error handler, so any failure degrades to an empty list here.
+        Choices are suggestions only; users can still paste anything,
+        which also covers URLs too long for a choice value.
+        """
+        try:
+            command = interaction.command.name if interaction.command else ""
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                service = SubscriptionService(session)
+                subs = await service.get_channel_subscriptions(
+                    platform="discord",
+                    channel_id=str(interaction.channel_id),
+                    include_inactive=True,
+                )
+
+            if command == "pause":
+                subs = [s for s in subs if s.is_active]
+            elif command == "resume":
+                subs = [s for s in subs if not s.is_active]
+
+            needle = current.strip().lower()
+            choices: list[app_commands.Choice[str]] = []
+            if command == "resume" and subs and needle in "all":
+                choices.append(
+                    app_commands.Choice(name="all — resume every paused feed", value="all")
+                )
+
+            for sub in subs:
+                url = sub.feed.url
+                if len(url) > AUTOCOMPLETE_MAX_LEN:
+                    continue
+                title = sub.feed.title or "Untitled"
+                if needle and needle not in title.lower() and needle not in url.lower():
+                    continue
+                name = f"{title} · {url}"
+                if len(name) > AUTOCOMPLETE_MAX_LEN:
+                    name = name[: AUTOCOMPLETE_MAX_LEN - 1] + "…"
+                choices.append(app_commands.Choice(name=name, value=url))
+                if len(choices) >= AUTOCOMPLETE_MAX_CHOICES:
+                    break
+
+            return choices
+        except Exception:
+            logger.exception("/feed url autocomplete failed")
+            return []
+
 
 class SettingsCommands(commands.Cog):
     """Settings management commands."""
@@ -813,28 +922,33 @@ class SettingsCommands(commands.Cog):
         """Set translation language for all feeds in this channel."""
         await interaction.response.defer(ephemeral=True)
 
+        normalized = normalize_language_code(language)
+        if normalized is None:
+            await interaction.followup.send(
+                f"⚠️ `{language}` doesn't look like a language code. "
+                f"Try one of: {LANGUAGE_CODE_EXAMPLES}.",
+                ephemeral=True,
+            )
+            return
+        language = normalized
+
         session_factory = get_session_factory()
         async with session_factory() as session:
             service = SubscriptionService(session)
-            success = await service.update_settings(
+            updated = await service.update_settings(
                 platform="discord",
                 channel_id=str(interaction.channel_id),
                 target_language=language,
             )
             await session.commit()
 
-        if success:
-            embed = discord.Embed(
-                title="Language Updated",
-                description=f"Translation language set to: **{language}**",
-                color=discord.Color.green(),
-            )
-        else:
-            embed = discord.Embed(
-                title="No Subscriptions",
-                description="No feeds subscribed in this channel.",
-                color=discord.Color.orange(),
-            )
+        embed = discord.Embed(
+            title="Language Updated",
+            description=f"Translation language set to: **{language}**\n"
+            f"Saved as the channel default (new subscriptions inherit it); "
+            f"{updated} existing subscription(s) updated.",
+            color=discord.Color.green(),
+        )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -858,7 +972,7 @@ class SettingsCommands(commands.Cog):
         session_factory = get_session_factory()
         async with session_factory() as session:
             service = SubscriptionService(session)
-            success = await service.update_settings(
+            updated = await service.update_settings(
                 platform="discord",
                 channel_id=str(interaction.channel_id),
                 translate=enabled,
@@ -866,18 +980,12 @@ class SettingsCommands(commands.Cog):
             await session.commit()
 
         status = "enabled" if enabled else "disabled"
-        if success:
-            embed = discord.Embed(
-                title="Translation Updated",
-                description=f"Translation **{status}** for all feeds in this channel.",
-                color=discord.Color.green(),
-            )
-        else:
-            embed = discord.Embed(
-                title="No Subscriptions",
-                description="No feeds subscribed in this channel.",
-                color=discord.Color.orange(),
-            )
+        embed = discord.Embed(
+            title="Translation Updated",
+            description=f"Translation **{status}** — saved as the channel default; "
+            f"{updated} existing subscription(s) updated.",
+            color=discord.Color.green(),
+        )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -974,9 +1082,10 @@ class DigestCommands(commands.Cog):
     )
     @app_commands.describe(
         schedule="How often to deliver: daily or weekly",
-        hour_utc="Delivery hour in UTC, 0-23",
-        weekday="Day of week for weekly schedule (0=Mon … 6=Sun)",
+        hour="Delivery hour 0-23, in `timezone` (default UTC)",
+        weekday="Day of week for weekly schedule (0=Mon … 6=Sun), in `timezone`",
         language="Target language code (e.g. zh-CN, en)",
+        timezone="IANA name (Asia/Shanghai) or fixed offset (+8, -5:30). Default UTC",
         include_filtered="Include entries that matched filter out",
         max_articles="Cap articles per digest (default 50)",
     )
@@ -990,9 +1099,10 @@ class DigestCommands(commands.Cog):
         self,
         interaction: discord.Interaction,
         schedule: app_commands.Choice[str],
-        hour_utc: app_commands.Range[int, 0, 23] = 9,
+        hour: app_commands.Range[int, 0, 23] = 9,
         weekday: app_commands.Range[int, 0, 6] | None = None,
         language: str = "zh-CN",
+        timezone: str = "UTC",
         include_filtered: bool = False,
         max_articles: app_commands.Range[int, 1, 200] = 50,
     ) -> None:
@@ -1004,6 +1114,29 @@ class DigestCommands(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        normalized_lang = normalize_language_code(language)
+        if normalized_lang is None:
+            await interaction.followup.send(
+                f"⚠️ `{language}` doesn't look like a language code. "
+                f"Try one of: {LANGUAGE_CODE_EXAMPLES}.",
+                ephemeral=True,
+            )
+            return
+        language = normalized_lang
+
+        # The schedule is given in the user's timezone but stored as UTC —
+        # converted once, here (see core/timezones.py for the DST caveat).
+        tz = parse_timezone(timezone)
+        if tz is None:
+            await interaction.followup.send(
+                f"Unrecognized timezone `{timezone}`. Use an IANA name like "
+                "`Asia/Shanghai` or a fixed offset like `+8` / `-5:30`.",
+                ephemeral=True,
+            )
+            return
+        local_weekday = int(weekday) if schedule.value == "weekly" and weekday is not None else None
+        utc_hour, utc_weekday = local_schedule_to_utc(int(hour), local_weekday, tz)
 
         from newsflow.repositories.digest_repository import (
             ChannelDigestRepository,
@@ -1018,21 +1151,25 @@ class DigestCommands(commands.Cog):
                 guild_id=(str(interaction.guild_id) if interaction.guild_id else None),
                 enabled=True,
                 schedule=schedule.value,
-                delivery_hour_utc=int(hour_utc),
-                delivery_weekday=(
-                    int(weekday) if schedule.value == "weekly" and weekday is not None else None
-                ),
+                delivery_hour_utc=utc_hour,
+                delivery_weekday=utc_weekday,
                 language=language,
                 include_filtered=bool(include_filtered),
                 max_articles=int(max_articles),
             )
             await session.commit()
 
+        local_desc = f"{int(hour):02d}:00 {timezone}" + (
+            f" (weekday {local_weekday})" if local_weekday is not None else ""
+        )
+        utc_desc = f"{utc_hour:02d}:00 UTC" + (
+            f" (weekday {utc_weekday})" if utc_weekday is not None else ""
+        )
         lines = [
             "✅ Digest enabled",
-            f"**Schedule:** {schedule.value}"
-            + (f" (weekday {weekday})" if schedule.value == "weekly" else ""),
-            f"**Delivery time:** {hour_utc:02d}:00 UTC",
+            f"**Schedule:** {schedule.value}",
+            f"**Delivery time:** {local_desc}"
+            + (f" = {utc_desc}" if utc_desc != local_desc else ""),
             f"**Language:** {language}",
             f"**Max articles:** {max_articles}",
             f"**Include filtered:** {'yes' if include_filtered else 'no'}",

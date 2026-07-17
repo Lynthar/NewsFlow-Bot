@@ -81,7 +81,7 @@ def test_list_keyboard_last_page_has_prev_only():
 def test_start_menu_keyboard_callback_data():
     kb = _start_menu_keyboard()
     datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
-    assert datas == ["menu:list", "menu:status", "menu:help"]
+    assert datas == ["menu:list", "menu:manage", "menu:status", "menu:help"]
 
 
 # --- shared list renderer --------------------------------------------------

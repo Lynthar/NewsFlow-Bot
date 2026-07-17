@@ -35,8 +35,8 @@ broad or general categories/domains.
 4. No speculation. No facts beyond what the articles say.
 5. Open with one overview sentence; optionally close with one factual \
 cross-cluster pattern (no opinion).
-6. End with the source list, one per line: `[N] Title — <https://link>`. \
-Keep the angle brackets — they suppress Discord link previews.
+6. Do NOT write a source list — one is appended automatically from the \
+article numbers you cite. Never restate URLs in the text.
 7. Plain Markdown only. No preamble, no meta-commentary.
 8. Target 1500-3500 characters total. Scannable in under 2 minutes."""
 
@@ -133,7 +133,11 @@ class OpenAIDigestProvider(SummarizationProvider):
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
-                max_completion_tokens=2000,
+                # Body-only budget. 2000 was self-contradictory when the
+                # prompt also demanded a 50-entry source list; the list is
+                # now appended in code (DigestService), but 3500 chars of
+                # CJK body alone can exceed 2000 tokens.
+                max_completion_tokens=4000,
             )
             text = (response.choices[0].message.content or "").strip()
             if not text:

@@ -172,13 +172,16 @@ class SubscriptionRepository:
         feed_id: int,
         guild_id: str | None = None,
         silent: bool = False,
+        translate: bool = True,
+        target_language: str = "zh-CN",
     ) -> tuple[Subscription, bool]:
         """
         Get existing subscription or create new one.
 
-        `silent` is applied only when a new subscription is created. An
-        existing subscription's silent state is preserved (re-subscribing
-        won't silently flip it back).
+        `silent` / `translate` / `target_language` are applied only when
+        a new subscription is created (typically the channel defaults —
+        see ChannelSettings). An existing subscription's preferences are
+        preserved: re-subscribing won't flip them back.
 
         Returns:
             Tuple of (subscription, created)
@@ -198,6 +201,8 @@ class SubscriptionRepository:
             feed_id=feed_id,
             guild_id=guild_id,
             silent=silent,
+            translate=translate,
+            target_language=target_language,
         )
         return subscription, True
 

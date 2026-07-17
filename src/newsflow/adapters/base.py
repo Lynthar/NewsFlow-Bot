@@ -180,6 +180,31 @@ class BaseAdapter(ABC):
         sent = await self.send_text(channel_id, text)
         return sent, None
 
+    async def send_digest_text(
+        self,
+        channel_id: str,
+        text: str,
+    ) -> bool:
+        """Send digest text (the dispatcher's digest delivery entry point).
+
+        Digest content is plain Markdown. The default passthrough to
+        `send_text` is right for platforms that render Markdown natively
+        (Discord) or consume raw text (webhook). Adapters whose platform
+        needs re-rendering override this — Telegram converts to HTML and
+        disables link previews.
+        """
+        return await self.send_text(channel_id, text)
+
+    async def send_digest_text_pinned(
+        self,
+        channel_id: str,
+        text: str,
+    ) -> tuple[bool, str | None]:
+        """Digest counterpart of `send_text_pinned`; same return contract.
+        Override together with `send_digest_text` when the platform needs
+        digest-specific rendering."""
+        return await self.send_text_pinned(channel_id, text)
+
     async def unpin_message(
         self,
         channel_id: str,

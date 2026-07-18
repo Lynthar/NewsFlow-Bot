@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "newsflow-bot"
-version = "0.9.1"
+version = "0.9.2"
 description = "Self-hosted RSS push backend for Discord and Telegram bots with translation, keyword filtering, and AI-generated digests"
 authors = ["Lynthar <6722766+Lynthar@users.noreply.github.com>"]
 license = "MIT"

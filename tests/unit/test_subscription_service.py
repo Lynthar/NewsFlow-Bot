@@ -28,7 +28,9 @@ async def test_pause_subscription_marks_inactive(session):
     svc = SubscriptionService(session)
 
     result = await svc.pause_subscription(
-        platform="discord", channel_id="c1", feed_url=FEED_URL,
+        platform="discord",
+        channel_id="c1",
+        feed_url=FEED_URL,
     )
 
     assert result.success is True
@@ -66,9 +68,7 @@ async def test_resume_subscription_reactivates(session):
     await session.flush()
 
     svc = SubscriptionService(session)
-    result = await svc.resume_subscription(
-        platform="discord", channel_id="c1", feed_url=FEED_URL
-    )
+    result = await svc.resume_subscription(platform="discord", channel_id="c1", feed_url=FEED_URL)
 
     assert result.success is True
     assert sub.is_active is True
@@ -87,9 +87,7 @@ async def test_resume_revives_auto_disabled_feed(session):
     await session.flush()
 
     svc = SubscriptionService(session)
-    result = await svc.resume_subscription(
-        platform="discord", channel_id="c1", feed_url=FEED_URL
-    )
+    result = await svc.resume_subscription(platform="discord", channel_id="c1", feed_url=FEED_URL)
 
     assert result.success is True
     assert sub.is_active is True
@@ -108,9 +106,7 @@ async def test_resume_leaves_healthy_feed_untouched(session):
     await session.flush()
 
     svc = SubscriptionService(session)
-    result = await svc.resume_subscription(
-        platform="discord", channel_id="c1", feed_url=FEED_URL
-    )
+    result = await svc.resume_subscription(platform="discord", channel_id="c1", feed_url=FEED_URL)
 
     assert result.success is True
     assert feed.error_count == 3
@@ -189,10 +185,8 @@ async def test_set_feed_language_updates_only_named_subscription(session):
     from sqlalchemy import select
 
     rows = (
-        await session.execute(
-            select(Subscription).order_by(Subscription.feed_id)
-        )
-    ).scalars().all()
+        (await session.execute(select(Subscription).order_by(Subscription.feed_id))).scalars().all()
+    )
     assert rows[0].target_language == "ja"  # A updated
     assert rows[1].target_language == "zh-CN"  # B untouched
 
@@ -394,7 +388,10 @@ async def test_set_feed_silent_toggles(session):
     svc = SubscriptionService(session)
 
     result = await svc.set_feed_silent(
-        platform="discord", channel_id="c1", feed_url=FEED_URL, silent=True,
+        platform="discord",
+        channel_id="c1",
+        feed_url=FEED_URL,
+        silent=True,
     )
 
     assert result.success is True
@@ -433,9 +430,7 @@ async def test_set_channel_silent_bulk_toggles(session):
     await session.flush()
 
     svc = SubscriptionService(session)
-    result = await svc.set_channel_silent(
-        platform="discord", channel_id="c1", silent=True
-    )
+    result = await svc.set_channel_silent(platform="discord", channel_id="c1", silent=True)
 
     assert result.success is True
     assert "2 subscription" in result.message
@@ -446,9 +441,7 @@ async def test_set_channel_silent_no_op_when_already_in_state(session):
     nothing, and records the preference as the channel default so
     future subscriptions inherit it."""
     svc = SubscriptionService(session)
-    result = await svc.set_channel_silent(
-        platform="discord", channel_id="empty", silent=True
-    )
+    result = await svc.set_channel_silent(platform="discord", channel_id="empty", silent=True)
     assert result.success is True
     assert "default" in result.message.lower()
     defaults = await svc.channel_settings_repo.get("discord", "empty")
@@ -562,9 +555,7 @@ async def test_management_commands_resolve_source_shortcut(session):
     assert detail is not None and detail.feed.id == feed.id
 
     # and unsubscribe finally removes it via the shortcut
-    removed = await svc.unsubscribe(
-        platform="discord", channel_id="c", feed_url="gh:owner/repo"
-    )
+    removed = await svc.unsubscribe(platform="discord", channel_id="c", feed_url="gh:owner/repo")
     assert removed.success is True
 
 
@@ -629,9 +620,7 @@ async def test_get_channel_subscriptions_lists_paused_when_asked(session):
     active_only = await svc.get_channel_subscriptions("discord", "c1")
     assert [s.id for s in active_only] == [sub_a.id]
 
-    everything = await svc.get_channel_subscriptions(
-        "discord", "c1", include_inactive=True
-    )
+    everything = await svc.get_channel_subscriptions("discord", "c1", include_inactive=True)
     assert [s.id for s in everything] == [sub_a.id, sub_b.id]  # ordered by id
 
 
@@ -652,9 +641,7 @@ async def test_update_settings_reaches_paused_subscriptions(session):
     _, sub_b, *_ = await _seed_two_subs(session)
     svc = SubscriptionService(session)
 
-    updated = await svc.update_settings(
-        platform="discord", channel_id="c1", target_language="ja"
-    )
+    updated = await svc.update_settings(platform="discord", channel_id="c1", target_language="ja")
 
     assert updated == 2  # both subs, paused included
     assert sub_b.target_language == "ja"

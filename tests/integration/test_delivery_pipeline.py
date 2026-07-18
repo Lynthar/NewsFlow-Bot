@@ -66,7 +66,7 @@ def _shared_session_factory(session):
 
     # get_session_factory() returns the factory; the caller then calls that
     # factory to get the context manager — hence the double lambda.
-    return lambda: (lambda: _Ctx())
+    return lambda: lambda: _Ctx()
 
 
 def _fake_settings() -> MagicMock:

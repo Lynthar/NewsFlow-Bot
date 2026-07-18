@@ -4,7 +4,7 @@ plus the published_at age filter that stops feeds from re-serving their
 archive.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from newsflow.models.feed import Feed, FeedEntry
@@ -71,10 +71,10 @@ async def test_seed_sent_entries_marks_all_existing(session):
     from newsflow.models.subscription import SentEntry
 
     rows = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub.id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub.id)))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 3
     assert all(r.seeded is True for r in rows)
     assert all(r.was_filtered is False for r in rows)
@@ -97,7 +97,7 @@ async def test_seed_sent_entries_keep_latest_preserves_n_newest(session):
     session.add(feed)
     await session.flush()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # 3 entries, newest last by hours_ago
     for i, hours_ago in enumerate([3, 2, 1]):
         session.add(
@@ -164,19 +164,25 @@ async def test_unsent_filters_out_old_published_entries(session):
     session.add(feed)
     await session.flush()
 
-    now = datetime.now(timezone.utc)
-    session.add_all([
-        FeedEntry(
-            feed_id=feed.id, guid="recent",
-            title="recent", link="https://example.com/recent",
-            published_at=now - timedelta(days=3),
-        ),
-        FeedEntry(
-            feed_id=feed.id, guid="ancient",
-            title="ancient", link="https://example.com/ancient",
-            published_at=now - timedelta(days=400),
-        ),
-    ])
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            FeedEntry(
+                feed_id=feed.id,
+                guid="recent",
+                title="recent",
+                link="https://example.com/recent",
+                published_at=now - timedelta(days=3),
+            ),
+            FeedEntry(
+                feed_id=feed.id,
+                guid="ancient",
+                title="ancient",
+                link="https://example.com/ancient",
+                published_at=now - timedelta(days=400),
+            ),
+        ]
+    )
     sub = await _make_subscription(session, feed.id)
     repo = SubscriptionRepository(session)
 
@@ -196,8 +202,10 @@ async def test_unsent_includes_entries_with_null_published_at(session):
 
     session.add(
         FeedEntry(
-            feed_id=feed.id, guid="no-date",
-            title="no date", link="https://example.com/no-date",
+            feed_id=feed.id,
+            guid="no-date",
+            title="no date",
+            link="https://example.com/no-date",
             published_at=None,
         )
     )
@@ -218,11 +226,13 @@ async def test_unsent_zero_disables_age_filter(session):
     session.add(feed)
     await session.flush()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     session.add(
         FeedEntry(
-            feed_id=feed.id, guid="ancient",
-            title="ancient", link="https://example.com/ancient",
+            feed_id=feed.id,
+            guid="ancient",
+            title="ancient",
+            link="https://example.com/ancient",
             published_at=now - timedelta(days=400),
         )
     )
@@ -257,9 +267,7 @@ async def test_set_silent_flips_single_subscription(session):
 
 async def test_set_silent_returns_false_when_no_match(session):
     repo = SubscriptionRepository(session)
-    flipped = await repo.set_silent(
-        platform="discord", channel_id="nope", feed_id=999, silent=True
-    )
+    flipped = await repo.set_silent(platform="discord", channel_id="nope", feed_id=999, silent=True)
     assert flipped is False
 
 
@@ -337,9 +345,7 @@ async def test_set_channel_silent_flips_only_changed_rows(session):
     await session.flush()
 
     repo = SubscriptionRepository(session)
-    flipped = await repo.set_channel_silent(
-        platform="discord", channel_id="chan", silent=True
-    )
+    flipped = await repo.set_channel_silent(platform="discord", channel_id="chan", silent=True)
     assert flipped == 1
 
     await session.refresh(already_silent)
@@ -369,7 +375,7 @@ async def test_cleanup_rediscover_no_longer_redelivers(session):
         guid="reborn",
         title="Article",
         link="https://example.com/a",
-        published_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        published_at=datetime.now(UTC) - timedelta(hours=1),
     )
     session.add(entry)
     await session.flush()
@@ -407,7 +413,7 @@ async def test_cleanup_rediscover_no_longer_redelivers(session):
         guid="reborn",
         title="Article",
         link="https://example.com/a",
-        published_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        published_at=datetime.now(UTC) - timedelta(hours=1),
     )
     session.add(reborn)
     await session.flush()
@@ -427,19 +433,25 @@ async def test_unsent_age_filter_boundary(session):
     session.add(feed)
     await session.flush()
 
-    now = datetime.now(timezone.utc)
-    session.add_all([
-        FeedEntry(
-            feed_id=feed.id, guid="inside",
-            title="inside", link="https://example.com/inside",
-            published_at=now - timedelta(days=13.9),
-        ),
-        FeedEntry(
-            feed_id=feed.id, guid="outside",
-            title="outside", link="https://example.com/outside",
-            published_at=now - timedelta(days=14.1),
-        ),
-    ])
+    now = datetime.now(UTC)
+    session.add_all(
+        [
+            FeedEntry(
+                feed_id=feed.id,
+                guid="inside",
+                title="inside",
+                link="https://example.com/inside",
+                published_at=now - timedelta(days=13.9),
+            ),
+            FeedEntry(
+                feed_id=feed.id,
+                guid="outside",
+                title="outside",
+                link="https://example.com/outside",
+                published_at=now - timedelta(days=14.1),
+            ),
+        ]
+    )
     sub = await _make_subscription(session, feed.id)
     repo = SubscriptionRepository(session)
 

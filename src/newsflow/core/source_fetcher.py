@@ -46,8 +46,7 @@ class SourceFetcher(Protocol):
     failures — return ``FetchResult(success=False, error=...)`` instead, so one
     bad source can't abort the dispatch cycle."""
 
-    async def fetch(self, req: SourceRequest) -> FetchResult:
-        ...
+    async def fetch(self, req: SourceRequest) -> FetchResult: ...
 
 
 _REGISTRY: dict[str, SourceFetcher] = {}

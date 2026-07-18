@@ -10,7 +10,7 @@ skew). _create_embed must coerce naive values to UTC before handing
 them to discord.py.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from newsflow.adapters.base import Message
 from newsflow.adapters.discord.bot import DiscordAdapter
@@ -18,8 +18,12 @@ from newsflow.adapters.discord.bot import DiscordAdapter
 
 def _msg(published_at):
     return Message(
-        title="t", summary="s", link="https://x.test/a",
-        source="x", published_at=published_at, image_url=None,
+        title="t",
+        summary="s",
+        link="https://x.test/a",
+        source="x",
+        published_at=published_at,
+        image_url=None,
     )
 
 
@@ -29,14 +33,14 @@ def test_create_embed_coerces_naive_published_at_to_utc():
     # construction (which spins up a discord.py Bot) by passing None.
     embed = DiscordAdapter._create_embed(None, _msg(naive))
     assert embed.timestamp is not None
-    assert embed.timestamp.tzinfo is timezone.utc
+    assert embed.timestamp.tzinfo is UTC
     # And the wall-clock time is preserved (we treat naive as UTC, not
     # as host-local — astimezone() would have shifted it).
     assert embed.timestamp.replace(tzinfo=None) == naive
 
 
 def test_create_embed_passes_through_aware_published_at():
-    aware = datetime(2026, 4, 24, 12, 0, 0, tzinfo=timezone.utc)
+    aware = datetime(2026, 4, 24, 12, 0, 0, tzinfo=UTC)
     embed = DiscordAdapter._create_embed(None, _msg(aware))
     assert embed.timestamp == aware
 

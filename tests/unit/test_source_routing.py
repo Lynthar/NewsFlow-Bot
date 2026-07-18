@@ -40,9 +40,7 @@ async def test_feed_stores_config_json(session):
 
 
 async def test_fetch_all_feeds_routes_by_source_type(session, monkeypatch):
-    rss = Feed(
-        url="https://ex.com/rss", source_type="rss", is_active=True, error_count=0
-    )
+    rss = Feed(url="https://ex.com/rss", source_type="rss", is_active=True, error_count=0)
     api = Feed(
         url="https://ex.com/api",
         source_type="json_api",
@@ -57,9 +55,7 @@ async def test_fetch_all_feeds_routes_by_source_type(session, monkeypatch):
     # RSS still goes through the concurrent batch fetcher.
     svc.fetcher = SimpleNamespace(
         fetch_multiple=AsyncMock(
-            return_value=[
-                FetchResult(url=rss.url, success=True, entries=[], not_modified=True)
-            ]
+            return_value=[FetchResult(url=rss.url, success=True, entries=[], not_modified=True)]
         )
     )
 
@@ -82,9 +78,7 @@ async def test_fetch_all_feeds_routes_by_source_type(session, monkeypatch):
 
 
 async def test_unregistered_source_type_fails_gracefully(session):
-    feed = Feed(
-        url="https://ex.com/x", source_type="mystery", is_active=True, error_count=0
-    )
+    feed = Feed(url="https://ex.com/x", source_type="mystery", is_active=True, error_count=0)
     session.add(feed)
     await session.commit()
 
@@ -101,9 +95,7 @@ async def test_unregistered_source_type_fails_gracefully(session):
 async def test_push_source_is_not_fetched(session):
     # webhook_inbound receives entries via the API, so the fetch loop must skip
     # it entirely — not route it to a (missing) fetcher and mark it errored.
-    inbound = Feed(
-        url="ci-events", source_type="webhook_inbound", is_active=True, error_count=0
-    )
+    inbound = Feed(url="ci-events", source_type="webhook_inbound", is_active=True, error_count=0)
     session.add(inbound)
     await session.commit()
 
@@ -158,9 +150,7 @@ async def test_fetch_and_store_routes_non_rss_to_source_fetcher(session, monkeyp
 async def test_fetch_and_store_push_source_is_noop(session):
     """A webhook_inbound feed has no fetcher — single-feed refresh is a no-op
     success (entries arrive via /api/ingest), never an RSS fetch or an error."""
-    inbound = Feed(
-        url="ci-events", source_type="webhook_inbound", is_active=True, error_count=0
-    )
+    inbound = Feed(url="ci-events", source_type="webhook_inbound", is_active=True, error_count=0)
     session.add(inbound)
     await session.commit()
 

@@ -88,7 +88,7 @@ class JsonApiSourceFetcher:
         except ImportError:
             return _fail(
                 req.url,
-                "json_api source needs the 'source-json' extra " "(pip install jsonpath-ng)",
+                "json_api source needs the 'source-json' extra (pip install jsonpath-ng)",
             )
 
         try:

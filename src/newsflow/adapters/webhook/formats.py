@@ -198,7 +198,7 @@ def _to_wecom(m: Message) -> WireRequest:
     summary = m.display_summary or ""
     if len(summary) > 1500:
         summary = summary[:1497] + "…"
-    md = f"### {title}\n" f"> {summary}\n\n" f"[Read on {m.source}]({m.link})"
+    md = f"### {title}\n> {summary}\n\n[Read on {m.source}]({m.link})"
     payload = {"msgtype": "markdown", "markdown": {"content": md}}
     return _json(payload)
 

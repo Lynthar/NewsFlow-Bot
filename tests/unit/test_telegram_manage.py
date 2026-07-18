@@ -7,6 +7,8 @@ I/O, and the mutating-press permission gate."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from telegram.constants import ChatType
+
 from newsflow.adapters.telegram.bot import (
     _admin_cache,
     _callback_user_may_manage,
@@ -15,7 +17,6 @@ from newsflow.adapters.telegram.bot import (
     _manage_list_view,
     _on_manage_callback,
 )
-from telegram.constants import ChatType
 
 
 def _mock_sub(i: int = 1, *, active=True, silent=False, chat_id="555"):

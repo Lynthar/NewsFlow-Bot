@@ -108,8 +108,7 @@ class OpenAIDigestProvider(SummarizationProvider):
             system_prompt = self.system_prompt_template.format(window=time_window_desc, lang=lang)
         except (KeyError, IndexError) as e:
             logger.warning(
-                f"digest_system_prompt references unknown placeholder "
-                f"{e}; falling back to default"
+                f"digest_system_prompt references unknown placeholder {e}; falling back to default"
             )
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(window=time_window_desc, lang=lang)
         user_prompt = (

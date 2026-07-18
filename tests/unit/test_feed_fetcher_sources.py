@@ -44,9 +44,7 @@ def test_parse_json_feed_maps_items():
             ],
         }
     )
-    res = _f()._parse_json_feed(
-        body, "application/feed+json", "https://ex.com/feed.json"
-    )
+    res = _f()._parse_json_feed(body, "application/feed+json", "https://ex.com/feed.json")
     assert res is not None
     entries, title = res
     assert title == "My JSON Feed"
@@ -62,10 +60,7 @@ def test_parse_json_feed_maps_items():
 
 def test_parse_json_feed_sniffs_without_content_type():
     # A server that mislabels the content-type still works via the sniff.
-    body = (
-        '{"version":"https://jsonfeed.org/version/1.1",'
-        '"items":[{"id":"x","url":"https://e/x"}]}'
-    )
+    body = '{"version":"https://jsonfeed.org/version/1.1","items":[{"id":"x","url":"https://e/x"}]}'
     res = _f()._parse_json_feed(body, "text/plain", "https://e/f")
     assert res is not None
     assert res[0][0]["guid"] == "x"

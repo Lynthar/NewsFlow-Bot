@@ -7,7 +7,7 @@ every feed went quiet (304 / no new items) the stranded entry was never retried
 — and could age past the publish-age cutoff and vanish silently.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import select
@@ -32,9 +32,7 @@ class _Ctx:
 
 
 async def test_backlog_delivered_when_cycle_has_no_new_entries(session, monkeypatch):
-    feed = Feed(
-        url="https://example.com/feed", title="Example", is_active=True, error_count=0
-    )
+    feed = Feed(url="https://example.com/feed", title="Example", is_active=True, error_count=0)
     session.add(feed)
     await session.flush()
 
@@ -45,7 +43,7 @@ async def test_backlog_delivered_when_cycle_has_no_new_entries(session, monkeypa
         guid="stranded",
         title="Stranded article",
         link="https://example.com/stranded",
-        published_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        published_at=datetime.now(UTC) - timedelta(hours=1),
     )
     session.add(entry)
 
@@ -63,21 +61,15 @@ async def test_backlog_delivered_when_cycle_has_no_new_entries(session, monkeypa
 
     monkeypatch.setattr(
         "newsflow.services.dispatcher.get_session_factory",
-        lambda: (lambda: _Ctx(session)),
+        lambda: lambda: _Ctx(session),
     )
 
     # This cycle's fetch produces NO new entries (304 Not Modified).
     mock_fetcher = MagicMock()
     mock_fetcher.fetch_multiple = AsyncMock(
-        return_value=[
-            FetchResult(
-                url=feed.url, success=True, entries=[], not_modified=True
-            )
-        ]
+        return_value=[FetchResult(url=feed.url, success=True, entries=[], not_modified=True)]
     )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher
-    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher)
 
     adapter = MagicMock()
     adapter.send_message = AsyncMock(return_value=True)
@@ -90,15 +82,11 @@ async def test_backlog_delivered_when_cycle_has_no_new_entries(session, monkeypa
     fake_settings.webhooks_enabled = False
     fake_settings.fetch_interval_minutes = 60
     fake_settings.data_dir = MagicMock()
-    with patch(
-        "newsflow.services.dispatcher.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.dispatcher.get_settings", return_value=fake_settings):
         dispatcher = Dispatcher()
     dispatcher.register_adapter("discord", adapter)
 
-    with patch(
-        "newsflow.services.feed_service.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.feed_service.get_settings", return_value=fake_settings):
         result = await dispatcher.dispatch_once()
 
     # No new entries surfaced this cycle...
@@ -108,9 +96,9 @@ async def test_backlog_delivered_when_cycle_has_no_new_entries(session, monkeypa
     assert result.messages_sent == 1
 
     rows = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub.id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub.id)))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].guid == "stranded"

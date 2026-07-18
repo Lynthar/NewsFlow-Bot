@@ -62,9 +62,7 @@ async def test_partial_translation_is_not_cached(session):
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
     ):
-        title_t, summary_t = await d._translate_entry(
-            entry, "zh-CN", session, "World body text"
-        )
+        title_t, summary_t = await d._translate_entry(entry, "zh-CN", session, "World body text")
     await session.commit()
 
     assert title_t == "你好"
@@ -95,9 +93,7 @@ async def test_full_translation_is_cached(session):
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
     ):
-        title_t, summary_t = await d._translate_entry(
-            entry, "zh-CN", session, "World body text"
-        )
+        title_t, summary_t = await d._translate_entry(entry, "zh-CN", session, "World body text")
     await session.commit()
 
     assert title_t == "你好"
@@ -215,9 +211,7 @@ async def test_script_shortcut_skips_provider_entirely(session):
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
     ):
-        title_t, summary_t = await d._translate_entry(
-            entry, "zh-CN", session, entry.summary
-        )
+        title_t, summary_t = await d._translate_entry(entry, "zh-CN", session, entry.summary)
 
     assert (title_t, summary_t) == (None, None)
     fake_service.translate.assert_not_awaited()
@@ -238,9 +232,7 @@ async def test_script_shortcut_respects_variant_boundary(session):
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
     ):
-        title_t, summary_t = await d._translate_entry(
-            entry, "zh-TW", session, entry.summary
-        )
+        title_t, summary_t = await d._translate_entry(entry, "zh-TW", session, entry.summary)
 
     assert title_t and title_t.startswith("譯:")
     assert fake_service.translate.await_count == 2
@@ -254,9 +246,7 @@ async def test_provider_detected_same_language_skips_summary_and_caches(session)
 
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(
-        return_value=TranslationResult(
-            success=True, translated_text="Hello.", source_language="EN"
-        )
+        return_value=TranslationResult(success=True, translated_text="Hello.", source_language="EN")
     )
 
     d = _dispatcher()
@@ -264,9 +254,7 @@ async def test_provider_detected_same_language_skips_summary_and_caches(session)
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
     ):
-        title_t, summary_t = await d._translate_entry(
-            entry, "en", session, "World body text"
-        )
+        title_t, summary_t = await d._translate_entry(entry, "en", session, "World body text")
     await session.commit()
 
     assert (title_t, summary_t) == (None, None)
@@ -286,9 +274,7 @@ async def test_provider_detection_never_shortcuts_zh(session):
     entry = await _make_entry(session)  # latin text, script check won't fire
 
     def fake_translate(text, target_lang, source_lang=None):
-        return TranslationResult(
-            success=True, translated_text=f"译:{text}", source_language="ZH"
-        )
+        return TranslationResult(success=True, translated_text=f"译:{text}", source_language="ZH")
 
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(side_effect=fake_translate)
@@ -298,9 +284,7 @@ async def test_provider_detection_never_shortcuts_zh(session):
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
     ):
-        title_t, summary_t = await d._translate_entry(
-            entry, "zh-CN", session, "World body text"
-        )
+        title_t, summary_t = await d._translate_entry(entry, "zh-CN", session, "World body text")
 
     assert title_t == "译:Hello"
     assert summary_t == "译:World body text"

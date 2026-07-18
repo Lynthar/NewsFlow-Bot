@@ -6,6 +6,8 @@ non-owned subscriptions are never touched.
 """
 
 import pytest
+from sqlalchemy import select
+
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.services.source_sync import (
@@ -15,7 +17,6 @@ from newsflow.services.source_sync import (
     _reconcile,
     parse_sources_yaml,
 )
-from sqlalchemy import select
 
 # ── parsing ──────────────────────────────────────────────────────────────────
 
@@ -84,9 +85,7 @@ def _src(url: str = "https://api.example.com/items", subs=None) -> SourceCfg:
         type="json_api",
         config={"items": "$.data[*]", "guid": "id"},
         subscribers=(
-            subs
-            if subs is not None
-            else [SubscriberCfg(platform="discord", channel="123")]
+            subs if subs is not None else [SubscriberCfg(platform="discord", channel="123")]
         ),
     )
 
@@ -134,9 +133,7 @@ async def test_reconcile_updates_config_and_sub_settings(session):
         type="json_api",
         config={"items": "$.results[*]", "guid": "uid"},
         subscribers=[
-            SubscriberCfg(
-                platform="discord", channel="123", translate=True, language="en"
-            )
+            SubscriberCfg(platform="discord", channel="123", translate=True, language="en")
         ],
     )
     await _reconcile(session, [updated])
@@ -173,9 +170,7 @@ async def test_reconcile_removes_dropped_subscriber(session):
     assert len(await _subs(session)) == 2
 
     # Drop the telegram subscriber but keep the source.
-    await _reconcile(
-        session, [_src(subs=[SubscriberCfg(platform="discord", channel="123")])]
-    )
+    await _reconcile(session, [_src(subs=[SubscriberCfg(platform="discord", channel="123")])])
     await session.commit()
 
     subs = await _subs(session)
@@ -302,9 +297,13 @@ async def test_reconcile_leaves_non_owned_sub_settings_untouched(session):
     # The file now declares a discord/123 subscriber with different settings.
     await _reconcile(
         session,
-        [_src(subs=[SubscriberCfg(
-            platform="discord", channel="123", translate=True, language="en"
-        )])],
+        [
+            _src(
+                subs=[
+                    SubscriberCfg(platform="discord", channel="123", translate=True, language="en")
+                ]
+            )
+        ],
     )
     await session.commit()
 

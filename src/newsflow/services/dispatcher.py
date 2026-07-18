@@ -46,26 +46,21 @@ class MessageSender(Protocol):
     + unpin_message (for digest delivery — BaseAdapter defaults degrade to
     plain send_text without pin), and is_connected (for HEALTHCHECK)."""
 
-    async def send_message(self, channel_id: str, message: Message) -> bool:
-        ...
+    async def send_message(self, channel_id: str, message: Message) -> bool: ...
 
-    async def send_text(self, channel_id: str, text: str) -> bool:
-        ...
+    async def send_text(self, channel_id: str, text: str) -> bool: ...
 
-    async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
-        ...
+    async def send_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]: ...
 
-    async def send_digest_text(self, channel_id: str, text: str) -> bool:
-        ...
+    async def send_digest_text(self, channel_id: str, text: str) -> bool: ...
 
-    async def send_digest_text_pinned(self, channel_id: str, text: str) -> tuple[bool, str | None]:
-        ...
+    async def send_digest_text_pinned(
+        self, channel_id: str, text: str
+    ) -> tuple[bool, str | None]: ...
 
-    async def unpin_message(self, channel_id: str, message_id: str) -> bool:
-        ...
+    async def unpin_message(self, channel_id: str, message_id: str) -> bool: ...
 
-    def is_connected(self) -> bool:
-        ...
+    def is_connected(self) -> bool: ...
 
 
 @dataclass
@@ -149,7 +144,7 @@ class Dispatcher:
         try:
             await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"Timed out waiting for adapters; missing: {self._expected_platforms}")
             return False
 
@@ -1084,7 +1079,7 @@ class Dispatcher:
                         f"config(s)"
                     )
                 except Exception:
-                    logger.exception(f"Failed to migrate channel " f"{platform}/{old_channel_id}")
+                    logger.exception(f"Failed to migrate channel {platform}/{old_channel_id}")
             except ChannelGoneError as e:
                 # Digest target channel is gone. Disable the digest config
                 # AND any remaining active subs pointing at this channel
@@ -1121,7 +1116,7 @@ class Dispatcher:
                     )
             except Exception:
                 logger.exception(
-                    f"Digest delivery failed for " f"{config.platform}/{config.platform_channel_id}"
+                    f"Digest delivery failed for {config.platform}/{config.platform_channel_id}"
                 )
 
     async def run_cleanup_loop(self, heartbeat_tick_seconds: int = 300) -> None:

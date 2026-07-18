@@ -346,8 +346,7 @@ async def _sync_subscriptions(session: AsyncSession, config: WebhookConfig) -> N
     for sub in result.scalars().all():
         if (sub.platform_channel_id, sub.feed_id) not in desired:
             logger.info(
-                f"webhook_sync: unsubscribing {sub.platform_channel_id!r} → "
-                f"feed_id={sub.feed_id}"
+                f"webhook_sync: unsubscribing {sub.platform_channel_id!r} → feed_id={sub.feed_id}"
             )
             await session.delete(sub)
 

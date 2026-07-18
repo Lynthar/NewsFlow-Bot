@@ -1241,8 +1241,8 @@ class DigestCommands(commands.Cog):
                 f"**Delivery time:** {config.delivery_hour_utc:02d}:00 UTC",
                 f"**Language:** {config.language}",
                 f"**Max articles:** {config.max_articles}",
-                f"**Include filtered:** " f"{'yes' if config.include_filtered else 'no'}",
-                f"**Last delivered:** " f"{relative_time(config.last_delivered_at)}",
+                f"**Include filtered:** {'yes' if config.include_filtered else 'no'}",
+                f"**Last delivered:** {relative_time(config.last_delivered_at)}",
             ]
             embed = discord.Embed(
                 title="Digest Configuration",
@@ -1485,7 +1485,7 @@ class DiscordAdapter(BaseAdapter):
             return True, str(msg.id)
         except discord.Forbidden:
             logger.warning(
-                f"Cannot pin in channel {channel_id}: bot needs " f"'Manage Messages' permission"
+                f"Cannot pin in channel {channel_id}: bot needs 'Manage Messages' permission"
             )
             return True, None
         except discord.HTTPException as e:
@@ -1509,11 +1509,11 @@ class DiscordAdapter(BaseAdapter):
             return True
         except discord.Forbidden:
             logger.warning(
-                f"Cannot unpin in channel {channel_id}: bot needs " f"'Manage Messages' permission"
+                f"Cannot unpin in channel {channel_id}: bot needs 'Manage Messages' permission"
             )
             return False
         except Exception as e:
-            logger.warning(f"Unpin failed for message {message_id} in " f"{channel_id}: {e}")
+            logger.warning(f"Unpin failed for message {message_id} in {channel_id}: {e}")
             return False
 
     def _create_embed(self, message: Message) -> discord.Embed:

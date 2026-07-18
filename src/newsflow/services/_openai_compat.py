@@ -48,9 +48,7 @@ async def chat_completions_create(client: Any, **kwargs: Any) -> Any:
             and "max_completion_tokens" in kwargs
         ):
             # The server speaks the old dialect. Swap and retry.
-            logger.info(
-                "OpenAI endpoint rejected max_completion_tokens; " "retrying with max_tokens"
-            )
+            logger.info("OpenAI endpoint rejected max_completion_tokens; retrying with max_tokens")
             kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")
             return await client.chat.completions.create(**kwargs)
         raise

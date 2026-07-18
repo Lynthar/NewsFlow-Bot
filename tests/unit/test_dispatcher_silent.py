@@ -6,7 +6,7 @@ them up via SentEntry. The post-subscribe preview path bypasses silent
 so the user gets one confirmation article on /add.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import select
@@ -36,7 +36,7 @@ async def _seed_recent_entry(session, feed: Feed, guid: str, title: str) -> Feed
         guid=guid,
         title=title,
         link=f"https://example.com/{guid}",
-        published_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        published_at=datetime.now(UTC) - timedelta(hours=1),
     )
     session.add(entry)
     await session.flush()
@@ -80,10 +80,10 @@ async def test_silent_subscription_marks_sent_without_delivery(session):
 
     # But SentEntry was persisted with was_filtered=False so digest sees it.
     rows = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub.id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub.id)))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].feed_id == entry.feed_id
     assert rows[0].guid == entry.guid
@@ -152,9 +152,7 @@ async def test_bypass_silent_delivers_one_article(session):
     d = _dispatcher_with_adapter("discord", adapter)
     sub_repo = SubscriptionRepository(session)
 
-    sent_count = await d._dispatch_to_subscription(
-        session, sub, sub_repo, bypass_silent=True
-    )
+    sent_count = await d._dispatch_to_subscription(session, sub, sub_repo, bypass_silent=True)
     await session.commit()
 
     assert sent_count == 1
@@ -201,10 +199,10 @@ async def test_silent_respects_keyword_filter(session):
 
     # Both entries have SentEntry rows, but with different was_filtered.
     rows = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub.id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub.id)))
+        .scalars()
+        .all()
+    )
     by_guid = {r.guid: r for r in rows}
     assert by_guid[pythony.guid].was_filtered is False  # silent path
-    assert by_guid[jsy.guid].was_filtered is True       # filter path
+    assert by_guid[jsy.guid].was_filtered is True  # filter path

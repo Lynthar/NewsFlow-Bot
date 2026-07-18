@@ -8,7 +8,6 @@ paths — all without needing a real server.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 
@@ -16,9 +15,7 @@ import aiohttp
 
 from newsflow.adapters.base import Message
 from newsflow.adapters.webhook.bot import WebhookAdapter
-from newsflow.adapters.webhook.formats import WireRequest
 from newsflow.models.webhook import WebhookDestination
-
 
 # ─── fake aiohttp session ────────────────────────────────────────────────────
 
@@ -28,7 +25,7 @@ class _FakeResponse:
         self.status = status
         self.content = _FakeContent(body)
 
-    async def __aenter__(self) -> "_FakeResponse":
+    async def __aenter__(self) -> _FakeResponse:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:
@@ -141,7 +138,7 @@ async def test_send_message_value_error_returns_false():
 
 
 async def test_send_message_timeout_returns_false():
-    session = _FakeSession(raise_exc=asyncio.TimeoutError())
+    session = _FakeSession(raise_exc=TimeoutError())
     adapter = _make_adapter(session)
     adapter._destinations = {"x": _dest(name="x", timeout_s=1)}
 
@@ -191,9 +188,7 @@ async def test_hmac_signature_when_secret_present():
     sig_header = sent["headers"]["X-NewsFlow-Signature"]
     assert sig_header.startswith("sha256=")
 
-    expected = hmac.new(
-        secret.encode("utf-8"), sent["data"], hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(secret.encode("utf-8"), sent["data"], hashlib.sha256).hexdigest()
     assert sig_header == f"sha256={expected}"
 
 
@@ -218,6 +213,7 @@ async def test_send_text_uses_notification_converter():
     await adapter.send_text("x", "a feed was auto-disabled")
 
     import json
+
     body = json.loads(session.calls[0]["data"])
     assert body["event"] == "system.notification"
     assert body["text"] == "a feed was auto-disabled"

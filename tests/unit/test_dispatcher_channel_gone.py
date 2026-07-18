@@ -41,28 +41,45 @@ async def test_deactivate_channel_flips_only_matching_active_rows(session):
     # Two active subs on the dead channel (different feeds) + one
     # already-inactive sub on DEAD (proves WHERE is_active=True skips
     # it) + ALIVE sub + a discord_DEAD lookalike on Telegram.
-    session.add_all([
-        Subscription(
-            platform="discord", platform_user_id="u",
-            platform_channel_id="DEAD", feed_id=feed_a.id, is_active=True,
-        ),
-        Subscription(
-            platform="discord", platform_user_id="u",
-            platform_channel_id="DEAD", feed_id=feed_b.id, is_active=True,
-        ),
-        Subscription(
-            platform="discord", platform_user_id="u",
-            platform_channel_id="DEAD", feed_id=feed_c.id, is_active=False,
-        ),
-        Subscription(
-            platform="discord", platform_user_id="u",
-            platform_channel_id="ALIVE", feed_id=feed_a.id, is_active=True,
-        ),
-        Subscription(
-            platform="telegram", platform_user_id="u",
-            platform_channel_id="DEAD", feed_id=feed_a.id, is_active=True,
-        ),
-    ])
+    session.add_all(
+        [
+            Subscription(
+                platform="discord",
+                platform_user_id="u",
+                platform_channel_id="DEAD",
+                feed_id=feed_a.id,
+                is_active=True,
+            ),
+            Subscription(
+                platform="discord",
+                platform_user_id="u",
+                platform_channel_id="DEAD",
+                feed_id=feed_b.id,
+                is_active=True,
+            ),
+            Subscription(
+                platform="discord",
+                platform_user_id="u",
+                platform_channel_id="DEAD",
+                feed_id=feed_c.id,
+                is_active=False,
+            ),
+            Subscription(
+                platform="discord",
+                platform_user_id="u",
+                platform_channel_id="ALIVE",
+                feed_id=feed_a.id,
+                is_active=True,
+            ),
+            Subscription(
+                platform="telegram",
+                platform_user_id="u",
+                platform_channel_id="DEAD",
+                feed_id=feed_a.id,
+                is_active=True,
+            ),
+        ]
+    )
     await session.commit()
 
     repo = SubscriptionRepository(session)
@@ -94,8 +111,11 @@ async def test_deactivate_channel_second_call_is_noop(session):
     await session.flush()
     session.add(
         Subscription(
-            platform="discord", platform_user_id="u",
-            platform_channel_id="DEAD", feed_id=feed.id, is_active=True,
+            platform="discord",
+            platform_user_id="u",
+            platform_channel_id="DEAD",
+            feed_id=feed.id,
+            is_active=True,
         )
     )
     await session.commit()
@@ -108,18 +128,30 @@ async def test_deactivate_channel_second_call_is_noop(session):
 
 
 async def test_disable_for_channel_flips_matching_digest(session):
-    session.add_all([
-        ChannelDigest(
-            platform="discord", platform_channel_id="DEAD",
-            enabled=True, schedule="daily", delivery_hour_utc=9,
-            language="en", include_filtered=False, max_articles=50,
-        ),
-        ChannelDigest(
-            platform="discord", platform_channel_id="ALIVE",
-            enabled=True, schedule="daily", delivery_hour_utc=9,
-            language="en", include_filtered=False, max_articles=50,
-        ),
-    ])
+    session.add_all(
+        [
+            ChannelDigest(
+                platform="discord",
+                platform_channel_id="DEAD",
+                enabled=True,
+                schedule="daily",
+                delivery_hour_utc=9,
+                language="en",
+                include_filtered=False,
+                max_articles=50,
+            ),
+            ChannelDigest(
+                platform="discord",
+                platform_channel_id="ALIVE",
+                enabled=True,
+                schedule="daily",
+                delivery_hour_utc=9,
+                language="en",
+                include_filtered=False,
+                max_articles=50,
+            ),
+        ]
+    )
     await session.commit()
 
     repo = ChannelDigestRepository(session)
@@ -130,9 +162,7 @@ async def test_disable_for_channel_flips_matching_digest(session):
 
     # ALIVE is untouched.
     alive = await session.execute(
-        select(ChannelDigest).where(
-            ChannelDigest.platform_channel_id == "ALIVE"
-        )
+        select(ChannelDigest).where(ChannelDigest.platform_channel_id == "ALIVE")
     )
     assert alive.scalar_one().enabled is True
 
@@ -158,20 +188,26 @@ def _dispatcher() -> Dispatcher:
 async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
     feed = Feed(
         url=f"https://{channel_id}.test/rss",
-        is_active=True, error_count=0,
+        is_active=True,
+        error_count=0,
     )
     session.add(feed)
     await session.flush()
     sub = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id=channel_id, feed_id=feed.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id=channel_id,
+        feed_id=feed.id,
+        is_active=True,
+        translate=False,
     )
     session.add(sub)
     await session.flush()
     # One unsent entry the dispatcher can try to deliver.
     entry = FeedEntry(
-        feed_id=feed.id, guid="g1", title="Title",
+        feed_id=feed.id,
+        guid="g1",
+        title="Title",
         link=f"https://{channel_id}.test/a",
         published_at=datetime.now(UTC) - timedelta(minutes=5),
     )
@@ -186,9 +222,7 @@ async def test_dispatch_catches_channel_gone_and_deactivates(session):
     sub = await _seed_sub_with_entry(session, channel_id="DEAD")
 
     adapter = MagicMock()
-    adapter.send_message = AsyncMock(
-        side_effect=ChannelGoneError("DEAD", reason="404 Not Found")
-    )
+    adapter.send_message = AsyncMock(side_effect=ChannelGoneError("DEAD", reason="404 Not Found"))
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
@@ -202,9 +236,7 @@ async def test_dispatch_catches_channel_gone_and_deactivates(session):
 
     assert sent == 0
 
-    refreshed = await session.execute(
-        select(Subscription).where(Subscription.id == sub.id)
-    )
+    refreshed = await session.execute(select(Subscription).where(Subscription.id == sub.id))
     assert refreshed.scalar_one().is_active is False
 
 
@@ -214,17 +246,20 @@ async def test_dispatch_channel_gone_also_disables_digest(session):
     sub = await _seed_sub_with_entry(session, channel_id="DEAD")
     session.add(
         ChannelDigest(
-            platform="discord", platform_channel_id="DEAD",
-            enabled=True, schedule="daily", delivery_hour_utc=9,
-            language="en", include_filtered=False, max_articles=50,
+            platform="discord",
+            platform_channel_id="DEAD",
+            enabled=True,
+            schedule="daily",
+            delivery_hour_utc=9,
+            language="en",
+            include_filtered=False,
+            max_articles=50,
         )
     )
     await session.commit()
 
     adapter = MagicMock()
-    adapter.send_message = AsyncMock(
-        side_effect=ChannelGoneError("DEAD")
-    )
+    adapter.send_message = AsyncMock(side_effect=ChannelGoneError("DEAD"))
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
     d._adapters["discord"] = adapter
@@ -234,9 +269,7 @@ async def test_dispatch_channel_gone_also_disables_digest(session):
     await session.commit()
 
     digest = await session.execute(
-        select(ChannelDigest).where(
-            ChannelDigest.platform_channel_id == "DEAD"
-        )
+        select(ChannelDigest).where(ChannelDigest.platform_channel_id == "DEAD")
     )
     assert digest.scalar_one().enabled is False
 
@@ -253,21 +286,29 @@ async def test_dispatch_channel_gone_second_call_is_idempotent(session):
     await session.flush()
 
     sub_a = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="DEAD", feed_id=feed_a.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="DEAD",
+        feed_id=feed_a.id,
+        is_active=True,
+        translate=False,
     )
     sub_b = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="DEAD", feed_id=feed_b.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="DEAD",
+        feed_id=feed_b.id,
+        is_active=True,
+        translate=False,
     )
     session.add_all([sub_a, sub_b])
     await session.flush()
     for feed, sub in [(feed_a, sub_a), (feed_b, sub_b)]:
         session.add(
             FeedEntry(
-                feed_id=feed.id, guid=f"g{feed.id}", title="T",
+                feed_id=feed.id,
+                guid=f"g{feed.id}",
+                title="T",
                 link=f"https://{feed.id}/a",
                 published_at=datetime.now(UTC) - timedelta(minutes=5),
             )
@@ -307,21 +348,29 @@ async def test_dead_channels_set_skips_remaining_subs(session):
     await session.flush()
 
     sub_a = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="DEAD", feed_id=feed_a.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="DEAD",
+        feed_id=feed_a.id,
+        is_active=True,
+        translate=False,
     )
     sub_b = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="DEAD", feed_id=feed_b.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="DEAD",
+        feed_id=feed_b.id,
+        is_active=True,
+        translate=False,
     )
     session.add_all([sub_a, sub_b])
     await session.flush()
     for feed in (feed_a, feed_b):
         session.add(
             FeedEntry(
-                feed_id=feed.id, guid=f"g{feed.id}", title="T",
+                feed_id=feed.id,
+                guid=f"g{feed.id}",
+                title="T",
                 link=f"https://{feed.id}/a",
                 published_at=datetime.now(UTC) - timedelta(minutes=5),
             )
@@ -337,9 +386,7 @@ async def test_dead_channels_set_skips_remaining_subs(session):
     dead: set[tuple[str, str]] = set()
 
     # First sub: send_message raises, handler populates dead_channels.
-    await d._dispatch_to_subscription(
-        session, sub_a, sub_repo, dead_channels=dead
-    )
+    await d._dispatch_to_subscription(session, sub_a, sub_repo, dead_channels=dead)
     assert ("discord", "DEAD") in dead
     assert adapter.send_message.await_count == 1
 
@@ -348,9 +395,7 @@ async def test_dead_channels_set_skips_remaining_subs(session):
         skipped = True
     else:
         skipped = False
-        await d._dispatch_to_subscription(
-            session, sub_b, sub_repo, dead_channels=dead
-        )
+        await d._dispatch_to_subscription(session, sub_b, sub_repo, dead_channels=dead)
 
     assert skipped is True
     # Adapter was NOT called a second time.
@@ -368,9 +413,7 @@ async def test_dispatch_to_subscription_without_dead_channels_arg_still_works(
     sub = await _seed_sub_with_entry(session, channel_id="DEAD")
 
     adapter = MagicMock()
-    adapter.send_message = AsyncMock(
-        side_effect=ChannelGoneError("DEAD", reason="404")
-    )
+    adapter.send_message = AsyncMock(side_effect=ChannelGoneError("DEAD", reason="404"))
     adapter.is_connected = MagicMock(return_value=True)
     d._adapters["discord"] = adapter
 
@@ -380,9 +423,7 @@ async def test_dispatch_to_subscription_without_dead_channels_arg_still_works(
     await session.commit()
 
     assert sent == 0
-    refreshed = await session.execute(
-        select(Subscription).where(Subscription.id == sub.id)
-    )
+    refreshed = await session.execute(select(Subscription).where(Subscription.id == sub.id))
     assert refreshed.scalar_one().is_active is False
 
 
@@ -393,18 +434,30 @@ async def test_dispatch_channel_gone_other_channel_unaffected(session):
 
     dead_sub = await _seed_sub_with_entry(session, channel_id="DEAD")
     alive_sub = await _seed_sub_with_entry(session, channel_id="ALIVE")
-    session.add_all([
-        ChannelDigest(
-            platform="discord", platform_channel_id="DEAD",
-            enabled=True, schedule="daily", delivery_hour_utc=9,
-            language="en", include_filtered=False, max_articles=50,
-        ),
-        ChannelDigest(
-            platform="discord", platform_channel_id="ALIVE",
-            enabled=True, schedule="daily", delivery_hour_utc=9,
-            language="en", include_filtered=False, max_articles=50,
-        ),
-    ])
+    session.add_all(
+        [
+            ChannelDigest(
+                platform="discord",
+                platform_channel_id="DEAD",
+                enabled=True,
+                schedule="daily",
+                delivery_hour_utc=9,
+                language="en",
+                include_filtered=False,
+                max_articles=50,
+            ),
+            ChannelDigest(
+                platform="discord",
+                platform_channel_id="ALIVE",
+                enabled=True,
+                schedule="daily",
+                delivery_hour_utc=9,
+                language="en",
+                include_filtered=False,
+                max_articles=50,
+            ),
+        ]
+    )
     await session.commit()
 
     adapter = MagicMock()
@@ -433,14 +486,10 @@ async def test_dispatch_channel_gone_other_channel_unaffected(session):
     assert alive_refreshed.scalar_one().is_active is True
 
     dead_digest = await session.execute(
-        select(ChannelDigest).where(
-            ChannelDigest.platform_channel_id == "DEAD"
-        )
+        select(ChannelDigest).where(ChannelDigest.platform_channel_id == "DEAD")
     )
     alive_digest = await session.execute(
-        select(ChannelDigest).where(
-            ChannelDigest.platform_channel_id == "ALIVE"
-        )
+        select(ChannelDigest).where(ChannelDigest.platform_channel_id == "ALIVE")
     )
     assert dead_digest.scalar_one().enabled is False
     assert alive_digest.scalar_one().enabled is True

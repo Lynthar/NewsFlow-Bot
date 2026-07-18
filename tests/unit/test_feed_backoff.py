@@ -1,6 +1,6 @@
 """Tests for exponential backoff on feed fetch errors."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from newsflow.models.feed import Feed
 from newsflow.repositories.feed_repository import FeedRepository
@@ -30,7 +30,7 @@ def test_mark_error_caps_backoff_factor():
     # Drive error_count up to 7 without deactivating
     feed.error_count = 6  # next call → 7
     feed.is_active = True
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     feed.mark_error("boom", base_delay_seconds=base)
     delay_at_7 = (feed.next_retry_at - before).total_seconds()
 
@@ -39,9 +39,7 @@ def test_mark_error_caps_backoff_factor():
 
 
 def test_mark_error_deactivates_at_ten():
-    feed = Feed(
-        url="https://example.com/feed", is_active=True, error_count=9
-    )
+    feed = Feed(url="https://example.com/feed", is_active=True, error_count=9)
     feed.mark_error("final")
     assert feed.is_active is False
     assert feed.error_count == 10
@@ -64,7 +62,7 @@ async def test_get_feeds_due_for_fetch_excludes_backoff(session):
     repo = FeedRepository(session)
     ok = await repo.create_feed(url="https://example.com/ok")
     backed_off = await repo.create_feed(url="https://example.com/slow")
-    backed_off.next_retry_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    backed_off.next_retry_at = datetime.now(UTC) + timedelta(hours=1)
     await session.flush()
 
     due = await repo.get_feeds_due_for_fetch()
@@ -75,7 +73,7 @@ async def test_get_feeds_due_for_fetch_excludes_backoff(session):
 async def test_get_feeds_due_for_fetch_includes_expired_backoff(session):
     repo = FeedRepository(session)
     feed = await repo.create_feed(url="https://example.com/recovered")
-    feed.next_retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    feed.next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
     await session.flush()
 
     due = await repo.get_feeds_due_for_fetch()
@@ -86,7 +84,7 @@ async def test_get_feeds_due_for_fetch_includes_expired_backoff(session):
 async def test_update_feed_metadata_clears_next_retry(session):
     repo = FeedRepository(session)
     feed = await repo.create_feed(url="https://example.com/feed")
-    feed.next_retry_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    feed.next_retry_at = datetime.now(UTC) + timedelta(hours=1)
     feed.error_count = 3
     feed.last_error = "old error"
     await session.flush()
@@ -108,7 +106,7 @@ def test_reactivate_revives_auto_disabled_feed():
         error_count=10,
         last_error="HTTP 500",
     )
-    feed.next_retry_at = datetime.now(timezone.utc) + timedelta(hours=32)
+    feed.next_retry_at = datetime.now(UTC) + timedelta(hours=32)
 
     feed.reactivate()
 

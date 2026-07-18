@@ -80,9 +80,7 @@ def _fetcher(responses: dict[str, _FakeResp]) -> FeedFetcher:
 
 async def test_redirect_to_private_ip_is_rejected():
     pub = "https://example.com/feed"
-    f = _fetcher(
-        {pub: _FakeResp(302, {"Location": "http://169.254.169.254/latest/meta-data/"})}
-    )
+    f = _fetcher({pub: _FakeResp(302, {"Location": "http://169.254.169.254/latest/meta-data/"})})
 
     result = await f.fetch_feed(pub)
 

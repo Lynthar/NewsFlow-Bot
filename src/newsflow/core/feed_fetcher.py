@@ -177,17 +177,13 @@ class FeedFetcher:
                                 url=url,
                                 success=False,
                                 entries=[],
-                                error=(
-                                    f"HTTP {response.status} redirect " f"without Location header"
-                                ),
+                                error=(f"HTTP {response.status} redirect without Location header"),
                             )
                         next_url = urljoin(current_url, location)
                         try:
                             validate_feed_url(next_url)
                         except InvalidFeedURLError as e:
-                            logger.warning(
-                                f"Rejected redirect from {url!r} to " f"{next_url!r}: {e}"
-                            )
+                            logger.warning(f"Rejected redirect from {url!r} to {next_url!r}: {e}")
                             return FetchResult(
                                 url=url,
                                 success=False,
@@ -233,9 +229,7 @@ class FeedFetcher:
                             url=url,
                             success=False,
                             entries=[],
-                            error=(
-                                f"Feed exceeds size limit " f"({response.content_length} bytes)"
-                            ),
+                            error=(f"Feed exceeds size limit ({response.content_length} bytes)"),
                         )
 
                     # Read streaming, capped. A server that lies about
@@ -313,7 +307,7 @@ class FeedFetcher:
                 error=f"Too many redirects (>{MAX_REDIRECTS})",
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"Timeout fetching {url}")
             return FetchResult(
                 url=url,

@@ -118,9 +118,7 @@ async def test_multi_chunk_only_first_pinned():
     paragraphs = ["P" + str(i) * 40 for i in range(6)]
     text = "\n\n".join(paragraphs)
 
-    sent, pin_id = await d.deliver_digest(
-        adapter, "chan", text, chunk_size=80, prior_pin_id=None
-    )
+    sent, pin_id = await d.deliver_digest(adapter, "chan", text, chunk_size=80, prior_pin_id=None)
 
     assert sent >= 2, "multi-chunk test requires at least 2 chunks"
     assert pin_id == "msg-first"
@@ -148,9 +146,7 @@ async def test_multi_chunk_partial_tail_failure_still_counts_pin():
     paragraphs = ["P" + str(i) * 40 for i in range(6)]
     text = "\n\n".join(paragraphs)
 
-    sent, pin_id = await d.deliver_digest(
-        adapter, "chan", text, chunk_size=80, prior_pin_id=None
-    )
+    sent, pin_id = await d.deliver_digest(adapter, "chan", text, chunk_size=80, prior_pin_id=None)
 
     # 1 pinned (first chunk) + (tail_total - 1) successful tail sends.
     assert sent >= 2
@@ -165,9 +161,7 @@ async def test_empty_text_is_noop():
     d = _make_dispatcher()
     adapter = _mock_adapter()
 
-    sent, pin_id = await d.deliver_digest(
-        adapter, "chan", "", chunk_size=1900, prior_pin_id=None
-    )
+    sent, pin_id = await d.deliver_digest(adapter, "chan", "", chunk_size=1900, prior_pin_id=None)
 
     assert sent == 0
     assert pin_id is None
@@ -196,9 +190,7 @@ class _PinlessAdapter(BaseAdapter):
     async def stop(self) -> None:  # pragma: no cover
         pass
 
-    async def send_message(
-        self, channel_id: str, message: Message
-    ) -> bool:  # pragma: no cover
+    async def send_message(self, channel_id: str, message: Message) -> bool:  # pragma: no cover
         return True
 
     async def send_text(self, channel_id: str, text: str) -> bool:

@@ -45,14 +45,10 @@ async def test_apply_fetch_result_schedules_notify_on_deactivation(session, monk
             return asyncio.create_task(coro, name=name)
 
     stub = StubDispatcher()
-    monkeypatch.setattr(
-        "newsflow.services.dispatcher.get_dispatcher", lambda: stub
-    )
+    monkeypatch.setattr("newsflow.services.dispatcher.get_dispatcher", lambda: stub)
 
     svc = FeedService(session)
-    fr = FetchResult(
-        url=feed.url, success=False, entries=[], error="HTTP 500"
-    )
+    fr = FetchResult(url=feed.url, success=False, entries=[], error="HTTP 500")
     await svc._apply_fetch_result(feed, fr)
     # Yield so the create_task coroutine is allowed to run.
     await asyncio.sleep(0)
@@ -187,7 +183,8 @@ async def test_notify_feed_deactivated_swallows_adapter_errors(session, monkeypa
             return False
 
     monkeypatch.setattr(
-        "newsflow.services.dispatcher.get_session_factory", lambda: _Ctx,
+        "newsflow.services.dispatcher.get_session_factory",
+        lambda: _Ctx,
     )
 
     broken = MagicMock()

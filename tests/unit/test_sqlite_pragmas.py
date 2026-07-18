@@ -29,14 +29,10 @@ async def test_sqlite_pragmas_applied_on_connect(tmp_path: Path) -> None:
     on :memory: — SQLite silently falls back to 'memory' journal mode
     since WAL needs a real file for the -wal sidecar)."""
     db_path = tmp_path / "newsflow-pragma-test.db"
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{db_path}", future=True
-    )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)
     try:
         mode = await _read_pragma(engine, "journal_mode")
-        assert str(mode).lower() == "wal", (
-            f"expected WAL journal mode, got {mode!r}"
-        )
+        assert str(mode).lower() == "wal", f"expected WAL journal mode, got {mode!r}"
 
         # synchronous: 0=OFF, 1=NORMAL, 2=FULL. We set NORMAL.
         sync = await _read_pragma(engine, "synchronous")

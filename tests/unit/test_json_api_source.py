@@ -94,9 +94,7 @@ async def test_ssrf_private_url_rejected():
     # rejected outright. _safe_get is stubbed but never reached here.
     f = _fetcher_returning({"data": []})
     res = await f.fetch(
-        SourceRequest(
-            url="http://169.254.169.254/meta", config={"items": "$.data[*]"}
-        )
+        SourceRequest(url="http://169.254.169.254/meta", config={"items": "$.data[*]"})
     )
     assert res.success is False
     assert "link-local" in (res.error or "") or "private" in (res.error or "")

@@ -14,18 +14,17 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+
 from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.dispatcher import Dispatcher
-from sqlalchemy import select
-from sqlalchemy.exc import OperationalError
 
 
-async def test_dispatch_once_commits_feed_metadata_when_no_new_entries(
-    session, monkeypatch
-):
+async def test_dispatch_once_commits_feed_metadata_when_no_new_entries(session, monkeypatch):
     feed = Feed(url="https://example.com/feed")
     session.add(feed)
     await session.commit()
@@ -70,9 +69,7 @@ async def test_dispatch_once_commits_feed_metadata_when_no_new_entries(
             )
         ]
     )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher
-    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher)
 
     fake_settings = MagicMock()
     fake_settings.discord_enabled = False
@@ -102,9 +99,7 @@ async def test_dispatch_once_commits_feed_metadata_when_no_new_entries(
     assert feed.last_fetched_at is not None
 
 
-async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
-    session, monkeypatch
-):
+async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(session, monkeypatch):
     """Subscription A delivers and commits; then B's dispatch blows up and
     the round aborts. A's SentEntry rows must survive the rollback — under
     the old whole-round transaction they were lost and every one of A's
@@ -114,21 +109,29 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
     session.add_all([feed_a, feed_b])
     await session.flush()
     sub_a = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="chan-a", feed_id=feed_a.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="chan-a",
+        feed_id=feed_a.id,
+        is_active=True,
+        translate=False,
     )
     sub_b = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="chan-b", feed_id=feed_b.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="chan-b",
+        feed_id=feed_b.id,
+        is_active=True,
+        translate=False,
     )
     session.add_all([sub_a, sub_b])
     await session.flush()
     for feed in (feed_a, feed_b):
         session.add(
             FeedEntry(
-                feed_id=feed.id, guid=f"g{feed.id}", title="T",
+                feed_id=feed.id,
+                guid=f"g{feed.id}",
+                title="T",
                 link=f"https://x.test/{feed.id}",
                 published_at=datetime.now(UTC) - timedelta(hours=1),
             )
@@ -151,7 +154,7 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
 
     monkeypatch.setattr(
         "newsflow.services.dispatcher.get_session_factory",
-        lambda: (lambda: _Ctx()),
+        lambda: lambda: _Ctx(),
     )
 
     # No new entries this round — we're testing backlog delivery.
@@ -162,9 +165,7 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
             FetchResult(url=feed_b.url, success=True, entries=[], not_modified=True),
         ]
     )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher
-    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher)
 
     # Deterministic order: A first, then B.
     monkeypatch.setattr(
@@ -194,9 +195,7 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
     fake_settings.webhooks_enabled = False
     fake_settings.fetch_interval_minutes = 60
     fake_settings.data_dir = MagicMock()
-    with patch(
-        "newsflow.services.dispatcher.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.dispatcher.get_settings", return_value=fake_settings):
         dispatcher = Dispatcher()
 
     adapter = MagicMock()
@@ -204,9 +203,7 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
     adapter.is_connected = MagicMock(return_value=True)
     dispatcher._adapters["discord"] = adapter
 
-    with patch(
-        "newsflow.services.feed_service.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.feed_service.get_settings", return_value=fake_settings):
         result = await dispatcher.dispatch_once()
 
     assert result.errors == 1  # the round aborted on B
@@ -214,15 +211,11 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(
 
     # A's sent-mark was committed before the crash and survives the
     # round's rollback; B has none.
-    marks = (
-        (await session.execute(select(SentEntry))).scalars().all()
-    )
+    marks = (await session.execute(select(SentEntry))).scalars().all()
     assert [m.subscription_id for m in marks] == [sub_a_id]
 
 
-async def test_commit_failure_for_one_subscription_does_not_abort_round(
-    session, monkeypatch
-):
+async def test_commit_failure_for_one_subscription_does_not_abort_round(session, monkeypatch):
     """The per-sub commit after subscription A fails (SQLITE_BUSY-style);
     the recovery path must roll back A's batch and still deliver B and C
     in the SAME round. The rollback expires every cached ORM instance, so
@@ -234,15 +227,20 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(
         session.add(feed)
         await session.flush()
         sub = Subscription(
-            platform="discord", platform_user_id="u",
-            platform_channel_id=f"chan-{name}", feed_id=feed.id,
-            is_active=True, translate=False,
+            platform="discord",
+            platform_user_id="u",
+            platform_channel_id=f"chan-{name}",
+            feed_id=feed.id,
+            is_active=True,
+            translate=False,
         )
         session.add(sub)
         await session.flush()
         session.add(
             FeedEntry(
-                feed_id=feed.id, guid=f"g-{name}", title="T",
+                feed_id=feed.id,
+                guid=f"g-{name}",
+                title="T",
                 link=f"https://x.test/{name}",
                 published_at=datetime.now(UTC) - timedelta(hours=1),
             )
@@ -261,19 +259,16 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(
 
     monkeypatch.setattr(
         "newsflow.services.dispatcher.get_session_factory",
-        lambda: (lambda: _Ctx()),
+        lambda: lambda: _Ctx(),
     )
 
     mock_fetcher = MagicMock()
     mock_fetcher.fetch_multiple = AsyncMock(
         return_value=[
-            FetchResult(url=f.url, success=True, entries=[], not_modified=True)
-            for f in feeds
+            FetchResult(url=f.url, success=True, entries=[], not_modified=True) for f in feeds
         ]
     )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher
-    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: mock_fetcher)
 
     # Deterministic order: A, B, C.
     monkeypatch.setattr(
@@ -303,9 +298,7 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(
     fake_settings.webhooks_enabled = False
     fake_settings.fetch_interval_minutes = 60
     fake_settings.data_dir = MagicMock()
-    with patch(
-        "newsflow.services.dispatcher.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.dispatcher.get_settings", return_value=fake_settings):
         dispatcher = Dispatcher()
 
     sent_channels: list[str] = []
@@ -319,9 +312,7 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(
     adapter.is_connected = MagicMock(return_value=True)
     dispatcher._adapters["discord"] = adapter
 
-    with patch(
-        "newsflow.services.feed_service.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.feed_service.get_settings", return_value=fake_settings):
         result = await dispatcher.dispatch_once()
 
     # The round survived the commit failure: no round-level error, and every

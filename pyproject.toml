@@ -92,7 +92,7 @@ all = [
 pytest = "^9.0.3"
 pytest-asyncio = "^1.4.0"
 pytest-cov = "^7.1.0"
-ruff = "^0.1.0"
+ruff = "^0.15.22"
 mypy = "^1.8.0"
 
 [build-system]

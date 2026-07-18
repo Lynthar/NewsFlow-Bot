@@ -37,9 +37,7 @@ async def test_auth_fails_closed_when_no_key(monkeypatch):
 
 
 async def test_auth_rejects_wrong_and_missing(monkeypatch):
-    monkeypatch.setattr(
-        "newsflow.api.deps.get_settings", lambda: _FakeSettings("secret")
-    )
+    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings("secret"))
     for header in ("Bearer wrong", None, "", "Bearer "):
         with pytest.raises(HTTPException) as exc:
             await require_api_key(authorization=header)
@@ -47,9 +45,7 @@ async def test_auth_rejects_wrong_and_missing(monkeypatch):
 
 
 async def test_auth_accepts_bearer_and_raw(monkeypatch):
-    monkeypatch.setattr(
-        "newsflow.api.deps.get_settings", lambda: _FakeSettings("secret")
-    )
+    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings("secret"))
     # Neither call should raise.
     await require_api_key(authorization="Bearer secret")
     await require_api_key(authorization="secret")
@@ -59,9 +55,7 @@ async def test_auth_accepts_bearer_and_raw(monkeypatch):
 
 
 def test_to_entry_dict_maps_fields_and_hashes_guid():
-    d = _to_entry_dict(
-        IngestEntry(id="a1", title="T", url="https://x/a", summary="s"), "slug"
-    )
+    d = _to_entry_dict(IngestEntry(id="a1", title="T", url="https://x/a", summary="s"), "slug")
     assert d["guid"] == "a1" and d["title"] == "T" and d["link"] == "https://x/a"
 
     # No id → distinct content hashes; link falls back to the feed slug.
@@ -78,9 +72,7 @@ async def test_ingest_writes_and_is_idempotent(session):
     session.add(Feed(url="my-inbound", source_type="webhook_inbound"))
     await session.commit()
 
-    payload = IngestPayload(
-        entries=[IngestEntry(id="e1", title="Hello", url="https://x/e1")]
-    )
+    payload = IngestPayload(entries=[IngestEntry(id="e1", title="Hello", url="https://x/e1")])
     res = await ingest(source="my-inbound", payload=payload, db=session, _=None)
     await session.commit()
     assert res.accepted == 1 and res.created == 1
@@ -93,9 +85,7 @@ async def test_ingest_writes_and_is_idempotent(session):
 
 async def test_ingest_unknown_source_404(session):
     with pytest.raises(HTTPException) as exc:
-        await ingest(
-            source="nope", payload=IngestPayload(entries=[]), db=session, _=None
-        )
+        await ingest(source="nope", payload=IngestPayload(entries=[]), db=session, _=None)
     assert exc.value.status_code == 404
 
 

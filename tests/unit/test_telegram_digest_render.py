@@ -9,9 +9,10 @@ keeps the ChannelGone contract of the plain send path.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import BadRequest
+
 from newsflow.adapters.base import ChannelGoneError
 from newsflow.adapters.telegram.bot import TelegramAdapter
-from telegram.error import BadRequest
 
 
 def _adapter():

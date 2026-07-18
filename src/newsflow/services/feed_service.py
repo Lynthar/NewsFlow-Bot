@@ -294,7 +294,7 @@ class FeedService:
             return FetchFeedResult(
                 success=True,
                 feed=feed,
-                message="Push source — entries arrive via the ingest API, " "nothing to poll",
+                message="Push source — entries arrive via the ingest API, nothing to poll",
             )
         try:
             if source_type == "rss":

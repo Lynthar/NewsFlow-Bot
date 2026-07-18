@@ -6,7 +6,7 @@ ship malformed payloads to third parties.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from newsflow.adapters.base import Message
 from newsflow.adapters.webhook.formats import (
@@ -22,7 +22,7 @@ def _make_message(**overrides) -> Message:
         summary="A concise summary of what happened.",
         link="https://example.com/article?ref=rss&id=42",
         source="Example News",
-        published_at=datetime(2026, 4, 23, 6, 0, tzinfo=timezone.utc),
+        published_at=datetime(2026, 4, 23, 6, 0, tzinfo=UTC),
         image_url="https://example.com/cover.jpg",
         title_translated=None,
         summary_translated=None,
@@ -50,9 +50,7 @@ def test_generic_entry_payload_has_required_shape():
 
 
 def test_generic_passes_translations_through():
-    msg = _make_message(
-        title_translated="你好世界", summary_translated="简短摘要"
-    )
+    msg = _make_message(title_translated="你好世界", summary_translated="简短摘要")
     wire = build_payload("generic", msg)
     entry = json.loads(wire.body)["entry"]
     assert entry["title_translated"] == "你好世界"
@@ -62,7 +60,7 @@ def test_generic_passes_translations_through():
 def test_generic_utf8_not_escaped():
     """ensure_ascii=False keeps CJK readable in the wire payload."""
     wire = build_payload("generic", _make_message(title="你好"))
-    assert "你好".encode("utf-8") in wire.body
+    assert "你好".encode() in wire.body
 
 
 def test_unknown_format_falls_back_to_generic():
@@ -100,9 +98,7 @@ def test_slack_header_truncated_to_150_chars():
 
 def test_slack_empty_summary_has_placeholder():
     """Block-kit section text can't be empty; placeholder avoids API 400."""
-    wire = build_payload(
-        "slack", _make_message(summary="", summary_translated=None)
-    )
+    wire = build_payload("slack", _make_message(summary="", summary_translated=None))
     payload = json.loads(wire.body)
     section_text = payload["blocks"][1]["text"]["text"]
     assert section_text  # non-empty
@@ -144,9 +140,7 @@ def test_ntfy_notification_sets_high_priority():
 def test_ntfy_drops_click_with_control_chars():
     """A feed link with CR/LF must not reach the Click header — aiohttp would
     raise ValueError on send, wedging delivery to this destination."""
-    wire = build_payload(
-        "ntfy", _make_message(link="https://example.com/\r\nX-Evil: 1")
-    )
+    wire = build_payload("ntfy", _make_message(link="https://example.com/\r\nX-Evil: 1"))
     assert "Click" not in wire.headers
     # The notification itself is still well-formed.
     assert wire.headers["Title"]
@@ -154,19 +148,15 @@ def test_ntfy_drops_click_with_control_chars():
 
 
 def test_ntfy_drops_non_http_and_non_ascii_click():
-    assert "Click" not in build_payload(
-        "ntfy", _make_message(link="javascript:alert(1)")
-    ).headers
+    assert "Click" not in build_payload("ntfy", _make_message(link="javascript:alert(1)")).headers
     # Non-latin-1 unicode in the URL would raise on header encode.
-    assert "Click" not in build_payload(
-        "ntfy", _make_message(link="https://example.com/文章")
-    ).headers
+    assert (
+        "Click" not in build_payload("ntfy", _make_message(link="https://example.com/文章")).headers
+    )
 
 
 def test_ntfy_drops_bad_attach_but_keeps_clean_one():
-    wire = build_payload(
-        "ntfy", _make_message(image_url="https://example.com/a.jpg\nInjected: y")
-    )
+    wire = build_payload("ntfy", _make_message(image_url="https://example.com/a.jpg\nInjected: y"))
     assert "Attach" not in wire.headers
     # A clean image URL is still attached.
     clean = build_payload("ntfy", _make_message())

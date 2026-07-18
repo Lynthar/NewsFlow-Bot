@@ -63,9 +63,7 @@ async def test_apply_fetch_result_not_modified_keeps_old_entries(session):
 async def test_apply_fetch_result_failure_marks_error(session):
     feed = await _make_feed(session)
     svc = FeedService(session)
-    fr = FetchResult(
-        url=feed.url, success=False, entries=[], error="HTTP 500"
-    )
+    fr = FetchResult(url=feed.url, success=False, entries=[], error="HTTP 500")
 
     result = await svc._apply_fetch_result(feed, fr)
 

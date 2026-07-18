@@ -141,9 +141,9 @@ class WebhookAdapter(BaseAdapter):
                 # Read a small slice of the body for diagnostics without
                 # letting a misbehaving server push megabytes into our logs.
                 snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
-                logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: " f"{snippet!r}")
+                logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: {snippet!r}")
                 return False
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s")
             return False
         except aiohttp.ClientError as e:

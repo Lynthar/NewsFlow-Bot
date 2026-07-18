@@ -207,8 +207,7 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
                 # first sync — same policy as webhook_sync / regular /feed add.
                 await sub_repo.seed_sent_entries(sub.id, feed.id, keep_latest=0)
                 logger.info(
-                    f"source_sync: subscribed {sub_cfg.platform}/{sub_cfg.channel} "
-                    f"→ {src.name!r}"
+                    f"source_sync: subscribed {sub_cfg.platform}/{sub_cfg.channel} → {src.name!r}"
                 )
             elif existing.platform_user_id != _OWNER:
                 # Defense in depth: a sub at this (platform, channel, feed)

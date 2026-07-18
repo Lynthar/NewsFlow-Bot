@@ -10,8 +10,9 @@ channel, caller-must-be-channel-admin, and the arg-stripping contract.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from newsflow.adapters.telegram.bot import _admin_cache, _resolve_target
 from telegram.constants import ChatMemberStatus, ChatType
+
+from newsflow.adapters.telegram.bot import _admin_cache, _resolve_target
 
 
 def _update(chat_type=ChatType.PRIVATE, chat_id=555, user_id=42):

@@ -1,9 +1,7 @@
 """Tests for env-var-configurable AI prompt templates."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from newsflow.services.summarization.base import DigestArticle
 from newsflow.services.summarization.openai import (
@@ -12,9 +10,10 @@ from newsflow.services.summarization.openai import (
 )
 from newsflow.services.translation.openai import (
     DEFAULT_TRANSLATION_PROMPT,
+)
+from newsflow.services.translation.openai import (
     OpenAIProvider as OpenAITranslationProvider,
 )
-
 
 # ===== Translation =====
 
@@ -26,17 +25,13 @@ def test_translation_default_prompt_used_when_none_provided():
 
 def test_translation_custom_prompt_overrides_default():
     custom = "Translate to {target_name}, source: {source_desc}. Be terse."
-    p = OpenAITranslationProvider(
-        api_key="x", model="m", system_prompt_template=custom
-    )
+    p = OpenAITranslationProvider(api_key="x", model="m", system_prompt_template=custom)
     assert p.system_prompt_template == custom
 
 
 async def test_translation_custom_prompt_is_used_in_api_call():
     custom = "From {source_desc}. Target: {target_name}. Just translate."
-    p = OpenAITranslationProvider(
-        api_key="x", model="m", system_prompt_template=custom
-    )
+    p = OpenAITranslationProvider(api_key="x", model="m", system_prompt_template=custom)
 
     # Mock OpenAI client
     fake_resp = MagicMock()
@@ -48,19 +43,13 @@ async def test_translation_custom_prompt_is_used_in_api_call():
 
     await p.translate("hello", target_lang="zh-CN", source_lang="en")
 
-    sent_system = fake_client.chat.completions.create.await_args.kwargs[
-        "messages"
-    ][0]["content"]
-    assert sent_system == (
-        "From English. Target: Simplified Chinese. Just translate."
-    )
+    sent_system = fake_client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
+    assert sent_system == ("From English. Target: Simplified Chinese. Just translate.")
 
 
 async def test_translation_broken_template_falls_back_to_default():
     broken = "This uses {nonexistent_placeholder}"
-    p = OpenAITranslationProvider(
-        api_key="x", model="m", system_prompt_template=broken
-    )
+    p = OpenAITranslationProvider(api_key="x", model="m", system_prompt_template=broken)
 
     fake_resp = MagicMock()
     fake_resp.choices = [MagicMock()]
@@ -72,9 +61,7 @@ async def test_translation_broken_template_falls_back_to_default():
     result = await p.translate("hi", target_lang="zh-CN", source_lang="en")
 
     assert result.success is True
-    sent_system = fake_client.chat.completions.create.await_args.kwargs[
-        "messages"
-    ][0]["content"]
+    sent_system = fake_client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
     # Fell back to DEFAULT (which references source_desc + target_name)
     assert "English" in sent_system
     assert "Simplified Chinese" in sent_system
@@ -93,9 +80,7 @@ async def test_translation_auto_detect_source():
 
     await p.translate("hi", target_lang="zh-CN", source_lang=None)
 
-    sent = fake_client.chat.completions.create.await_args.kwargs["messages"][0][
-        "content"
-    ]
+    sent = fake_client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
     assert "auto-detect" in sent
 
 
@@ -127,17 +112,13 @@ def test_digest_default_prompt_used_when_none_provided():
 
 def test_digest_custom_prompt_overrides_default():
     custom = "You are a terse editor. Window: {window}. Output in {lang}."
-    p = OpenAIDigestProvider(
-        api_key="x", model="m", system_prompt_template=custom
-    )
+    p = OpenAIDigestProvider(api_key="x", model="m", system_prompt_template=custom)
     assert p.system_prompt_template == custom
 
 
 async def test_digest_custom_prompt_is_used_in_api_call():
     custom = "Summarize the past {window} in {lang}. Keep under 200 words."
-    p = OpenAIDigestProvider(
-        api_key="x", model="m", system_prompt_template=custom
-    )
+    p = OpenAIDigestProvider(api_key="x", model="m", system_prompt_template=custom)
 
     fake_resp = MagicMock()
     fake_resp.choices = [MagicMock()]
@@ -147,25 +128,23 @@ async def test_digest_custom_prompt_is_used_in_api_call():
     p._client = fake_client
 
     article = DigestArticle(
-        title="T", summary="S", link="https://x", source="X",
-        published_at=datetime.now(timezone.utc),
+        title="T",
+        summary="S",
+        link="https://x",
+        source="X",
+        published_at=datetime.now(UTC),
     )
     await p.generate_digest([article], language="zh-CN", time_window_desc="past 24 hours")
 
-    sent_system = fake_client.chat.completions.create.await_args.kwargs[
-        "messages"
-    ][0]["content"]
+    sent_system = fake_client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
     assert sent_system == (
-        "Summarize the past past 24 hours in Simplified Chinese. "
-        "Keep under 200 words."
+        "Summarize the past past 24 hours in Simplified Chinese. Keep under 200 words."
     )
 
 
 async def test_digest_broken_template_falls_back_to_default():
     broken = "Something {missing_key}"
-    p = OpenAIDigestProvider(
-        api_key="x", model="m", system_prompt_template=broken
-    )
+    p = OpenAIDigestProvider(api_key="x", model="m", system_prompt_template=broken)
 
     fake_resp = MagicMock()
     fake_resp.choices = [MagicMock()]
@@ -175,15 +154,16 @@ async def test_digest_broken_template_falls_back_to_default():
     p._client = fake_client
 
     article = DigestArticle(
-        title="T", summary="S", link="https://x", source="X",
+        title="T",
+        summary="S",
+        link="https://x",
+        source="X",
         published_at=None,
     )
     result = await p.generate_digest([article], language="en", time_window_desc="past day")
 
     assert result.success is True
-    sent_system = fake_client.chat.completions.create.await_args.kwargs[
-        "messages"
-    ][0]["content"]
+    sent_system = fake_client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
     assert "{missing_key}" not in sent_system
     # Default prompt mentions "news editor"
     assert "editor" in sent_system.lower()
@@ -202,16 +182,15 @@ async def test_digest_truncates_summary_to_max_input_chars():
     p._client = fake_client
 
     article = DigestArticle(
-        title="T", summary="x" * 100, link="https://x", source="X",
+        title="T",
+        summary="x" * 100,
+        link="https://x",
+        source="X",
         published_at=None,
     )
-    await p.generate_digest(
-        [article], language="en", time_window_desc="past day"
-    )
+    await p.generate_digest([article], language="en", time_window_desc="past day")
 
-    user_prompt = fake_client.chat.completions.create.await_args.kwargs[
-        "messages"
-    ][1]["content"]
+    user_prompt = fake_client.chat.completions.create.await_args.kwargs["messages"][1]["content"]
     assert ("x" * 17 + "...") in user_prompt  # 20-char cap => 17 + "..."
     assert "x" * 21 not in user_prompt
 
@@ -222,9 +201,7 @@ async def test_digest_truncates_summary_to_max_input_chars():
 def test_translation_factory_passes_custom_prompt_from_settings():
     from newsflow.services.translation.factory import create_translation_provider
 
-    with patch(
-        "newsflow.services.translation.factory.get_settings"
-    ) as mock_settings:
+    with patch("newsflow.services.translation.factory.get_settings") as mock_settings:
         fake = MagicMock()
         fake.can_translate.return_value = True
         fake.translation_provider = "openai"
@@ -247,9 +224,7 @@ def test_digest_factory_passes_custom_prompt_from_settings():
     )
 
     reset_summarizer()
-    with patch(
-        "newsflow.services.summarization.factory.get_settings"
-    ) as mock_settings:
+    with patch("newsflow.services.summarization.factory.get_settings") as mock_settings:
         fake = MagicMock()
         fake.digest_provider = "openai"
         fake.openai_api_key = "test-key"

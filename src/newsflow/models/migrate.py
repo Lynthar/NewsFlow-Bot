@@ -23,8 +23,9 @@ def _alembic_ini_path() -> Path:
 
 
 def _upgrade_sync() -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     ini = _alembic_ini_path()
     if not ini.exists():

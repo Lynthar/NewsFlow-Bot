@@ -51,9 +51,7 @@ async def test_unresponded_interaction_gets_ephemeral_initial_response():
     await _on_app_command_error(interaction, _error())
 
     interaction.response.send_message.assert_awaited_once()
-    assert (
-        interaction.response.send_message.await_args.kwargs.get("ephemeral") is True
-    )
+    assert interaction.response.send_message.await_args.kwargs.get("ephemeral") is True
     interaction.followup.send.assert_not_awaited()
 
 

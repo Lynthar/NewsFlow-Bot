@@ -106,9 +106,7 @@ async def test_cleanup_loop_heartbeat_ticks_independently_of_cleanup_runs(tmp_pa
     fake_settings.entry_retention_days = 7
     fake_settings.sent_entry_retention_days = 90
 
-    with patch(
-        "newsflow.services.dispatcher.get_settings", return_value=fake_settings
-    ):
+    with patch("newsflow.services.dispatcher.get_settings", return_value=fake_settings):
         d = Dispatcher()
 
     # Skip the 60s startup delay — return immediately on the first sleep.
@@ -157,13 +155,13 @@ async def test_cleanup_loop_heartbeat_ticks_independently_of_cleanup_runs(tmp_pa
 
     with (
         patch("newsflow.services.dispatcher.asyncio.sleep", side_effect=fast_sleep),
-        patch("newsflow.services.dispatcher.get_session_factory", return_value=fake_session_factory),
+        patch(
+            "newsflow.services.dispatcher.get_session_factory", return_value=fake_session_factory
+        ),
         patch("newsflow.services.dispatcher.FeedRepository", FakeFeedRepo),
         patch("newsflow.services.dispatcher.SubscriptionRepository", FakeSubRepo),
     ):
-        task = asyncio.create_task(
-            d.run_cleanup_loop(heartbeat_tick_seconds=0)
-        )
+        task = asyncio.create_task(d.run_cleanup_loop(heartbeat_tick_seconds=0))
         # Yield control enough times for the loop to iterate several times.
         for _ in range(20):
             await asyncio.sleep(0)

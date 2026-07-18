@@ -50,9 +50,7 @@ async def test_maps_message_to_entry(monkeypatch):
     monkeypatch.setenv("NF_TEST_IMAP", "app-password")
     monkeypatch.setattr(f, "_fetch_sync", lambda *a, **k: [_email()])
 
-    res = await f.fetch(
-        SourceRequest(url="imap://me@host/INBOX", config=_ok_config())
-    )
+    res = await f.fetch(SourceRequest(url="imap://me@host/INBOX", config=_ok_config()))
 
     assert res.success
     e = res.entries[0]
@@ -76,9 +74,7 @@ async def test_guid_falls_back_when_no_message_id(monkeypatch):
         ],
     )
 
-    res = await f.fetch(
-        SourceRequest(url="imap://me@host/INBOX", config=_ok_config())
-    )
+    res = await f.fetch(SourceRequest(url="imap://me@host/INBOX", config=_ok_config()))
 
     assert res.success
     guids = [e["guid"] for e in res.entries]
@@ -86,18 +82,14 @@ async def test_guid_falls_back_when_no_message_id(monkeypatch):
 
 
 async def test_missing_config_fails():
-    res = await EmailSourceFetcher().fetch(
-        SourceRequest(url="imap://x", config={"host": "h"})
-    )
+    res = await EmailSourceFetcher().fetch(SourceRequest(url="imap://x", config={"host": "h"}))
     assert res.success is False
     assert "user" in (res.error or "") and "password_env" in (res.error or "")
 
 
 async def test_password_env_not_set_fails(monkeypatch):
     monkeypatch.delenv("NF_TEST_IMAP", raising=False)
-    res = await EmailSourceFetcher().fetch(
-        SourceRequest(url="imap://x", config=_ok_config())
-    )
+    res = await EmailSourceFetcher().fetch(SourceRequest(url="imap://x", config=_ok_config()))
     assert res.success is False
     assert "NF_TEST_IMAP" in (res.error or "")  # names the missing env var
 

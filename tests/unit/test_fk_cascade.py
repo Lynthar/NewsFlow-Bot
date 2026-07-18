@@ -33,8 +33,7 @@ async def test_remove_then_readd_does_not_crash_on_orphan_sent_entries(session):
             url="https://example.com/feed",
             success=True,
             entries=[
-                {"guid": f"g{i}", "title": f"T{i}", "link": f"https://x/{i}"}
-                for i in range(3)
+                {"guid": f"g{i}", "title": f"T{i}", "link": f"https://x/{i}"} for i in range(3)
             ],
             feed_title="Example",
         )
@@ -52,10 +51,10 @@ async def test_remove_then_readd_does_not_crash_on_orphan_sent_entries(session):
 
     # Seeded 2 of 3 (one kept for preview).
     sent = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub1_id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub1_id)))
+        .scalars()
+        .all()
+    )
     assert len(sent) == 2
 
     # Unsubscribe.
@@ -69,10 +68,10 @@ async def test_remove_then_readd_does_not_crash_on_orphan_sent_entries(session):
 
     # FK cascade should have cleared the SentEntry rows.
     orphans = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub1_id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub1_id)))
+        .scalars()
+        .all()
+    )
     assert orphans == [], "FK cascade did not fire — stale SentEntry rows remain"
 
     # Re-subscribe: must not raise IntegrityError.
@@ -133,10 +132,10 @@ async def test_feed_entry_delete_does_not_cascade_to_sent_entry(session):
     await session.flush()
 
     survivors = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub.id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub.id)))
+        .scalars()
+        .all()
+    )
     assert len(survivors) == 1
     assert survivors[0].guid == "dedupe-guid"
     assert survivors[0].feed_id == feed.id

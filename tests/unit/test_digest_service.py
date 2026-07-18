@@ -58,32 +58,24 @@ def test_is_due_daily_skips_other_hours():
 
 def test_is_due_daily_dedupe_within_window():
     last = _utc(2026, 4, 22, 9, 0)
-    config = _cfg(
-        schedule="daily", delivery_hour_utc=9, last_delivered_at=last
-    )
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
     # Loop re-checks during the same hour slot — must not double-fire.
     assert is_due(config, _utc(2026, 4, 22, 9, 30)) is False
 
 
 def test_is_due_daily_fires_next_day():
     last = _utc(2026, 4, 21, 9, 0)
-    config = _cfg(
-        schedule="daily", delivery_hour_utc=9, last_delivered_at=last
-    )
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
     assert is_due(config, _utc(2026, 4, 22, 9, 0)) is True
 
 
 def test_is_due_weekly_requires_matching_weekday():
     # 2026-04-22 is a Wednesday (weekday=2). weekday=2 should fire.
-    config = _cfg(
-        schedule="weekly", delivery_hour_utc=9, delivery_weekday=2
-    )
+    config = _cfg(schedule="weekly", delivery_hour_utc=9, delivery_weekday=2)
     assert is_due(config, _utc(2026, 4, 22, 9)) is True
 
     # A Thursday shouldn't fire.
-    config2 = _cfg(
-        schedule="weekly", delivery_hour_utc=9, delivery_weekday=2
-    )
+    config2 = _cfg(schedule="weekly", delivery_hour_utc=9, delivery_weekday=2)
     assert is_due(config2, _utc(2026, 4, 23, 9)) is False
 
 
@@ -102,9 +94,7 @@ def test_is_due_handles_naive_last_delivered_at():
     # is_due() must not crash with TypeError (offset-naive vs offset-aware)
     # — that bug stalled the entire digest tick after the first delivery.
     naive = datetime(2026, 4, 21, 9, 0)  # no tzinfo
-    config = _cfg(
-        schedule="daily", delivery_hour_utc=9, last_delivered_at=naive
-    )
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=naive)
     assert is_due(config, _utc(2026, 4, 22, 9, 0)) is True
     assert is_due(config, _utc(2026, 4, 21, 9, 30)) is False
 
@@ -202,8 +192,7 @@ def test_build_source_list_truncates_long_titles():
 
 def test_strip_llm_source_list_removes_taught_format_tail_and_header():
     text = (
-        "Body [1].\n\n**Sources**\n"
-        "[1] Title — <https://ex.com/1>\n[2] Other — <https://ex.com/2>"
+        "Body [1].\n\n**Sources**\n[1] Title — <https://ex.com/1>\n[2] Other — <https://ex.com/2>"
     )
     assert strip_llm_source_list(text) == "Body [1]."
 
@@ -358,9 +347,7 @@ async def test_digest_generate_honors_max_articles_cap(session):
     await session.flush()
 
     summarizer = AsyncMock()
-    summarizer.generate_digest = AsyncMock(
-        return_value=DigestResult(success=True, text="ok")
-    )
+    summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
 
     await service.generate(config)
@@ -387,29 +374,39 @@ async def test_digest_generate_excludes_filtered_by_default(session):
     now = datetime.now(UTC)
     # One sent, one filtered.
     sent_entry = FeedEntry(
-        feed_id=feed.id, guid="real", title="Real",
-        link="https://x/r", published_at=now - timedelta(hours=1),
+        feed_id=feed.id,
+        guid="real",
+        title="Real",
+        link="https://x/r",
+        published_at=now - timedelta(hours=1),
     )
     filtered_entry = FeedEntry(
-        feed_id=feed.id, guid="fil", title="Filtered",
-        link="https://x/f", published_at=now - timedelta(hours=2),
+        feed_id=feed.id,
+        guid="fil",
+        title="Filtered",
+        link="https://x/f",
+        published_at=now - timedelta(hours=2),
     )
     session.add_all([sent_entry, filtered_entry])
     await session.flush()
-    session.add_all([
-        SentEntry(
-            subscription_id=sub.id,
-            feed_id=sent_entry.feed_id,
-            guid=sent_entry.guid,
-            sent_at=now - timedelta(hours=1), was_filtered=False,
-        ),
-        SentEntry(
-            subscription_id=sub.id,
-            feed_id=filtered_entry.feed_id,
-            guid=filtered_entry.guid,
-            sent_at=now - timedelta(hours=2), was_filtered=True,
-        ),
-    ])
+    session.add_all(
+        [
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=sent_entry.feed_id,
+                guid=sent_entry.guid,
+                sent_at=now - timedelta(hours=1),
+                was_filtered=False,
+            ),
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=filtered_entry.feed_id,
+                guid=filtered_entry.guid,
+                sent_at=now - timedelta(hours=2),
+                was_filtered=True,
+            ),
+        ]
+    )
     await session.flush()
 
     config = ChannelDigest(
@@ -426,15 +423,11 @@ async def test_digest_generate_excludes_filtered_by_default(session):
     await session.flush()
 
     summarizer = AsyncMock()
-    summarizer.generate_digest = AsyncMock(
-        return_value=DigestResult(success=True, text="ok")
-    )
+    summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
     await service.generate(config)
 
-    titles = {
-        a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]
-    }
+    titles = {a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]}
     assert titles == {"Real"}  # Filtered one is hidden by default
 
 
@@ -454,25 +447,39 @@ async def test_digest_generate_includes_filtered_when_configured(session):
 
     now = datetime.now(UTC)
     a = FeedEntry(
-        feed_id=feed.id, guid="a", title="A",
-        link="https://x/a", published_at=now - timedelta(hours=1),
+        feed_id=feed.id,
+        guid="a",
+        title="A",
+        link="https://x/a",
+        published_at=now - timedelta(hours=1),
     )
     b = FeedEntry(
-        feed_id=feed.id, guid="b", title="B",
-        link="https://x/b", published_at=now - timedelta(hours=2),
+        feed_id=feed.id,
+        guid="b",
+        title="B",
+        link="https://x/b",
+        published_at=now - timedelta(hours=2),
     )
     session.add_all([a, b])
     await session.flush()
-    session.add_all([
-        SentEntry(
-            subscription_id=sub.id, feed_id=a.feed_id, guid=a.guid,
-            sent_at=now - timedelta(hours=1), was_filtered=False,
-        ),
-        SentEntry(
-            subscription_id=sub.id, feed_id=b.feed_id, guid=b.guid,
-            sent_at=now - timedelta(hours=2), was_filtered=True,
-        ),
-    ])
+    session.add_all(
+        [
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=a.feed_id,
+                guid=a.guid,
+                sent_at=now - timedelta(hours=1),
+                was_filtered=False,
+            ),
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=b.feed_id,
+                guid=b.guid,
+                sent_at=now - timedelta(hours=2),
+                was_filtered=True,
+            ),
+        ]
+    )
     await session.flush()
 
     config = ChannelDigest(
@@ -489,15 +496,11 @@ async def test_digest_generate_includes_filtered_when_configured(session):
     await session.flush()
 
     summarizer = AsyncMock()
-    summarizer.generate_digest = AsyncMock(
-        return_value=DigestResult(success=True, text="ok")
-    )
+    summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
     await service.generate(config)
 
-    titles = {
-        a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]
-    }
+    titles = {a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]}
     assert titles == {"A", "B"}
 
 
@@ -522,25 +525,41 @@ async def test_digest_excludes_seeded_backlog(session):
 
     now = datetime.now(UTC)
     shown = FeedEntry(
-        feed_id=feed.id, guid="shown", title="Shown",
-        link="https://x/s", published_at=now - timedelta(hours=2),
+        feed_id=feed.id,
+        guid="shown",
+        title="Shown",
+        link="https://x/s",
+        published_at=now - timedelta(hours=2),
     )
     backlog = FeedEntry(
-        feed_id=feed.id, guid="backlog", title="Backlog",
-        link="https://x/b", published_at=now - timedelta(hours=1),
+        feed_id=feed.id,
+        guid="backlog",
+        title="Backlog",
+        link="https://x/b",
+        published_at=now - timedelta(hours=1),
     )
     session.add_all([shown, backlog])
     await session.flush()
-    session.add_all([
-        SentEntry(
-            subscription_id=sub.id, feed_id=shown.feed_id, guid=shown.guid,
-            sent_at=now - timedelta(minutes=20), was_filtered=False, seeded=False,
-        ),
-        SentEntry(
-            subscription_id=sub.id, feed_id=backlog.feed_id, guid=backlog.guid,
-            sent_at=now - timedelta(minutes=10), was_filtered=False, seeded=True,
-        ),
-    ])
+    session.add_all(
+        [
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=shown.feed_id,
+                guid=shown.guid,
+                sent_at=now - timedelta(minutes=20),
+                was_filtered=False,
+                seeded=False,
+            ),
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=backlog.feed_id,
+                guid=backlog.guid,
+                sent_at=now - timedelta(minutes=10),
+                was_filtered=False,
+                seeded=True,
+            ),
+        ]
+    )
     await session.flush()
 
     config = ChannelDigest(
@@ -557,13 +576,9 @@ async def test_digest_excludes_seeded_backlog(session):
     await session.flush()
 
     summarizer = AsyncMock()
-    summarizer.generate_digest = AsyncMock(
-        return_value=DigestResult(success=True, text="ok")
-    )
+    summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
     await service.generate(config)
 
-    titles = {
-        a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]
-    }
+    titles = {a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]}
     assert titles == {"Shown"}  # seeded backlog excluded

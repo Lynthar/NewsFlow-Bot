@@ -1,16 +1,16 @@
 """Tests for core/timeutil relative/until helpers."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from newsflow.core.timeutil import relative_time, time_until
 
 
 def _ago(seconds: float) -> datetime:
-    return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    return datetime.now(UTC) - timedelta(seconds=seconds)
 
 
 def _ahead(seconds: float) -> datetime:
-    return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return datetime.now(UTC) + timedelta(seconds=seconds)
 
 
 def test_relative_time_none_returns_never():
@@ -38,7 +38,7 @@ def test_relative_time_future_collapses_to_just_now():
 
 
 def test_relative_time_accepts_naive_datetime():
-    naive = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=5)
+    naive = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=5)
     assert relative_time(naive) in {"5m ago", "4m ago"}  # allow 1m drift
 
 

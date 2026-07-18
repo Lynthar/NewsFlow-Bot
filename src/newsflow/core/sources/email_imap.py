@@ -74,7 +74,7 @@ class EmailSourceFetcher:
         except ImportError:
             return _fail(
                 req.url,
-                "email source needs the 'source-email' extra " "(pip install imap-tools)",
+                "email source needs the 'source-email' extra (pip install imap-tools)",
             )
 
         port = _int(config.get("port"), 993)

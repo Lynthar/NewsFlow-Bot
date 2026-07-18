@@ -1,6 +1,7 @@
 """Tests for the FilterRule rule engine."""
 
 import pytest
+
 from newsflow.core.filter import FilterRule, parse_filter_field, parse_keyword_csv
 
 

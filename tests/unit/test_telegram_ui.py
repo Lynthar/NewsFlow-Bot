@@ -8,6 +8,8 @@ real bot or network is involved.
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from telegram.error import BadRequest
+
 from newsflow.adapters.base import Message
 from newsflow.adapters.telegram.bot import (
     _MENU_COMMANDS,
@@ -18,7 +20,6 @@ from newsflow.adapters.telegram.bot import (
     _start_menu_keyboard,
     on_callback,
 )
-from telegram.error import BadRequest
 
 
 class _SessionCtx:

@@ -354,8 +354,7 @@ class SubscriptionService:
             message += f"; re-enabled {feeds_revived} auto-disabled feed(s)"
         message += digest_note
         logger.info(
-            f"Resume all: {platform}/{channel_id} — {resumed} subs, "
-            f"{feeds_revived} feeds revived"
+            f"Resume all: {platform}/{channel_id} — {resumed} subs, {feeds_revived} feeds revived"
         )
         return SubscriptionActionResult(success=True, message=message)
 

@@ -18,6 +18,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
+
 from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError, Message
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
@@ -25,7 +27,6 @@ from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.dispatcher import Dispatcher
-from sqlalchemy import select
 
 # ===== Repository-layer tests =====
 
@@ -37,22 +38,29 @@ async def test_migrate_channel_repoints_subs_and_keeps_history(session):
     await session.flush()
 
     old_sub = Subscription(
-        platform="telegram", platform_user_id="u",
-        platform_channel_id="-100OLD", feed_id=feed_a.id, is_active=True,
+        platform="telegram",
+        platform_user_id="u",
+        platform_channel_id="-100OLD",
+        feed_id=feed_a.id,
+        is_active=True,
     )
     other_platform = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="-100OLD", feed_id=feed_a.id, is_active=True,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="-100OLD",
+        feed_id=feed_a.id,
+        is_active=True,
     )
     other_channel = Subscription(
-        platform="telegram", platform_user_id="u",
-        platform_channel_id="-100OTHER", feed_id=feed_b.id, is_active=True,
+        platform="telegram",
+        platform_user_id="u",
+        platform_channel_id="-100OTHER",
+        feed_id=feed_b.id,
+        is_active=True,
     )
     session.add_all([old_sub, other_platform, other_channel])
     await session.flush()
-    session.add(
-        SentEntry(subscription_id=old_sub.id, feed_id=feed_a.id, guid="seen")
-    )
+    session.add(SentEntry(subscription_id=old_sub.id, feed_id=feed_a.id, guid="seen"))
     await session.commit()
     old_sub_id = old_sub.id
 
@@ -66,11 +74,7 @@ async def test_migrate_channel_repoints_subs_and_keeps_history(session):
     assert old_sub.id == old_sub_id
     assert old_sub.platform_channel_id == "-100NEW"
     sent = (
-        (
-            await session.execute(
-                select(SentEntry).where(SentEntry.subscription_id == old_sub_id)
-            )
-        )
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == old_sub_id)))
         .scalars()
         .all()
     )
@@ -89,12 +93,18 @@ async def test_migrate_channel_conflict_keeps_incumbent(session):
     session.add(feed)
     await session.flush()
     old_sub = Subscription(
-        platform="telegram", platform_user_id="u",
-        platform_channel_id="-100OLD", feed_id=feed.id, is_active=True,
+        platform="telegram",
+        platform_user_id="u",
+        platform_channel_id="-100OLD",
+        feed_id=feed.id,
+        is_active=True,
     )
     incumbent = Subscription(
-        platform="telegram", platform_user_id="u",
-        platform_channel_id="-100NEW", feed_id=feed.id, is_active=True,
+        platform="telegram",
+        platform_user_id="u",
+        platform_channel_id="-100NEW",
+        feed_id=feed.id,
+        is_active=True,
     )
     session.add_all([old_sub, incumbent])
     await session.commit()
@@ -106,11 +116,7 @@ async def test_migrate_channel_conflict_keeps_incumbent(session):
 
     assert moved == 0
     remaining = (
-        (
-            await session.execute(
-                select(Subscription).where(Subscription.feed_id == feed.id)
-            )
-        )
+        (await session.execute(select(Subscription).where(Subscription.feed_id == feed.id)))
         .scalars()
         .all()
     )
@@ -119,9 +125,14 @@ async def test_migrate_channel_conflict_keeps_incumbent(session):
 
 def _digest(channel_id: str, **overrides) -> ChannelDigest:
     fields = dict(
-        platform="telegram", platform_channel_id=channel_id,
-        enabled=True, schedule="daily", delivery_hour_utc=9,
-        language="en", include_filtered=False, max_articles=50,
+        platform="telegram",
+        platform_channel_id=channel_id,
+        enabled=True,
+        schedule="daily",
+        delivery_hour_utc=9,
+        language="en",
+        include_filtered=False,
+        max_articles=50,
     )
     fields.update(overrides)
     return ChannelDigest(**fields)
@@ -138,9 +149,7 @@ async def test_migrate_channel_moves_digest_config(session):
     assert moved == 1
     row = (
         await session.execute(
-            select(ChannelDigest).where(
-                ChannelDigest.platform_channel_id == "-100NEW"
-            )
+            select(ChannelDigest).where(ChannelDigest.platform_channel_id == "-100NEW")
         )
     ).scalar_one()
     assert row.enabled is True
@@ -155,9 +164,7 @@ async def test_migrate_channel_digest_incumbent_wins(session):
     await session.commit()
 
     assert moved == 0
-    rows = (
-        (await session.execute(select(ChannelDigest))).scalars().all()
-    )
+    rows = (await session.execute(select(ChannelDigest))).scalars().all()
     assert len(rows) == 1
     assert rows[0].platform_channel_id == "-100NEW"
     assert rows[0].enabled is False  # incumbent kept as-is
@@ -188,15 +195,20 @@ async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
     session.add(feed)
     await session.flush()
     sub = Subscription(
-        platform="telegram", platform_user_id="u",
-        platform_channel_id=channel_id, feed_id=feed.id,
-        is_active=True, translate=False,
+        platform="telegram",
+        platform_user_id="u",
+        platform_channel_id=channel_id,
+        feed_id=feed.id,
+        is_active=True,
+        translate=False,
     )
     session.add(sub)
     await session.flush()
     session.add(
         FeedEntry(
-            feed_id=feed.id, guid="g1", title="Title",
+            feed_id=feed.id,
+            guid="g1",
+            title="Title",
             link="https://mig.test/a",
             published_at=datetime.now(UTC) - timedelta(minutes=5),
         )
@@ -223,18 +235,14 @@ async def test_dispatch_catches_migration_and_repoints(session):
 
     # Must not raise; handler repoints and tells the cycle to skip the
     # old id's remaining cached subs.
-    sent = await d._dispatch_to_subscription(
-        session, sub, sub_repo, dead_channels=dead
-    )
+    sent = await d._dispatch_to_subscription(session, sub, sub_repo, dead_channels=dead)
     await session.commit()
 
     assert sent == 0
     assert ("telegram", "-100OLD") in dead
 
     refreshed = (
-        await session.execute(
-            select(Subscription).where(Subscription.id == sub.id)
-        )
+        await session.execute(select(Subscription).where(Subscription.id == sub.id))
     ).scalar_one()
     assert refreshed.platform_channel_id == "-100NEW"
     assert refreshed.is_active is True  # migrated, NOT deactivated
@@ -245,9 +253,7 @@ async def test_dispatch_catches_migration_and_repoints(session):
 
     # The entry was never marked sent — next cycle delivers it to the
     # new chat id.
-    sent_rows = (
-        (await session.execute(select(SentEntry))).scalars().all()
-    )
+    sent_rows = (await session.execute(select(SentEntry))).scalars().all()
     assert sent_rows == []
 
 
@@ -263,9 +269,7 @@ def _tg_adapter():
 
 
 def _msg() -> Message:
-    return Message(
-        title="T", summary="S", link="https://x.test/a", source="x.test"
-    )
+    return Message(title="T", summary="S", link="https://x.test/a", source="x.test")
 
 
 async def test_telegram_send_message_raises_migrated(session):
@@ -297,14 +301,13 @@ async def test_telegram_send_text_pinned_raises_migrated(monkeypatch):
     chat falls to `return False` and retries the dead id forever."""
     from types import SimpleNamespace
 
-    import newsflow.adapters.telegram.bot as tg_bot
     from telegram.error import ChatMigrated
+
+    import newsflow.adapters.telegram.bot as tg_bot
 
     adapter = _tg_adapter()
     adapter.app.bot.send_message = AsyncMock(side_effect=ChatMigrated(-100999))
-    monkeypatch.setattr(
-        tg_bot, "get_settings", lambda: SimpleNamespace(digest_auto_pin=True)
-    )
+    monkeypatch.setattr(tg_bot, "get_settings", lambda: SimpleNamespace(digest_auto_pin=True))
 
     with pytest.raises(ChannelMigratedError) as exc_info:
         await adapter.send_text_pinned("-100123", "digest")
@@ -315,8 +318,9 @@ async def test_telegram_send_text_pinned_raises_migrated(monkeypatch):
 async def test_chat_migrated_is_not_treated_as_gone():
     """ChatMigrated must map to migration, never to ChannelGone
     deactivation — the channel is alive, just renamed."""
-    from newsflow.adapters.telegram.bot import TelegramAdapter
     from telegram.error import ChatMigrated
+
+    from newsflow.adapters.telegram.bot import TelegramAdapter
 
     e = ChatMigrated(-100999)
     assert TelegramAdapter._is_chat_gone(e) is False

@@ -12,8 +12,9 @@ server-side.
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import newsflow.adapters.telegram.bot as tg_bot
 import pytest
+
+import newsflow.adapters.telegram.bot as tg_bot
 from newsflow.adapters.telegram.bot import (
     _require_group_admin,
     digest_command,
@@ -217,6 +218,7 @@ def test_telegram_admin_only_defaults_on():
 def test_discord_groups_locked_to_manage_guild():
     pytest.importorskip("discord")
     from discord import Permissions
+
     from newsflow.adapters.discord.bot import (
         DigestCommands,
         FeedCommands,

@@ -20,9 +20,7 @@ def test_create_translation_service_uses_configured_ttl_days():
     settings.translation_cache_ttl_days = 3  # not the default 7
 
     with (
-        patch.object(
-            factory_mod, "create_translation_provider", return_value=_DummyProvider()
-        ),
+        patch.object(factory_mod, "create_translation_provider", return_value=_DummyProvider()),
         patch.object(factory_mod, "get_settings", return_value=settings),
         patch.object(factory_mod, "get_cache", return_value=None),
     ):
@@ -37,9 +35,7 @@ def test_create_translation_service_default_ttl_matches_default_setting():
     settings.translation_cache_ttl_days = 7  # default in config.py
 
     with (
-        patch.object(
-            factory_mod, "create_translation_provider", return_value=_DummyProvider()
-        ),
+        patch.object(factory_mod, "create_translation_provider", return_value=_DummyProvider()),
         patch.object(factory_mod, "get_settings", return_value=settings),
         patch.object(factory_mod, "get_cache", return_value=None),
     ):

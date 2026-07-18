@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -17,7 +17,6 @@ from newsflow.services.webhook_sync import (
     parse_webhooks_yaml,
     sync_webhooks,
 )
-
 
 # ─── parse_webhooks_yaml ─────────────────────────────────────────────────────
 
@@ -189,7 +188,8 @@ def _patch_feed_fetcher(monkeypatch, entries: list[dict] | None = None):
         return_value=FetchResult(
             url="",
             success=True,
-            entries=entries or [
+            entries=entries
+            or [
                 {
                     "guid": "e1",
                     "title": "First entry",
@@ -209,9 +209,7 @@ def _patch_feed_fetcher(monkeypatch, entries: list[dict] | None = None):
     )
 
 
-async def test_sync_creates_destination_and_subscription(
-    session, monkeypatch, tmp_path
-):
+async def test_sync_creates_destination_and_subscription(session, monkeypatch, tmp_path):
     _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
@@ -238,10 +236,10 @@ subscriptions:
     assert [f.url for f in feeds] == ["https://feed.example.com/rss"]
 
     subs = (
-        await session.execute(
-            select(Subscription).where(Subscription.platform == "webhook")
-        )
-    ).scalars().all()
+        (await session.execute(select(Subscription).where(Subscription.platform == "webhook")))
+        .scalars()
+        .all()
+    )
     assert len(subs) == 1
     assert subs[0].platform_channel_id == "slack"
     assert subs[0].feed_id == feeds[0].id
@@ -267,17 +265,15 @@ subscriptions:
 
     dests = (await session.execute(select(WebhookDestination))).scalars().all()
     subs = (
-        await session.execute(
-            select(Subscription).where(Subscription.platform == "webhook")
-        )
-    ).scalars().all()
+        (await session.execute(select(Subscription).where(Subscription.platform == "webhook")))
+        .scalars()
+        .all()
+    )
     assert len(dests) == 1
     assert len(subs) == 1
 
 
-async def test_sync_removes_destination_and_its_subscriptions(
-    session, monkeypatch, tmp_path
-):
+async def test_sync_removes_destination_and_its_subscriptions(session, monkeypatch, tmp_path):
     _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
@@ -306,19 +302,10 @@ subscriptions: {}
     )
     await sync_webhooks(empty)
 
+    assert (await session.execute(select(WebhookDestination))).scalars().all() == []
     assert (
-        (await session.execute(select(WebhookDestination))).scalars().all() == []
-    )
-    assert (
-        (
-            await session.execute(
-                select(Subscription).where(Subscription.platform == "webhook")
-            )
-        )
-        .scalars()
-        .all()
-        == []
-    )
+        await session.execute(select(Subscription).where(Subscription.platform == "webhook"))
+    ).scalars().all() == []
 
 
 async def test_sync_updates_destination_url(session, monkeypatch, tmp_path):
@@ -346,16 +333,12 @@ destinations:
     )
     await sync_webhooks(p2)
 
-    dest = (
-        (await session.execute(select(WebhookDestination))).scalars().one()
-    )
+    dest = (await session.execute(select(WebhookDestination))).scalars().one()
     assert dest.url == "https://new.example.com/a"
     assert dest.format == "slack"
 
 
-async def test_sync_drops_subscription_when_feed_removed_from_yaml(
-    session, monkeypatch, tmp_path
-):
+async def test_sync_drops_subscription_when_feed_removed_from_yaml(session, monkeypatch, tmp_path):
     _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
@@ -374,11 +357,7 @@ subscriptions:
     await sync_webhooks(p1)
     assert (
         len(
-            (
-                await session.execute(
-                    select(Subscription).where(Subscription.platform == "webhook")
-                )
-            )
+            (await session.execute(select(Subscription).where(Subscription.platform == "webhook")))
             .scalars()
             .all()
         )
@@ -400,20 +379,14 @@ subscriptions:
     await sync_webhooks(p2)
 
     remaining = (
-        (
-            await session.execute(
-                select(Subscription).where(Subscription.platform == "webhook")
-            )
-        )
+        (await session.execute(select(Subscription).where(Subscription.platform == "webhook")))
         .scalars()
         .all()
     )
     assert len(remaining) == 1
 
 
-async def test_sync_skips_feed_that_fails_to_add(
-    session, monkeypatch, tmp_path
-):
+async def test_sync_skips_feed_that_fails_to_add(session, monkeypatch, tmp_path):
     """A feed URL that 404s shouldn't fail the whole sync — just skip it."""
     _patch_session_factory(monkeypatch, session)
 
@@ -447,17 +420,10 @@ subscriptions:
     await sync_webhooks(path)
 
     # Destination gets created, subscription does not.
-    assert (
-        len((await session.execute(select(WebhookDestination))).scalars().all())
-        == 1
-    )
+    assert len((await session.execute(select(WebhookDestination))).scalars().all()) == 1
     assert (
         len(
-            (
-                await session.execute(
-                    select(Subscription).where(Subscription.platform == "webhook")
-                )
-            )
+            (await session.execute(select(Subscription).where(Subscription.platform == "webhook")))
             .scalars()
             .all()
         )

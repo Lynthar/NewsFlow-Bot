@@ -11,12 +11,13 @@ import logging
 import sys
 from types import SimpleNamespace
 
-import newsflow.core.feed_fetcher as feed_fetcher
 import pytest
 import structlog
+from pydantic import ValidationError
+
+import newsflow.core.feed_fetcher as feed_fetcher
 from newsflow.config import Settings
 from newsflow.main import setup_logging
-from pydantic import ValidationError
 
 
 def _format_record(msg: str = "hello world") -> str:
@@ -32,9 +33,7 @@ def _format_exception_record(msg: str = "it broke") -> str:
     try:
         raise ValueError("boom")
     except ValueError:
-        record = logging.LogRecord(
-            "test", logging.ERROR, __file__, 1, msg, None, sys.exc_info()
-        )
+        record = logging.LogRecord("test", logging.ERROR, __file__, 1, msg, None, sys.exc_info())
     return handler.format(record)
 
 

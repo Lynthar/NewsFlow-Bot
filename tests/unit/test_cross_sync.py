@@ -14,12 +14,13 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+from sqlalchemy import select
+
 from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services.source_sync import SourceCfg, SubscriberCfg, _reconcile
 from newsflow.services.webhook_sync import sync_webhooks
-from sqlalchemy import select
 
 WEBHOOKS_YAML = """
 destinations:
@@ -60,7 +61,7 @@ def _patch_session_factory(monkeypatch, session):
 
     monkeypatch.setattr(
         "newsflow.services.webhook_sync.get_session_factory",
-        lambda: (lambda: _Ctx()),
+        lambda: lambda: _Ctx(),
     )
 
 
@@ -94,9 +95,7 @@ async def _source_yaml_subs(session) -> list[Subscription]:
     return (
         (
             await session.execute(
-                select(Subscription).where(
-                    Subscription.platform_user_id == "source-yaml"
-                )
+                select(Subscription).where(Subscription.platform_user_id == "source-yaml")
             )
         )
         .scalars()
@@ -126,9 +125,7 @@ async def test_restart_preserves_source_yaml_subscription_and_history(
 
     # Simulate delivered history: a not-yet-cleaned dedupe record. The bug
     # cascaded this away with the subscription on every restart.
-    session.add(
-        SentEntry(subscription_id=original_id, feed_id=subs[0].feed_id, guid="seen-1")
-    )
+    session.add(SentEntry(subscription_id=original_id, feed_id=subs[0].feed_id, guid="seen-1"))
     await session.commit()
 
     await _boot(session, tmp_path, sources)  # second startup
@@ -137,20 +134,14 @@ async def test_restart_preserves_source_yaml_subscription_and_history(
     assert len(subs) == 1
     assert subs[0].id == original_id, "subscription must survive, not be recreated"
     sent = (
-        (
-            await session.execute(
-                select(SentEntry).where(SentEntry.subscription_id == original_id)
-            )
-        )
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == original_id)))
         .scalars()
         .all()
     )
     assert [s.guid for s in sent] == ["seen-1"]
 
 
-async def test_destination_removal_spares_source_yaml_subscription(
-    session, monkeypatch, tmp_path
-):
+async def test_destination_removal_spares_source_yaml_subscription(session, monkeypatch, tmp_path):
     _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
     sources = [_source_cfg(channel="slack")]
@@ -167,11 +158,7 @@ async def test_destination_removal_spares_source_yaml_subscription(
     dests = (await session.execute(select(WebhookDestination))).scalars().all()
     assert dests == []
     yaml_owned = (
-        (
-            await session.execute(
-                select(Subscription).where(Subscription.platform_user_id == "yaml")
-            )
-        )
+        (await session.execute(select(Subscription).where(Subscription.platform_user_id == "yaml")))
         .scalars()
         .all()
     )
@@ -179,9 +166,7 @@ async def test_destination_removal_spares_source_yaml_subscription(
     assert len(await _source_yaml_subs(session)) == 1
 
 
-async def test_webhook_sync_does_not_rewrite_source_yaml_settings(
-    session, monkeypatch, tmp_path
-):
+async def test_webhook_sync_does_not_rewrite_source_yaml_settings(session, monkeypatch, tmp_path):
     """If webhooks.yaml lists a (destination, feed) pair that sources.yaml
     already owns, webhook_sync must neither rewrite its settings nor create a
     duplicate row (which would double-deliver every entry)."""

@@ -20,10 +20,7 @@ def test_google_news_source_suffix_dropped():
 
 
 def test_title_with_dash_source_suffix_dropped():
-    assert (
-        dedup_summary("Fed cuts rates", "Fed cuts rates - Reuters")
-        == ""
-    )
+    assert dedup_summary("Fed cuts rates", "Fed cuts rates - Reuters") == ""
 
 
 def test_title_with_ellipsis_dropped():
@@ -32,8 +29,7 @@ def test_title_with_ellipsis_dropped():
 
 def test_real_summary_kept():
     summary = (
-        "Fed cuts rates by 25 basis points after months of debate, "
-        "citing weakening job market."
+        "Fed cuts rates by 25 basis points after months of debate, citing weakening job market."
     )
     assert dedup_summary("Fed cuts rates", summary) == summary
 
@@ -44,12 +40,7 @@ def test_case_insensitive():
 
 def test_whitespace_normalized():
     # Extra whitespace / tabs / newlines don't fool the check.
-    assert (
-        dedup_summary(
-            "Fed cuts rates", "  Fed    cuts\n\nrates  "
-        )
-        == ""
-    )
+    assert dedup_summary("Fed cuts rates", "  Fed    cuts\n\nrates  ") == ""
 
 
 def test_empty_summary_returned_as_is():
@@ -76,7 +67,7 @@ def test_summary_with_short_but_real_addition_on_threshold():
     # damage — the heuristic treats it as a source suffix. Documents the
     # tradeoff.
     summary = "Fed cuts rates and markets surge"
-    remainder = summary[len("Fed cuts rates"):].strip(" -—…|·,.")
+    remainder = summary[len("Fed cuts rates") :].strip(" -—…|·,.")
     assert len(remainder) < 30  # sanity: the remainder is short
     assert dedup_summary("Fed cuts rates", summary) == ""
 
@@ -86,10 +77,7 @@ def test_title_case_punctuation_summary_match():
     # Current implementation treats them as different because
     # normalization doesn't strip punctuation, only case+whitespace.
     # Document this as a limitation if someone edits the heuristic.
-    assert (
-        dedup_summary("Fed cuts rates.", "Fed cuts rates")
-        == "Fed cuts rates"
-    )
+    assert dedup_summary("Fed cuts rates.", "Fed cuts rates") == "Fed cuts rates"
 
 
 def test_unrelated_summary_kept():

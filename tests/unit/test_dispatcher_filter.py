@@ -7,10 +7,11 @@ Entries matched out by the filter must:
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
+
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.services.dispatcher import Dispatcher
-from sqlalchemy import select
 
 
 def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
@@ -71,10 +72,10 @@ async def test_filter_drops_non_matching_entry(session):
     # Both entries have SentEntry rows, but b is was_filtered=True.
     # Post-2026-05-08 schema: SentEntry stores guid directly, no FK to FeedEntry.
     rows = (
-        await session.execute(
-            select(SentEntry).where(SentEntry.subscription_id == sub.id)
-        )
-    ).scalars().all()
+        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub.id)))
+        .scalars()
+        .all()
+    )
     by_guid = {row.guid: row for row in rows}
 
     assert set(by_guid.keys()) == {"a", "b"}

@@ -9,7 +9,6 @@ from newsflow.core.opml import (
     parse_opml,
 )
 
-
 SAMPLE_OPML = """<?xml version="1.0" encoding="UTF-8"?>
 <opml version="2.0">
   <head><title>My Feeds</title></head>

@@ -335,7 +335,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             message = f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{_escape_html(url)}"
         else:
             message = (
-                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n" f"{_escape_html(result.message)}"
+                f"✅ <b>Feed Added</b>\n\n<b>{feed_title}</b>\n\n{_escape_html(result.message)}"
             )
     else:
         message = (
@@ -839,7 +839,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif not feed.is_active:
         state = "🛑 Auto-disabled (10+ consecutive errors)"
     elif feed.error_count > 0:
-        state = f"⚠️ {feed.error_count} errors — retry " f"{time_until(feed.next_retry_at)}"
+        state = f"⚠️ {feed.error_count} errors — retry {time_until(feed.next_retry_at)}"
     else:
         state = "✅ Healthy"
 
@@ -867,7 +867,7 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             title_line = entry.title[:80] + ("…" if len(entry.title) > 80 else "")
             suffix = f" — {ts}" if ts else ""
             lines.append(
-                f'• <a href="{_escape_html(entry.link)}">' f"{_escape_html(title_line)}</a>{suffix}"
+                f'• <a href="{_escape_html(entry.link)}">{_escape_html(title_line)}</a>{suffix}'
             )
 
     await msg.reply_text(
@@ -1031,7 +1031,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         summarizer = get_summarizer()
         if summarizer is None:
             await msg.reply_text(
-                "⚠️ Digest not available: LLM provider not configured " "(check OPENAI_API_KEY)."
+                "⚠️ Digest not available: LLM provider not configured (check OPENAI_API_KEY)."
             )
             return
 
@@ -1131,7 +1131,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     await msg.reply_text(
-        f"Unknown subcommand <code>{_escape_html(sub)}</code>. " "Use /digest for help.",
+        f"Unknown subcommand <code>{_escape_html(sub)}</code>. Use /digest for help.",
         parse_mode="HTML",
     )
 
@@ -1490,7 +1490,7 @@ async def _do_opml_import(update: Update, chat_id: str, user_id: str, opml_conte
         lines.append("")
         lines.append("<b>Failures:</b>")
         for url, err in result.failed[:10]:
-            lines.append(f"• <code>{_escape_html(url[:60])}</code>: " f"{_escape_html(err[:80])}")
+            lines.append(f"• <code>{_escape_html(url[:60])}</code>: {_escape_html(err[:80])}")
         if len(result.failed) > 10:
             lines.append(f"…and {len(result.failed) - 10} more")
 
@@ -2370,9 +2370,7 @@ class TelegramAdapter(BaseAdapter):
             )
             return True
         except Exception as e:
-            logger.warning(
-                f"Telegram unpin failed for message {message_id} in " f"{channel_id}: {e}"
-            )
+            logger.warning(f"Telegram unpin failed for message {message_id} in {channel_id}: {e}")
             return False
 
     def _format_message(self, message: Message) -> str:

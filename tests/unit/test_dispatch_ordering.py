@@ -24,16 +24,21 @@ async def _seed(session, entries: list[tuple[str, datetime | None]]) -> Subscrip
     session.add(feed)
     await session.flush()
     sub = Subscription(
-        platform="discord", platform_user_id="u",
-        platform_channel_id="c", feed_id=feed.id,
-        is_active=True, translate=False,
+        platform="discord",
+        platform_user_id="u",
+        platform_channel_id="c",
+        feed_id=feed.id,
+        is_active=True,
+        translate=False,
     )
     session.add(sub)
     await session.flush()
     for guid, published_at in entries:
         session.add(
             FeedEntry(
-                feed_id=feed.id, guid=guid, title=guid,
+                feed_id=feed.id,
+                guid=guid,
+                title=guid,
                 link=f"https://order.test/{guid}",
                 published_at=published_at,
             )

@@ -122,9 +122,7 @@ async def test_on_error_replies_with_plain_text_notice():
 
 async def test_on_error_never_raises_even_if_reply_fails():
     update = MagicMock()
-    update.effective_message.reply_text = AsyncMock(
-        side_effect=RuntimeError("network down")
-    )
+    update.effective_message.reply_text = AsyncMock(side_effect=RuntimeError("network down"))
     context = MagicMock()
     context.error = ValueError("original")
 

@@ -229,3 +229,69 @@ async def test_timeout_value_from_destination_is_used():
     timeout = session.calls[0]["timeout"]
     assert isinstance(timeout, aiohttp.ClientTimeout)
     assert timeout.total == 3
+
+
+# ─── circuit breaker ─────────────────────────────────────────────────────────
+
+
+def _patch_factory(monkeypatch, session):
+    class _Ctx:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "newsflow.adapters.webhook.bot.get_session_factory",
+        lambda: lambda: _Ctx(),
+    )
+
+
+async def _persisted_dest(session, **overrides) -> WebhookDestination:
+    defaults = dict(name="brk", url="https://example.com/webhook", format="generic")
+    defaults.update(overrides)
+    dest = WebhookDestination(**defaults)
+    session.add(dest)
+    await session.commit()
+    return dest
+
+
+async def test_breaker_trips_after_ten_straight_failures(session, monkeypatch):
+    _patch_factory(monkeypatch, session)
+    dest = await _persisted_dest(session)
+    fake = _FakeSession(status=500, body=b"boom")
+    adapter = _make_adapter(fake)
+    adapter._destinations = {"brk": dest}
+
+    for _ in range(10):
+        assert await adapter.send_message("brk", _message()) is False
+
+    assert dest.is_active is False
+    assert dest.error_count == 10
+    assert "HTTP 500" in (dest.last_error or "")
+
+    # Breaker open: the next send short-circuits without touching the network.
+    assert await adapter.send_message("brk", _message()) is False
+    assert len(fake.calls) == 10
+
+
+async def test_success_resets_the_failure_counter(session, monkeypatch):
+    _patch_factory(monkeypatch, session)
+    dest = await _persisted_dest(session, error_count=7, last_error="HTTP 500")
+    adapter = _make_adapter(_FakeSession(status=200))
+    adapter._destinations = {"brk": dest}
+
+    assert await adapter.send_message("brk", _message()) is True
+
+    assert dest.error_count == 0
+    assert dest.last_error is None
+    assert dest.is_active is True
+
+
+async def test_transient_destination_skips_accounting():
+    # Unit-style destinations that were never persisted (id=None) must not
+    # open DB sessions from the accounting path.
+    adapter = _make_adapter(_FakeSession(status=500))
+    adapter._destinations = {"x": _dest(name="x")}
+    assert await adapter.send_message("x", _message()) is False  # no crash, no DB

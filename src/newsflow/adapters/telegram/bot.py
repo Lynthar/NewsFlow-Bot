@@ -209,6 +209,7 @@ WELCOME_TEXT = (
     "/setlang &lt;url&gt; &lt;code&gt; — Per-feed language\n"
     "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
     "/setsilent &lt;url&gt; &lt;on/off&gt; — Per-feed silent\n"
+    "/setdisplay &lt;url&gt; &lt;summary|image&gt; &lt;on/off&gt; — Per-feed display (compact mode)\n"
     "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
     "<b>AI Digest:</b>\n"
     "/digest show — Show current digest config\n"
@@ -852,6 +853,8 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"{'On' if sub.translate else 'Off'} ({_escape_html(sub.target_language)})",
         f"<b>Last OK fetch:</b> {relative_time(feed.last_successful_fetch_at)}",
         f"<b>Last attempt:</b> {relative_time(feed.last_fetched_at)}",
+        f"<b>Backlog:</b> {detail.unsent_count} entr"
+        f"{'y' if detail.unsent_count == 1 else 'ies'} queued for this chat",
     ]
     if feed.last_error and feed.error_count > 0:
         err = feed.last_error
@@ -1430,6 +1433,46 @@ async def setsilent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         service = SubscriptionService(session)
         result = await service.set_feed_silent(
             platform="telegram", channel_id=chat_id, feed_url=url, silent=enabled
+        )
+        await session.commit()
+
+    prefix = "✅" if result.success else "❌"
+    await msg.reply_text(f"{prefix} {_escape_html(result.message)}", parse_mode="HTML")
+
+
+async def setdisplay_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /setdisplay <url> <summary|image> <on|off> — per-feed display."""
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
+        return
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, args = resolved
+    aspect = args[1].lower() if len(args) == 3 else ""
+    if len(args) != 3 or aspect not in ("summary", "image"):
+        await msg.reply_text(
+            "Usage: /setdisplay <rss_url> <summary|image> <on|off>\n"
+            "Example: /setdisplay https://example.com/feed summary off\n\n"
+            "summary off = title-only compact pushes; image off = no picture."
+        )
+        return
+
+    url = args[0]
+    enabled = args[2].lower() in ("on", "true", "yes", "1", "enable", "enabled")
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        result = await service.set_feed_display(
+            platform="telegram",
+            channel_id=chat_id,
+            feed_url=url,
+            show_summary=enabled if aspect == "summary" else None,
+            show_image=enabled if aspect == "image" else None,
         )
         await session.commit()
 
@@ -2089,6 +2132,7 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("settrans", settrans_command))
         self.app.add_handler(CommandHandler("silent", silent_command))
         self.app.add_handler(CommandHandler("setsilent", setsilent_command))
+        self.app.add_handler(CommandHandler("setdisplay", setdisplay_command))
         self.app.add_handler(CommandHandler("filter", filter_command))
         self.app.add_handler(CommandHandler("digest", digest_command))
         self.app.add_handler(CommandHandler("import", import_command))

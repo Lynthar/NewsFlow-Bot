@@ -51,6 +51,22 @@ async def test_auth_accepts_bearer_and_raw(monkeypatch):
     await require_api_key(authorization="secret")
 
 
+async def test_read_auth_open_without_key_locked_with_key(monkeypatch):
+    from newsflow.api.deps import require_read_api_key
+
+    # No key configured → reads stay open (writes are fail-closed anyway).
+    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings(""))
+    await require_read_api_key(authorization=None)
+
+    # Key configured → reads demand it too (feed URLs may embed tokens).
+    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings("secret"))
+    await require_read_api_key(authorization="Bearer secret")
+    for bad in (None, "", "Bearer wrong"):
+        with pytest.raises(HTTPException) as exc:
+            await require_read_api_key(authorization=bad)
+        assert exc.value.status_code == 401
+
+
 # ── mapping ──────────────────────────────────────────────────────────────────
 
 
@@ -68,7 +84,28 @@ def test_to_entry_dict_maps_fields_and_hashes_guid():
 # ── ingest route ─────────────────────────────────────────────────────────────
 
 
-async def test_ingest_writes_and_is_idempotent(session):
+class _FakeDispatcher:
+    """Records spawn() calls; dispatch_once returns a plain marker (spawn is
+    faked too, so nothing needs to be awaitable)."""
+
+    def __init__(self) -> None:
+        self.spawned: list[str | None] = []
+
+    def dispatch_once(self):
+        return "dispatch-round"
+
+    def spawn(self, coro, *, name=None):
+        self.spawned.append(name)
+
+
+@pytest.fixture
+def fake_dispatcher(monkeypatch):
+    fake = _FakeDispatcher()
+    monkeypatch.setattr("newsflow.services.get_dispatcher", lambda: fake)
+    return fake
+
+
+async def test_ingest_writes_and_is_idempotent(session, fake_dispatcher):
     session.add(Feed(url="my-inbound", source_type="webhook_inbound"))
     await session.commit()
 
@@ -76,11 +113,15 @@ async def test_ingest_writes_and_is_idempotent(session):
     res = await ingest(source="my-inbound", payload=payload, db=session, _=None)
     await session.commit()
     assert res.accepted == 1 and res.created == 1
+    # Pushed content triggers an immediate dispatch round — no waiting for
+    # the next scheduled cycle.
+    assert len(fake_dispatcher.spawned) == 1
 
-    # Re-POST the same id → deduped, nothing new created.
+    # Re-POST the same id → deduped, nothing new created, no extra round.
     res2 = await ingest(source="my-inbound", payload=payload, db=session, _=None)
     await session.commit()
     assert res2.created == 0
+    assert len(fake_dispatcher.spawned) == 1
 
 
 async def test_ingest_unknown_source_404(session):

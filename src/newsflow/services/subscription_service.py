@@ -52,11 +52,12 @@ class SubscriptionActionResult:
 @dataclass
 class SubscriptionDetail:
     """Data transfer object for /feed status. Composes a subscription with
-    its owning feed and a few recent entries for context."""
+    its owning feed, a few recent entries, and the deliverable backlog size."""
 
     subscription: Subscription
     feed: Feed
     recent_entries: list[FeedEntry]
+    unsent_count: int = 0
 
 
 @dataclass
@@ -393,7 +394,10 @@ class SubscriptionService:
         if not sub:
             return None
         recent = await self.feed_repo.get_recent_entries(feed.id, entry_limit)
-        return SubscriptionDetail(subscription=sub, feed=feed, recent_entries=list(recent))
+        unsent = await self.sub_repo.count_unsent_entries_for_subscription(sub.id)
+        return SubscriptionDetail(
+            subscription=sub, feed=feed, recent_entries=list(recent), unsent_count=unsent
+        )
 
     async def get_channel_subscriptions(
         self,
@@ -500,6 +504,39 @@ class SubscriptionService:
         return SubscriptionActionResult(
             success=True,
             message=f"Language set to {language} for {feed.title or feed_url}",
+        )
+
+    async def set_feed_display(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        show_summary: bool | None = None,
+        show_image: bool | None = None,
+    ) -> SubscriptionActionResult:
+        """Per-feed display controls: hide the summary (title-only compact
+        mode) and/or the image. None leaves that flag unchanged."""
+        feed_url = expand_source_shortcut(feed_url)
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(success=False, message="Feed not found")
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(success=False, message="Subscription not found")
+        await self.sub_repo.update_subscription_settings(
+            subscription_id=sub.id, show_summary=show_summary, show_image=show_image
+        )
+        parts = []
+        if show_summary is not None:
+            parts.append(f"summary {'shown' if show_summary else 'hidden'}")
+        if show_image is not None:
+            parts.append(f"image {'shown' if show_image else 'hidden'}")
+        detail = ", ".join(parts) if parts else "nothing changed"
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Display for {feed.title or feed_url}: {detail}",
         )
 
     async def set_feed_filter(

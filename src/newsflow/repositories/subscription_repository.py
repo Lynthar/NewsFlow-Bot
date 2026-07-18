@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -545,6 +545,44 @@ class SubscriptionRepository:
             .limit(limit)
         )
         return result.scalars().all()
+
+    async def count_unsent_entries_for_subscription(self, subscription_id: int) -> int:
+        """Size of the deliverable backlog — same predicate as
+        get_unsent_entries_for_subscription (NOT EXISTS + publish-age
+        window), just counted. Surfaces in /feed status so a stalled or
+        rate-limited channel is visible instead of "randomly missing"."""
+        from newsflow.models.feed import FeedEntry
+
+        subscription = await self.get_subscription_by_id(subscription_id)
+        if not subscription:
+            return 0
+
+        sent_exists = (
+            select(SentEntry.id)
+            .where(
+                SentEntry.subscription_id == subscription_id,
+                SentEntry.feed_id == FeedEntry.feed_id,
+                SentEntry.guid == FeedEntry.guid,
+            )
+            .exists()
+        )
+        conditions = [
+            FeedEntry.feed_id == subscription.feed_id,
+            ~sent_exists,
+        ]
+        max_age_days = get_settings().max_entry_publish_age_days
+        if max_age_days > 0:
+            cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+            conditions.append(
+                or_(
+                    FeedEntry.published_at.is_(None),
+                    FeedEntry.published_at >= cutoff,
+                )
+            )
+        count = await self.session.scalar(
+            select(func.count()).select_from(FeedEntry).where(*conditions)
+        )
+        return int(count or 0)
 
     async def cleanup_old_sent_entries(self, days: int = 7) -> int:
         """Delete old sent entry records."""

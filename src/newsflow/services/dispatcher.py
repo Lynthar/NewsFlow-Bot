@@ -73,6 +73,19 @@ class DispatchResult:
     errors: int = 0
 
 
+@dataclass
+class DispatcherTotals:
+    """Process-lifetime counters, accumulated per dispatch round and exposed
+    by /metrics. Plain ints on purpose — the dispatcher stays free of any
+    metrics-library dependency."""
+
+    dispatch_rounds: int = 0
+    feeds_fetched: int = 0
+    new_entries: int = 0
+    messages_sent: int = 0
+    send_errors: int = 0
+
+
 class Dispatcher:
     """
     Handles the main dispatch loop:
@@ -101,6 +114,12 @@ class Dispatcher:
         # event loop only holds weak refs and a task can be GC'd mid-run. See
         # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
         self._background_tasks: set[asyncio.Task] = set()
+        # Serialises dispatch rounds. The loop used to be the only caller;
+        # ingest-triggered rounds (push sources) now share the path, and two
+        # interleaved rounds would double-send: both read the same unsent
+        # entries before either marks them sent.
+        self._dispatch_mutex = asyncio.Lock()
+        self.totals = DispatcherTotals()
 
     def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
@@ -118,6 +137,10 @@ class Dispatcher:
         if not self._expected_platforms:
             self._ready_event.set()
         logger.info(f"Registered adapter for platform: {platform}")
+
+    def get_adapter(self, platform: str) -> MessageSender | None:
+        """The registered adapter for a platform, or None before it connects."""
+        return self._adapters.get(platform)
 
     def heartbeat_path(self, name: str = "dispatch") -> Path:
         """Per-task heartbeat file. HEALTHCHECK reads the directory and
@@ -149,12 +172,22 @@ class Dispatcher:
             return False
 
     async def dispatch_once(self) -> DispatchResult:
-        """
-        Run one dispatch cycle.
+        """Run one dispatch cycle (fetch due feeds + deliver unsent entries).
 
-        Returns:
-            DispatchResult with statistics
+        Rounds are serialised by a mutex: a concurrent caller (the loop vs an
+        ingest-triggered round) waits for the current round instead of racing
+        it into double-sends.
         """
+        async with self._dispatch_mutex:
+            result = await self._dispatch_once_inner()
+        self.totals.dispatch_rounds += 1
+        self.totals.feeds_fetched += result.feeds_fetched
+        self.totals.new_entries += result.new_entries
+        self.totals.messages_sent += result.messages_sent
+        self.totals.send_errors += result.errors
+        return result
+
+    async def _dispatch_once_inner(self) -> DispatchResult:
         result = DispatchResult()
         session_factory = get_session_factory()
 
@@ -607,13 +640,22 @@ class Dispatcher:
                 entry, subscription.target_language, session, plain_summary
             )
 
+        # Per-subscription display controls (/feed display, /setdisplay).
+        # Applied at message build only, AFTER translation, so a hidden
+        # summary still warms the shared translation cache for other
+        # subscriptions to the same feed.
+        if subscription.show_summary is False:
+            plain_summary = ""
+            summary_translated = None
+        image_url = entry.image_url if subscription.show_image is not False else None
+
         return Message(
             title=entry.title,
             summary=plain_summary,
             link=entry.link,
             source=source,
             published_at=entry.published_at,
-            image_url=entry.image_url,
+            image_url=image_url,
             title_translated=title_translated,
             summary_translated=summary_translated,
         )

@@ -75,6 +75,68 @@ def test_parse_bad_subscriber_platform_fails(tmp_path):
         parse_sources_yaml(p)
 
 
+def test_parse_rejects_unknown_source_key(tmp_path):
+    # Typo'd keys used to vanish silently; now they abort startup.
+    p = _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n    confg:\n      items: $\n",
+    )
+    with pytest.raises(SourceConfigError, match="confg"):
+        parse_sources_yaml(p)
+
+
+def test_parse_rejects_unknown_subscriber_key(tmp_path):
+    p = _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n"
+        "    subscribers:\n      - platform: discord\n        channel: '1'\n"
+        "        silnet: true\n",
+    )
+    with pytest.raises(SourceConfigError, match="silnet"):
+        parse_sources_yaml(p)
+
+
+def test_parse_config_subkeys_stay_free_form(tmp_path):
+    # `config:` keys belong to the individual SourceFetcher contracts —
+    # arbitrary keys there must NOT be rejected by the schema layer.
+    p = _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n"
+        "    config:\n      items: '$.a'\n      custom_anything: 1\n",
+    )
+    srcs = parse_sources_yaml(p)
+    assert srcs[0].config["custom_anything"] == 1
+
+
+def test_parse_fetch_interval_is_a_source_level_key(tmp_path):
+    p = _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n"
+        "    fetch_interval_minutes: 240\n    config:\n      items: '$.a'\n",
+    )
+    assert parse_sources_yaml(p)[0].fetch_interval_minutes == 240
+
+    bad = _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n"
+        "    fetch_interval_minutes: 0\n    config:\n      items: '$.a'\n",
+    )
+    with pytest.raises(SourceConfigError, match="fetch_interval_minutes"):
+        parse_sources_yaml(bad)
+
+
+def test_parse_rejects_fetch_interval_inside_config(tmp_path):
+    # Reserved scheduling key — inside config: it would silently shadow the
+    # schema-level one, so it's rejected with a pointer to the right place.
+    p = _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n"
+        "    config:\n      items: '$.a'\n      fetch_interval_minutes: 60\n",
+    )
+    with pytest.raises(SourceConfigError, match="source-level"):
+        parse_sources_yaml(p)
+
+
 # ── reconcile ────────────────────────────────────────────────────────────────
 
 
@@ -314,3 +376,20 @@ async def test_reconcile_leaves_non_owned_sub_settings_untouched(session):
     assert subs[0].translate is False
     assert subs[0].target_language == "ja"
     assert subs[0].silent is True
+
+
+async def test_reconcile_stores_and_removes_fetch_interval(session):
+    # Declared interval lands in Feed.config under the reserved key…
+    src = _src()
+    src.fetch_interval_minutes = 240
+    await _reconcile(session, [src])
+    await session.commit()
+    feed = (await _feeds(session))[0]
+    assert feed.config["fetch_interval_minutes"] == 240
+
+    # …and disappears again when the operator removes it from the file
+    # (stored config is rebuilt on every sync).
+    await _reconcile(session, [_src()])
+    await session.commit()
+    feed = (await _feeds(session))[0]
+    assert "fetch_interval_minutes" not in feed.config

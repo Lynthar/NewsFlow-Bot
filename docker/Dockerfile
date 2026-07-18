@@ -77,6 +77,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV DATABASE_URL=sqlite+aiosqlite:///./data/newsflow.db
 ENV LOG_LEVEL=INFO
 ENV API_ENABLED=false
+# The app default is loopback (127.0.0.1); inside a container the published
+# port mapping is the exposure boundary, so bind wide here. Overridable via
+# .env like everything else.
+ENV API_HOST=0.0.0.0
 ENV API_PORT=8000
 
 # Switch to non-root user

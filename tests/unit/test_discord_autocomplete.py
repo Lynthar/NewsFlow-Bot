@@ -19,6 +19,7 @@ AUTOCOMPLETED = (
     "feed_pause",
     "feed_resume",
     "feed_silent",
+    "feed_display",
     "feed_status",
     "feed_language",
     "feed_translate",

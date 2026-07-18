@@ -14,6 +14,10 @@ sources:
   example-json-api:
     url: https://api.example.com/articles      # the JSON endpoint to poll
     type: json_api
+    # Optional per-source cadence: skip global fetch ticks until this many
+    # minutes have passed since the last fetch (for rate-limited APIs).
+    # Only meaningful when larger than the global FETCH_INTERVAL_MINUTES.
+    # fetch_interval_minutes: 240
     config:
       items: "$.data[*]"     # JSONPath to the array of items   (required)
       guid: id               # field path per item; falls back to a content hash
@@ -23,6 +27,10 @@ sources:
       published: published_at
       # image: image_url
       # author: author.name  # nested paths work too
+      # Extra request headers. ${VAR} expands from the environment at request
+      # time, so the token never lands in this file, the DB, or the logs.
+      # headers:
+      #   Authorization: "Bearer ${MY_API_TOKEN}"
     subscribers:
       - platform: discord
         channel: "123456789012345678"   # Discord channel id

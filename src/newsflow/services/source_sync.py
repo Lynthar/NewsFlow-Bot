@@ -42,6 +42,20 @@ class SourceConfigError(ValueError):
     than limping with a half-synced state."""
 
 
+# Unknown keys are rejected, not ignored — a typo'd key used to vanish
+# silently. `config:` stays free-form on purpose: its keys belong to the
+# individual SourceFetcher contracts, not this schema.
+_TOP_LEVEL_KEYS = frozenset({"sources"})
+_SOURCE_KEYS = frozenset({"url", "type", "config", "subscribers", "fetch_interval_minutes"})
+_SUBSCRIBER_KEYS = frozenset({"platform", "channel", "translate", "language", "silent"})
+
+
+def _reject_unknown_keys(context: str, cfg: dict[Any, Any], allowed: frozenset[str]) -> None:
+    unknown = sorted(str(k) for k in cfg.keys() if k not in allowed)
+    if unknown:
+        raise SourceConfigError(f"{context}: unknown key(s) {unknown}. Allowed: {sorted(allowed)}")
+
+
 @dataclass
 class SubscriberCfg:
     platform: str
@@ -58,6 +72,11 @@ class SourceCfg:
     type: str
     config: dict[str, Any]
     subscribers: list[SubscriberCfg] = field(default_factory=list)
+    # Per-source fetch cadence. The global loop still ticks every
+    # FETCH_INTERVAL_MINUTES; a source with its own (necessarily longer to
+    # matter) interval is skipped by ticks that come sooner. Stored inside
+    # Feed.config under the same reserved key.
+    fetch_interval_minutes: int | None = None
 
 
 # ─── parsing ─────────────────────────────────────────────────────────────────
@@ -76,6 +95,7 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
         raise SourceConfigError(f"malformed YAML in {path}: {e}") from e
     if not isinstance(raw, dict):
         raise SourceConfigError(f"{path}: top-level must be a mapping with a `sources:` key")
+    _reject_unknown_keys(f"{path}", raw, _TOP_LEVEL_KEYS)
 
     sources_raw = raw.get("sources") or {}
     if not isinstance(sources_raw, dict):
@@ -89,6 +109,7 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
             raise SourceConfigError(f"source name must be a non-empty string, got {name!r}")
         if not isinstance(cfg, dict):
             raise SourceConfigError(f"source {name!r}: must be a mapping")
+        _reject_unknown_keys(f"source {name!r}", cfg, _SOURCE_KEYS)
 
         url = cfg.get("url")
         if not url or not isinstance(url, str):
@@ -106,10 +127,28 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
         sconfig = cfg.get("config") or {}
         if not isinstance(sconfig, dict):
             raise SourceConfigError(f"source {name!r}: `config` must be a mapping")
+        if "fetch_interval_minutes" in sconfig:
+            raise SourceConfigError(
+                f"source {name!r}: `fetch_interval_minutes` is a source-level "
+                "key, not a config key — move it up one level"
+            )
+
+        interval = cfg.get("fetch_interval_minutes")
+        if interval is not None and (not isinstance(interval, int) or interval < 1):
+            raise SourceConfigError(
+                f"source {name!r}: `fetch_interval_minutes` must be an integer >= 1"
+            )
 
         subscribers = _parse_subscribers(name, cfg.get("subscribers") or [])
         out.append(
-            SourceCfg(name=name, url=url, type=stype, config=sconfig, subscribers=subscribers)
+            SourceCfg(
+                name=name,
+                url=url,
+                type=stype,
+                config=sconfig,
+                subscribers=subscribers,
+                fetch_interval_minutes=interval,
+            )
         )
     return out
 
@@ -121,6 +160,7 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
     for item in raw:
         if not isinstance(item, dict):
             raise SourceConfigError(f"source {source_name!r}: each subscriber must be a mapping")
+        _reject_unknown_keys(f"source {source_name!r} subscriber", item, _SUBSCRIBER_KEYS)
         platform = item.get("platform")
         if platform not in _SUB_PLATFORMS:
             raise SourceConfigError(
@@ -169,8 +209,14 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
     desired_subs: set[tuple[str, str, int]] = set()  # (platform, channel, feed_id)
 
     for src in sources:
+        # The reserved scheduling key rides inside Feed.config so no schema
+        # change is needed; rebuilt every sync, so removing the key from the
+        # file also removes it from the stored config.
+        stored_config = dict(src.config)
+        if src.fetch_interval_minutes is not None:
+            stored_config["fetch_interval_minutes"] = src.fetch_interval_minutes
         try:
-            feed = await feed_service.upsert_source_feed(src.url, src.type, src.config)
+            feed = await feed_service.upsert_source_feed(src.url, src.type, stored_config)
         except SourceFeedConflictError as e:
             # The URL collides with a user's interactively-added RSS feed.
             # Skip this source (and its subscribers) rather than hijack the

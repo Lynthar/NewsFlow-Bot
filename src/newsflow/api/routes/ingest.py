@@ -2,8 +2,9 @@
 
 The push counterpart to the outbound webhook adapter. A ``webhook_inbound``
 source (declared in sources.yaml together with its subscribers) holds the
-pushed entries; this endpoint writes them through the normal ingestion path,
-after which the dispatch loop fans them out to the source's subscribers.
+pushed entries; this endpoint writes them through the normal ingestion path
+and immediately triggers a dispatch round — "pushed" content shouldn't sit
+waiting for the next scheduled cycle (up to a full fetch interval).
 
 Idempotent by guid (client ``id`` or a content hash), so re-POSTing the same
 item is a no-op. Writes require the API key (see ``require_api_key``).
@@ -91,4 +92,17 @@ async def ingest(
         )
     entry_dicts = [_to_entry_dict(e, feed.url) for e in payload.entries]
     created = await repo.create_entries_bulk(feed.id, entry_dicts)
+
+    if created:
+        # Commit before triggering so the spawned round sees the new rows
+        # (get_db's own commit only runs after this handler returns). A full
+        # dispatch_once is deliberate — it's mutex-serialised with the loop,
+        # and fetch_all_feeds only touches feeds actually due, so a triggered
+        # round is delivery-only in practice.
+        await db.commit()
+        from newsflow.services import get_dispatcher
+
+        dispatcher = get_dispatcher()
+        dispatcher.spawn(dispatcher.dispatch_once(), name=f"ingest-dispatch-{feed.id}")
+
     return IngestResponse(accepted=len(payload.entries), created=len(created))

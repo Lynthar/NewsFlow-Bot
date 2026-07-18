@@ -4,6 +4,7 @@ Feed service - Business logic for feed management.
 
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,22 @@ class FetchFeedResult:
     feed: Feed | None = None
     new_entries: list[FeedEntry] = field(default_factory=list)
     message: str = ""
+
+
+def _feed_fetch_due(feed: Feed, now: datetime) -> bool:
+    """Whether the feed's own fetch interval (if any) has elapsed.
+
+    Reads the reserved ``fetch_interval_minutes`` key sources.yaml stores in
+    ``Feed.config``. Malformed values fail open (fetch normally) — the value
+    is schema-validated at parse time, so anything else predates validation.
+    """
+    minutes = (feed.config or {}).get("fetch_interval_minutes")
+    if not isinstance(minutes, int) or minutes < 1 or feed.last_fetched_at is None:
+        return True
+    last = feed.last_fetched_at
+    if last.tzinfo is None:  # SQLite + aiosqlite drop tzinfo on read
+        last = last.replace(tzinfo=UTC)
+    return (now - last) >= timedelta(minutes=minutes)
 
 
 class FeedService:
@@ -322,6 +339,11 @@ class FeedService:
         AsyncSession is not safe to share across concurrent awaits.
         """
         feeds = await self.repo.get_feeds_due_for_fetch()
+        # Per-feed cadence (sources.yaml `fetch_interval_minutes`, stored in
+        # Feed.config): skip feeds whose own interval hasn't elapsed yet.
+        # Feeds without the key follow the global loop cadence unchanged.
+        now = datetime.now(UTC)
+        feeds = [f for f in feeds if _feed_fetch_due(f, now)]
         if not feeds:
             return []
 

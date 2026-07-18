@@ -36,7 +36,15 @@ def create_app() -> "FastAPI":
             "Install it with: pip install 'newsflow-bot[api]'"
         )
 
-    from newsflow.api.routes import feeds, health, ingest, stats
+    from newsflow.api.routes import (
+        admin,
+        feeds,
+        health,
+        ingest,
+        metrics,
+        stats,
+        subscriptions,
+    )
 
     settings = get_settings()
 
@@ -56,25 +64,42 @@ def create_app() -> "FastAPI":
         redoc_url="/redoc" if settings.log_level == "DEBUG" else None,
     )
 
-    # Add CORS middleware. allow_origins=["*"] with allow_credentials=True
-    # is invalid per the CORS spec — browsers drop credentials when the
-    # origin is a wildcard — so we keep the wildcard (the API is meant to
-    # be callable from anywhere in self-hosted mode) and leave credentials
-    # off. If a future deployment needs cookies/auth-headers cross-origin,
-    # pin allow_origins to a specific list and flip this back on.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # CORS is opt-in: no configured origins = no CORS headers at all (the
+    # default deployment is loopback/API-key anyway). API_CORS_ORIGINS=*
+    # restores the old blanket wildcard; credentials stay off because a
+    # wildcard origin with credentials is invalid per the CORS spec.
+    if settings.api_cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.api_cors_origins,
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
-    # Include routers
+    # Include routers. Data-bearing GET routers carry the read gate (open
+    # until an API key is configured, then key-required); health probes stay
+    # open for container HEALTHCHECK / orchestrator probes. The gate on
+    # write-only routers is harmless — their routes demand the same key.
+    from fastapi import Depends
+
+    from newsflow.api.deps import require_read_api_key
+
+    read_gate = [Depends(require_read_api_key)]
     app.include_router(health.router, tags=["Health"])
-    app.include_router(feeds.router, prefix="/api/feeds", tags=["Feeds"])
-    app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
+    app.include_router(feeds.router, prefix="/api/feeds", tags=["Feeds"], dependencies=read_gate)
+    app.include_router(
+        stats.router, prefix="/api/stats", tags=["Statistics"], dependencies=read_gate
+    )
     app.include_router(ingest.router, prefix="/api/ingest", tags=["Ingest"])
+    app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+    app.include_router(
+        subscriptions.router,
+        prefix="/api/subscriptions",
+        tags=["Subscriptions"],
+        dependencies=read_gate,
+    )
+    app.include_router(metrics.router, tags=["Metrics"], dependencies=read_gate)
 
     return app
 

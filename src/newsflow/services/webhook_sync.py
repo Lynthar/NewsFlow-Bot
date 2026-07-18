@@ -53,6 +53,21 @@ class WebhookConfigError(ValueError):
     Startup fails fast on this rather than limping with a half-synced state."""
 
 
+# Unknown keys are rejected, not ignored: a typo'd `secert:` used to make the
+# HMAC signature silently vanish. `python -m newsflow.checkconfig` validates
+# the file offline before a deploy.
+_TOP_LEVEL_KEYS = frozenset({"destinations", "subscriptions"})
+_DESTINATION_KEYS = frozenset(
+    {"url", "format", "secret", "headers", "timeout_s", "translate", "language"}
+)
+
+
+def _reject_unknown_keys(context: str, cfg: dict[Any, Any], allowed: frozenset[str]) -> None:
+    unknown = sorted(str(k) for k in cfg.keys() if k not in allowed)
+    if unknown:
+        raise WebhookConfigError(f"{context}: unknown key(s) {unknown}. Allowed: {sorted(allowed)}")
+
+
 @dataclass
 class WebhookConfigDestination:
     """Normalised view of one destination block in YAML."""
@@ -95,6 +110,7 @@ def parse_webhooks_yaml(path: Path) -> WebhookConfig:
             f"{path}: top-level must be a mapping with `destinations:` "
             f"and optional `subscriptions:` keys"
         )
+    _reject_unknown_keys(f"{path}", raw, _TOP_LEVEL_KEYS)
 
     destinations = _parse_destinations(raw.get("destinations") or {})
     subscriptions = _parse_subscriptions(raw.get("subscriptions") or {}, destinations)
@@ -115,6 +131,7 @@ def _parse_destinations(
             raise WebhookConfigError(
                 f"destination {name!r}: must be a mapping, got {type(cfg).__name__}"
             )
+        _reject_unknown_keys(f"destination {name!r}", cfg, _DESTINATION_KEYS)
 
         url = cfg.get("url")
         if not url or not isinstance(url, str):
@@ -239,6 +256,15 @@ async def _sync_destinations(session: AsyncSession, config: WebhookConfig) -> No
             row.secret = cfg.secret
             row.headers = cfg.headers
             row.timeout_s = cfg.timeout_s
+            if not row.is_active or row.error_count:
+                # Still declared in the file = the operator wants it working —
+                # same revival contract as auto-disabled feeds. Sync runs at
+                # startup and on hot reload, so "fix the URL and reload"
+                # closes the breaker.
+                row.is_active = True
+                row.error_count = 0
+                row.last_error = None
+                logger.info(f"webhook_sync: re-enabled destination {name!r}")
 
     # Drop destinations that disappeared from YAML, and our subscriptions to
     # them. Subscriptions reference the destination via string name (not FK)

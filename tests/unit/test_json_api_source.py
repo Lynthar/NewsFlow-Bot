@@ -19,8 +19,10 @@ pytest.importorskip("jsonpath_ng")  # needs the source-json extra
 def _fetcher_returning(payload: dict) -> JsonApiSourceFetcher:
     f = JsonApiSourceFetcher()
     raw = json.dumps(payload).encode()
+    f.seen_headers: list[dict | None] = []  # type: ignore[attr-defined]
 
-    async def fake_get(url: str) -> bytes:
+    async def fake_get(url: str, extra_headers: dict | None = None) -> bytes:
+        f.seen_headers.append(extra_headers)  # type: ignore[attr-defined]
         return raw
 
     f._safe_get = fake_get  # type: ignore[method-assign]
@@ -103,7 +105,7 @@ async def test_ssrf_private_url_rejected():
 async def test_invalid_json_response_fails():
     f = JsonApiSourceFetcher()
 
-    async def bad_get(url: str) -> bytes:
+    async def bad_get(url: str, extra_headers: dict | None = None) -> bytes:
         return b"<html>not json</html>"
 
     f._safe_get = bad_get  # type: ignore[method-assign]
@@ -119,3 +121,53 @@ def test_json_api_registered_lazily():
     fetcher = get_source_fetcher("json_api")
     assert fetcher is not None
     assert hasattr(fetcher, "fetch")
+
+
+# ─── custom headers + ${ENV} interpolation ───────────────────────────────────
+
+
+async def test_headers_reach_the_request_with_env_interpolation(monkeypatch):
+    monkeypatch.setenv("MY_API_TOKEN", "s3cret")
+    f = _fetcher_returning({"data": [{"id": "a", "title": "A"}]})
+
+    res = await f.fetch(
+        SourceRequest(
+            url="https://api.example.com/x",
+            config={
+                "items": "$.data[*]",
+                "headers": {"Authorization": "Bearer ${MY_API_TOKEN}", "X-Fixed": "1"},
+            },
+        )
+    )
+
+    assert res.success is True
+    assert f.seen_headers == [{"Authorization": "Bearer s3cret", "X-Fixed": "1"}]
+
+
+async def test_missing_env_var_fails_without_leaking_values(monkeypatch):
+    monkeypatch.delenv("NOPE_TOKEN", raising=False)
+    f = _fetcher_returning({"data": []})
+
+    res = await f.fetch(
+        SourceRequest(
+            url="https://api.example.com/x",
+            config={"items": "$.data[*]", "headers": {"Authorization": "Bearer ${NOPE_TOKEN}"}},
+        )
+    )
+
+    assert res.success is False
+    assert "NOPE_TOKEN" in (res.error or "")
+    assert "Authorization" in (res.error or "")
+    assert f.seen_headers == []  # never reached the network
+
+
+async def test_non_mapping_headers_config_fails():
+    f = _fetcher_returning({"data": []})
+    res = await f.fetch(
+        SourceRequest(
+            url="https://api.example.com/x",
+            config={"items": "$.data[*]", "headers": "Authorization: x"},
+        )
+    )
+    assert res.success is False
+    assert "mapping" in (res.error or "")

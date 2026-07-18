@@ -10,7 +10,7 @@ so the URL can be rotated without touching the subscription rows.
 payload when present — recipients with the same key can verify integrity.
 """
 
-from sqlalchemy import JSON, Index, Integer, String
+from sqlalchemy import JSON, Boolean, Index, Integer, String, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from newsflow.models.base import Base
@@ -44,6 +44,18 @@ class WebhookDestination(Base):
     # Per-destination request timeout. Kept small so a hung webhook can't
     # stall the dispatch loop for all other platforms.
     timeout_s: Mapped[int] = mapped_column(Integer, default=10)
+
+    # Health / circuit breaker — mirrors the feed side's 10-straight-errors
+    # auto-disable. An inactive destination is skipped by the adapter (its
+    # unsent backlog keeps retrying cheaply and flushes on revival);
+    # webhook_sync revives it on the next startup or hot reload, because a
+    # destination still declared in the file is one the operator wants
+    # working.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    error_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(String(512))
 
     __table_args__ = (Index("ix_webhook_destinations_name", "name", unique=True),)
 

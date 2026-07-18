@@ -86,6 +86,38 @@ destinations:
         parse_webhooks_yaml(path)
 
 
+def test_parse_rejects_unknown_destination_key(tmp_path):
+    # `secert:` (typo'd secret) used to be silently ignored — the HMAC
+    # signature just vanished. Unknown keys are hard errors now.
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/hook
+    secert: oops
+""",
+    )
+    with pytest.raises(WebhookConfigError, match="secert"):
+        parse_webhooks_yaml(path)
+
+
+def test_parse_rejects_unknown_top_level_key(tmp_path):
+    path = _write(
+        tmp_path,
+        """
+destinations:
+  a:
+    url: https://example.com/hook
+subscriptons:
+  a:
+    - https://feed.example.com/rss
+""",
+    )
+    with pytest.raises(WebhookConfigError, match="subscriptons"):
+        parse_webhooks_yaml(path)
+
+
 def test_parse_rejects_missing_url(tmp_path):
     path = _write(
         tmp_path,
@@ -271,6 +303,31 @@ subscriptions:
     )
     assert len(dests) == 1
     assert len(subs) == 1
+
+
+async def test_sync_reenables_a_breaker_tripped_destination(session, monkeypatch, tmp_path):
+    """A destination still declared in the file is one the operator wants
+    working — sync (startup or hot reload) closes the circuit breaker."""
+    _patch_session_factory(monkeypatch, session)
+    _patch_feed_fetcher(monkeypatch)
+    session.add(
+        WebhookDestination(
+            name="a",
+            url="https://example.com/h",
+            is_active=False,
+            error_count=10,
+            last_error="HTTP 500",
+        )
+    )
+    await session.commit()
+    path = _write(tmp_path, "destinations:\n  a:\n    url: https://example.com/h\n")
+
+    await sync_webhooks(path)
+
+    dest = (await session.execute(select(WebhookDestination))).scalars().one()
+    assert dest.is_active is True
+    assert dest.error_count == 0
+    assert dest.last_error is None
 
 
 async def test_sync_removes_destination_and_its_subscriptions(session, monkeypatch, tmp_path):

@@ -125,6 +125,11 @@ def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def
     )
     embed.add_field(name="State", value=state, inline=False)
     embed.add_field(
+        name="Backlog",
+        value=f"{detail.unsent_count} queued for this channel",
+        inline=True,
+    )
+    embed.add_field(
         name="Translation",
         value=f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
         inline=True,
@@ -493,6 +498,47 @@ class FeedCommands(commands.Cog):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @feed_group.command(
+        name="display",
+        description="Per-feed display: hide the summary (title-only) and/or the image",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL",
+        summary="Show the entry summary (False = title-only compact mode)",
+        image="Show the entry image",
+    )
+    async def feed_display(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        summary: bool | None = None,
+        image: bool | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if summary is None and image is None:
+            await interaction.followup.send(
+                "Nothing to change — pass `summary` and/or `image`.", ephemeral=True
+            )
+            return
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            result = await service.set_feed_display(
+                platform="discord",
+                channel_id=str(interaction.channel_id),
+                feed_url=url,
+                show_summary=summary,
+                show_image=image,
+            )
+            await session.commit()
+
+        embed = discord.Embed(
+            title="Display Updated" if result.success else "Failed to Update",
+            description=result.message,
+            color=discord.Color.blurple() if result.success else discord.Color.red(),
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     @feed_group.command(name="status", description="Detailed status of one feed in this channel")
     @app_commands.describe(url="The RSS feed URL")
     async def feed_status(self, interaction: discord.Interaction, url: str) -> None:
@@ -834,6 +880,7 @@ class FeedCommands(commands.Cog):
     @feed_pause.autocomplete("url")
     @feed_resume.autocomplete("url")
     @feed_silent.autocomplete("url")
+    @feed_display.autocomplete("url")
     @feed_status.autocomplete("url")
     @feed_language.autocomplete("url")
     @feed_translate.autocomplete("url")

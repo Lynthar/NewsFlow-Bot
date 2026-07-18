@@ -110,11 +110,21 @@ class Settings(BaseSettings):
 
     # API service (disabled by default)
     api_enabled: bool = False
-    api_host: str = "0.0.0.0"
+    # Loopback by default: GET endpoints expose feed URLs (which often embed
+    # tokens) and error details. The Docker image overrides this to 0.0.0.0
+    # (ENV in the Dockerfile — the published port mapping is the boundary
+    # there); bare-metal deployments that really want LAN/WAN exposure set
+    # API_HOST=0.0.0.0 themselves.
+    api_host: str = "127.0.0.1"
     api_port: int = 8000
     # Shared secret for API write endpoints (feed mutations + /api/ingest).
     # Empty = write access disabled (fail closed). Set via the API_KEY env var.
+    # Once set, READ endpoints (except health probes) require it too.
     api_key: str = ""
+    # CORS allowlist for browser callers. Empty (default) = no CORS headers
+    # at all; the old blanket allow_origins=["*"] is opt-in via
+    # API_CORS_ORIGINS=* if someone truly wants it. Comma or JSON list.
+    api_cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # Webhook adapter: enabled whenever the referenced YAML file exists.
     # The file is both the source-of-truth (declarative — edit and restart)
@@ -203,7 +213,7 @@ class Settings(BaseSettings):
             raise ValueError("fetch_interval_minutes must be at least 1")
         return v
 
-    @field_validator("admin_user_ids", mode="before")
+    @field_validator("admin_user_ids", "api_cors_origins", mode="before")
     @classmethod
     def parse_admin_user_ids(cls, v: object) -> object:
         if isinstance(v, str):

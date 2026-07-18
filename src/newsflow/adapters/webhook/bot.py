@@ -99,12 +99,14 @@ class WebhookAdapter(BaseAdapter):
         if dest is None:
             logger.warning(f"webhook send: destination {channel_id!r} not configured")
             return False
+        if dest.is_active is False:
+            return False  # breaker open — backlog retries cheaply, no network
         wire = build_payload(dest.format, message)
         return await self._post(dest, wire)
 
     async def send_text(self, channel_id: str, text: str) -> bool:
         dest = self._destinations.get(channel_id)
-        if dest is None:
+        if dest is None or dest.is_active is False:
             return False
         wire = build_notification_payload(dest.format, text)
         return await self._post(dest, wire)
@@ -137,17 +139,21 @@ class WebhookAdapter(BaseAdapter):
                 dest.url, data=wire.body, headers=headers, timeout=timeout
             ) as resp:
                 if 200 <= resp.status < 300:
+                    await self._record_send_result(dest, ok=True)
                     return True
                 # Read a small slice of the body for diagnostics without
                 # letting a misbehaving server push megabytes into our logs.
                 snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
                 logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: {snippet!r}")
+                await self._record_send_result(dest, ok=False, error=f"HTTP {resp.status}")
                 return False
         except TimeoutError:
             logger.warning(f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s")
+            await self._record_send_result(dest, ok=False, error=f"timeout after {dest.timeout_s}s")
             return False
         except aiohttp.ClientError as e:
             logger.warning(f"webhook {dest.name} ({host}) client error: {e}")
+            await self._record_send_result(dest, ok=False, error=str(e))
             return False
         except ValueError as e:
             # aiohttp raises ValueError when a header value is illegal (control
@@ -157,7 +163,55 @@ class WebhookAdapter(BaseAdapter):
             # sanitizes feed-derived headers; this guards careless custom
             # headers and any future header-using format.
             logger.warning(f"webhook {dest.name} ({host}) bad header/request: {e}")
+            await self._record_send_result(dest, ok=False, error=str(e))
             return False
+
+    # Consecutive-failure threshold; mirrors Feed.mark_error's hardcoded 10.
+    _MAX_CONSECUTIVE_ERRORS = 10
+
+    async def _record_send_result(
+        self, dest: WebhookDestination, *, ok: bool, error: str | None = None
+    ) -> None:
+        """Track consecutive failures on the destination (cache + DB) and trip
+        the breaker at the threshold. Accounting must never break a send, so
+        every DB problem here is swallowed with a log line.
+
+        Success only writes when it RESETS a non-zero counter — the happy
+        path stays free of per-send DB writes.
+        """
+        if dest.id is None:
+            return  # transient instance (never persisted) — nothing to track
+        if ok and not dest.error_count:
+            return
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                row = await session.get(WebhookDestination, dest.id)
+                if row is None:
+                    return
+                if ok:
+                    row.is_active = True
+                    row.error_count = 0
+                    row.last_error = None
+                else:
+                    row.error_count += 1
+                    row.last_error = (error or "send failed")[:512]
+                    if row.error_count >= self._MAX_CONSECUTIVE_ERRORS and row.is_active:
+                        row.is_active = False
+                        logger.error(
+                            f"webhook destination {dest.name!r} auto-disabled after "
+                            f"{row.error_count} straight failures (last: {row.last_error}). "
+                            "Fix the endpoint, then hot-reload (SIGHUP or "
+                            "POST /api/admin/reload) or restart to re-enable; "
+                            "undelivered entries within retention will then flush."
+                        )
+                await session.commit()
+                # Mirror onto the cached instance the send path consults.
+                dest.is_active = row.is_active
+                dest.error_count = row.error_count
+                dest.last_error = row.last_error
+        except Exception:
+            logger.exception(f"failed to record webhook send result for {dest.name!r}")
 
 
 # Module-level singleton — mirrors the start_discord / start_telegram pattern

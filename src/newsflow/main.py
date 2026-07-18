@@ -281,6 +281,21 @@ async def main() -> None:
         except NotImplementedError:
             logger.debug(f"Signal {sig.name} handler not supported on this platform")
 
+    # SIGHUP (Unix only) hot-reloads the declarative YAML configs — the
+    # admin API offers the same via POST /api/admin/reload. A bad file
+    # keeps the previous state instead of killing the process.
+    if hasattr(signal, "SIGHUP"):
+
+        def _trigger_reload() -> None:
+            from newsflow.services.config_reload import reload_declarative_configs
+
+            get_dispatcher().spawn(reload_declarative_configs(), name="config-reload")
+
+        try:
+            loop.add_signal_handler(signal.SIGHUP, _trigger_reload)
+        except NotImplementedError:
+            logger.debug("SIGHUP handler not supported on this platform")
+
     # Start all services
     try:
         tasks = []

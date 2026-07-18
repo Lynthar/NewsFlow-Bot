@@ -103,3 +103,45 @@ async def test_add_feed_reactivates_auto_disabled_existing(session):
     assert result.feed.id == feed.id
     assert feed.is_active is True
     assert feed.error_count == 0
+
+
+# ─── per-feed fetch interval (sources.yaml fetch_interval_minutes) ───────────
+
+
+def test_feed_fetch_due_honors_per_feed_interval():
+    from datetime import UTC, datetime, timedelta
+
+    from newsflow.models.feed import Feed
+    from newsflow.services.feed_service import _feed_fetch_due
+
+    now = datetime.now(UTC)
+    fresh = Feed(
+        url="https://e/a",
+        config={"fetch_interval_minutes": 240},
+        last_fetched_at=now - timedelta(minutes=30),
+    )
+    elapsed = Feed(
+        url="https://e/b",
+        config={"fetch_interval_minutes": 240},
+        last_fetched_at=now - timedelta(minutes=241),
+    )
+    plain = Feed(url="https://e/c", last_fetched_at=now - timedelta(minutes=1))
+    never_fetched = Feed(url="https://e/d", config={"fetch_interval_minutes": 240})
+    naive_ts = Feed(
+        url="https://e/e",
+        config={"fetch_interval_minutes": 240},
+        # SQLite reads come back naive — must be treated as UTC, not crash.
+        last_fetched_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+    )
+    malformed = Feed(
+        url="https://e/f",
+        config={"fetch_interval_minutes": "fast"},
+        last_fetched_at=now - timedelta(minutes=1),
+    )
+
+    assert _feed_fetch_due(fresh, now) is False
+    assert _feed_fetch_due(elapsed, now) is True
+    assert _feed_fetch_due(plain, now) is True  # no key → global cadence
+    assert _feed_fetch_due(never_fetched, now) is True
+    assert _feed_fetch_due(naive_ts, now) is False
+    assert _feed_fetch_due(malformed, now) is True  # fails open

@@ -9,6 +9,11 @@ via JSONPath. Optional dependency: ``jsonpath-ng`` (extra ``source-json``).
                to one guid (which dedupe would treat as already-sent)
     title, link, summary, content, published, image, author:
                optional field paths within each item
+    headers:   mapping of extra request headers. Values may embed
+               ``${ENV_VAR}`` references, resolved from the process
+               environment at request time — the secret itself stays out of
+               sources.yaml, the DB, and the logs. A reference to an unset
+               variable fails the fetch loudly (the API would 401 anyway).
 
 Field paths are JSONPath relative to each item; a plain field name (``"id"``)
 and a nested path (``"author.name"``) both work.
@@ -19,6 +24,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin
@@ -53,6 +60,38 @@ _FIELDS = (
 
 def _fail(url: str, error: str) -> FetchResult:
     return FetchResult(url=url, success=False, entries=[], error=error)
+
+
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _resolve_headers(raw: Any) -> dict[str, str]:
+    """Expand ``${ENV_VAR}`` references in configured header values.
+
+    Raises ValueError with a message that names the HEADER and the variable,
+    never the resolved value — header values are Bearer tokens more often
+    than not.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("config.headers must be a mapping of header -> value")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key)
+
+        def expand(match: re.Match[str], _header: str = name) -> str:
+            var = match.group(1)
+            resolved = os.environ.get(var)
+            if resolved is None:
+                raise ValueError(
+                    f"headers[{_header!r}] references environment variable "
+                    f"{var!r}, which is not set"
+                )
+            return resolved
+
+        out[name] = _ENV_REF_RE.sub(expand, str(value))
+    return out
 
 
 def _to_text(value: Any) -> str | None:
@@ -107,7 +146,12 @@ class JsonApiSourceFetcher:
             return _fail(req.url, f"json_api: invalid JSONPath: {e}")
 
         try:
-            raw = await self._safe_get(req.url)
+            extra_headers = _resolve_headers(config.get("headers"))
+        except ValueError as e:
+            return _fail(req.url, f"json_api: {e}")
+
+        try:
+            raw = await self._safe_get(req.url, extra_headers)
         except InvalidFeedURLError as e:
             return _fail(req.url, f"Unsafe redirect target: {e}")
         except Exception as e:
@@ -125,10 +169,11 @@ class JsonApiSourceFetcher:
         ]
         return FetchResult(url=req.url, success=True, entries=entries)
 
-    async def _safe_get(self, url: str) -> bytes:
+    async def _safe_get(self, url: str, extra_headers: dict[str, str] | None = None) -> bytes:
         """GET with the same SSRF (per-hop revalidation) and size guards as the
         RSS fetcher. Raises on unsafe redirect, HTTP >= 400, or oversize body."""
-        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=DEFAULT_HEADERS) as session:
+        headers = {**DEFAULT_HEADERS, **(extra_headers or {})}
+        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
             current = url
             for _hop in range(MAX_REDIRECTS + 1):
                 async with session.get(current, allow_redirects=False) as resp:

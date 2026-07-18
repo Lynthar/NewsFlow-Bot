@@ -1,6 +1,6 @@
 # NewsFlow Bot - Development Commands
 
-.PHONY: install dev test lint format run docker-build docker-up docker-down clean
+.PHONY: install dev test lint format checkconfig run docker-build docker-up docker-down clean
 
 # ============================================
 # Development
@@ -43,6 +43,10 @@ lint:
 format:
 	poetry run ruff format src/
 	poetry run ruff check --fix src/
+
+# Validate .env + webhooks.yaml + sources.yaml offline (no network, no DB)
+checkconfig:
+	poetry run python -m newsflow.checkconfig
 
 # ============================================
 # Docker - Basic

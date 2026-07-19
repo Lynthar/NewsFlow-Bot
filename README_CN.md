@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**自托管的 RSS 推送后端 —— 为 Discord / Telegram 机器人提供订阅、翻译、过滤、AI 日报**
+**自托管的 Discord / Telegram 信息流推送 —— 内置翻译、AI 日报、非 RSS 源、消息模板与提及**
 
 [![Python](https://img.shields.io/badge/Python-3.11%20–%203.13-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -20,9 +20,31 @@
 
 ## 🎯 它是什么
 
-部署在你自己服务器上的 **RSS 推送后端**。给它一个 Discord 或 Telegram bot token，在频道里 `/feed add <url>`，源有更新时自动推送到频道，可选自动翻译、关键词过滤、定期 AI 日报汇总。
+部署在你自己服务器上的**信息流推送后端**。给它一个 Discord 或 Telegram bot token，在频道里 `/feed add <url>`，新文章发布即送达——自动翻译成你的语言、按关键词过滤、用你自己的模板排版，还可以按日/周聚合成 AI 简报。信息源不止 RSS：JSON API、IMAP newsletter、入站 webhook 走的是同一条管道。
 
 **设计原则**：自托管优先、零配置启动、渐进式复杂度、组件可替换。
+
+---
+
+## 🧭 为什么选 NewsFlow？
+
+多数 feed bot 只做一件事：有新文章 → 发到频道。NewsFlow 把这部分做得足够无聊可靠，然后叠上一层老牌 bot 们没有的能力：
+
+- 🌍 **源是一种语言，频道读另一种。** 内置翻译（DeepL / OpenAI / Google），按 feed 设目标语言——配合消息模板还能做双语排版。
+- 📰 **不只转发，还会总结。** 可选的 AI 日报/周报，把刷屏频道压缩成一份能读完的简报。
+- 🧩 **吃得下 RSS 之外的源。** JSON API、IMAP newsletter、入站 webhook 推送，全部走同一条 过滤 → 翻译 → 模板 → 日报 管道。
+
+|  | NewsFlow | [MonitoRSS](https://github.com/synzen/MonitoRSS) | [RSStT](https://github.com/Rongronggg9/RSS-to-Telegram-Bot) | [flowerss](https://github.com/indes/flowerss-bot) |
+|---|:---:|:---:|:---:|:---:|
+| 内置翻译 | ✅ | ❌ | ❌ | ❌ |
+| AI 日报 / 周报 | ✅ | ❌ | ❌ | ❌ |
+| 非 RSS 源（JSON API / newsletter / 入站 webhook） | ✅ | ❌ | ❌ | ❌ |
+| 消息模板（`{title}` 占位符） | ✅ | ✅ | 仅开关式 | ❌ |
+| 按 feed @角色 / @用户 | ✅ | ✅ | — | — |
+| 单进程多平台 | Discord + Telegram + webhook | Discord | Telegram | Telegram |
+| 自托管 | ✅ | ✅（另有托管服务） | ✅ | ✅ |
+
+<sub>功能对比基于各项目公开文档，截至 2026-07，欢迎指正。三者都是很好的项目——如果你只需要单平台的经典 RSS 转发，它们同样称职。</sub>
 
 ---
 
@@ -30,14 +52,16 @@
 
 | 功能 | 说明 |
 |---|---|
-| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限；粘网站首页自动发现 feed，另有 `gh:` / `gnews:` / `yt:` … 简写 |
+| 🌍 **自动翻译** | DeepL / OpenAI 兼容端点 / Google，按 feed 设目标语言，两层缓存（DB + 内存/Redis），同语言自动短路——不浪费翻译 API |
+| 📰 **AI 日报 / 周报** | 可选 LLM 摘要，按频道排程且支持时区（也可 `/digest now` 立即生成） |
 | 🧩 **非 RSS 源** | 声明式 `sources.yaml`：轮询任意 **JSON API**（JSONPath）或 **IMAP 邮箱 / newsletter**，或接收 **入站 webhook** 推送——都走同一套过滤/翻译/日报/投递链 |
+| 🎨 **消息模板** | 按 feed 自定义 `{title}` `{summary}` `{translated_title}` … 占位符排版——双语输出、紧凑模式、自定义落款（`/feed template` · `/template`） |
+| 🔔 **提及与话题** | Discord 按 feed @角色/@用户、真响铃（默认 ping 安全基线——feed 内容永远 @ 不到人）；Telegram 论坛话题定向投递（`/feed mention` · `/settopic`） |
+| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`，条件请求 / 并发 / SSRF 校验 / 大小上限；粘网站首页自动发现 feed，另有 `gh:` / `gnews:` / `yt:` … 简写 |
 | 🌐 **双平台推送** | Discord 斜杠命令 + Telegram 前缀命令并发工作 |
 | 🔌 **Webhook（出站）** | 声明式 `webhooks.yaml` 推送到 Slack / ntfy / 飞书 / 企业微信 / n8n / Zapier / 任意 HTTP 端点；支持 HMAC-SHA256 签名 |
 | 📥 **入站 ingest API** | `POST /api/ingest/{source}`（API key 鉴权）让 n8n / CI / 脚本把条目推进 NewsFlow |
-| 🌍 **自动翻译** | DeepL / OpenAI / Google，两层缓存（DB + 内存/Redis） |
-| 🎯 **关键词过滤** | 单订阅 include/exclude 规则，被过滤条目不消耗翻译 API |
-| 📰 **AI 日报 / 周报** | 可选 LLM 摘要，按日/周把频道收到的文章聚合成简报 |
+| 🎯 **关键词过滤** | 单订阅 include/exclude 关键词或 `/正则/`，被过滤条目不消耗翻译 API |
 | 📋 **OPML 导入导出** | 从 Feedly / Reeder 搬家；仓库带 22 源预置清单 |
 | 🔁 **指数退避** | 源失效自动拉长重试；10 次连续失败自动停订并通知 |
 | ⏸ **暂停 / 恢复** | 临时不收推送又不删订阅 |
@@ -121,6 +145,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 /feed add <url>          订阅（几秒内推一条预览）
 /feed remove <url>       退订
 /feed list               看当前订阅
+/feed template <url> ... 自定义消息排版（{title}、{url}…）
+/feed mention <url> ...  新文章 @角色/@用户
 /feed filter-set ...     关键词过滤
 /digest enable ...       开日报/周报
 ```
@@ -130,6 +156,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow
 ```
 /add <url>               订阅
 /list                    看当前订阅
+/template <url> ...      自定义消息排版
+/settopic <url>          把 feed 指到当前论坛话题
 /filter <url> ...        关键词过滤
 /digest enable daily 9   开日报
 ```
@@ -205,7 +233,7 @@ API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 365 个测试
+make test      # 650 个测试
 make lint
 ```
 

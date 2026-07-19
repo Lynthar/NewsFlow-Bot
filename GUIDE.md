@@ -93,6 +93,43 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 **频道级默认（`channel_settings` 表）**：频道级命令（`/settings language|translate|silent`，Telegram 端 `/language` `/translate` `/silent`）除了批量改现有订阅，还会把偏好**持久化为频道默认值**，之后 `/add` 的新订阅自动继承 language / translate / silent 三项。这意味着：① **空频道**先 `/settings silent on` 再 `/add`，第一个订阅就是 silent（旧版"空频道限制"已消除）；② 频道改过语言后新加的 feed 不再回落到全局默认 zh-CN；③ 命令在空频道执行也算成功（回显"已存为频道默认，更新了 0 条现有订阅"）。未记录过偏好的频道走旧行为：silent 用"现有订阅全 silent 则继承"的启发式，language/translate 用全局默认。per-feed 覆盖（`/setlang` 等）永远优先——继承只发生在订阅创建那一刻。
 
+**消息模板（自定义排版）**
+
+| 命令 | 说明 |
+|---|---|
+| `/feed template <url>` | 查看当前模板（未设则列出全部占位符） |
+| `/feed template <url\|all> template:<文本>` | 设置模板；`url` 处填 `all` 批量套用到本频道全部现有订阅 |
+| `/feed template <url\|all> reset:True` | 清除模板，回到默认排版 |
+
+模板是带 `{占位符}` 的 Markdown 文本，**完全接管消息正文**（未设模板的订阅零变化）。占位符：`{title}` `{summary}`（生效值——有译文用译文，否则原文）、`{original_title}` `{translated_title}` `{original_summary}` `{translated_summary}`（双语排版用）、`{url}`（别名 `{link}`）、`{source}` `{published}` `{image_url}`、`{mention}`（本订阅配置的提及对象，见下方提及小节；未配置时为空）。规则：
+
+- **Markdown 子集**：`**粗体**`、`[文字](链接)`，两端同一语法（Discord 原生渲染；Telegram 转成 HTML，实体被拒时自动降级纯文本，链接预览保持开启）。
+- **换行**：Discord 的选项输入框是单行的，用 `\n` 表示换行；Telegram 端 `/template` 可直接写多行，`\n` 也认。`{{` `}}` 输出字面花括号。
+- **空值行折叠**：某一行的占位符**全部**解析为空时整行删除（`🖼 {image_url}` 在无图条目上不会留下悬空的 🖼）；行内有任一占位符非空则保留。
+- **校验**：设置时拒绝词形未知的占位符（如拼错的 `{tittle}`）并列出合法集；已存模板在投递时对未知占位符原样放行（不因此丢文章）。模板本体 ≤1000 字符；渲染结果按平台上限截断（Discord 2000 / Telegram 4096）。
+- **与显示控制的关系**：设模板后 `show_summary` 不再参与（正文由模板全权决定）；`show_image` 仍控制图片附带（Discord 以纯图 embed 附在模板消息下）。
+- 设置成功即回一条**预览**（用该 feed 最近一条真实条目渲染；`all` 或空 feed 用样例数据）。新订阅**不**继承模板（没有频道级模板默认）。
+
+示例（Telegram 多行直书；Discord 把换行写成 `\n`）：
+
+```
+/template https://hn.example/rss
+📌 **{title}**
+{summary}
+原文：{original_title}
+🔗 {url} · {source} · {published}
+```
+
+**提及（Mention，响铃通知）**
+
+| 命令 | 说明 |
+|---|---|
+| `/feed mention <url>` | 查看当前提及对象 |
+| `/feed mention <url\|all> target:<@角色或@成员>` | 该 feed 出新文章时 @ 对方（原生选择器选人/选角色，无需手打 id） |
+| `/feed mention <url\|all> clear:True` | 移除提及 |
+
+作用：embed 推送本身**不触发任何通知**，频道不点开就没人知道有新消息；设置 mention 后，推送会带一行真正"响铃"的 @（默认布局下在 embed 上方；模板订阅默认加在首行，模板里写了 `{mention}` 则由模板控制位置）。**Ping 安全基线**：bot 客户端全局默认 `AllowedMentions.none()`——feed 标题/摘要里混进的 `@everyone` / `@用户` 永远不会真的 ping 到任何人，投递时只放行你显式配置的那一个角色/用户。
+
 **OPML**
 
 | 命令 | 说明 |
@@ -161,6 +198,27 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `/setdisplay <url> <summary\|image> <on\|off>` | 单订阅显示控制：`summary off` = 只推标题的紧凑模式；`image off` = 不带图 |
 
 语义同 Discord 的静默模式（见上）：静默订阅不推即时消息，但条目仍进日报；首次 `/add` 仍发一条预览。
+
+**消息模板**
+
+| 命令 | 说明 |
+|---|---|
+| `/template <url>` | 查看当前模板（未设则列出全部占位符） |
+| `/template <url\|all> <模板文本>` | 设置模板，**可直接多行输入**；`all` 批量套用到本频道全部订阅 |
+| `/template <url\|all> reset` | 清除模板，回到默认排版 |
+
+占位符、Markdown 子集、空值行折叠、校验等语义同 Discord 端 `/feed template`（见 1.1 消息模板小节）；设置成功即回预览。群里 set/reset 形式受 `TELEGRAM_ADMIN_ONLY` 管辖，裸 `/template <url>` 查看对所有成员开放。
+
+**论坛话题（Topics）投递**
+
+| 命令 | 说明 |
+|---|---|
+| *在话题里 `/add` / `/import` / 拖 OPML* | 新订阅自动记住该话题，以后的推送都进那里 |
+| `/settopic <url>` | **在目标话题里执行**：把该 feed 的推送指到这个话题 |
+| `/settopic all` | 本群全部订阅指到当前话题 |
+| `/settopic <url\|all> clear` | 回到 General（默认视图） |
+
+适用于开启"话题"模式的超级群；在 General 或普通群执行等同 clear。同一 feed 在一个群里只有一份订阅，因此归属一个话题。**话题被删除**后投递自动自愈：该订阅回落 General（日志出 warning），之后可再 `/settopic` 指向新话题。命令回复与订阅预览天然落在你输入命令的那个话题。`/settopic` 是变更型命令，群里始终要求管理员；频道没有话题概念，故不支持频道绑定形式。
 
 **OPML**
 
@@ -281,7 +339,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `TELEGRAM_ADMIN_ONLY` | `true` | Telegram **群组**里的变更型命令（/add、/remove、/pause、/resume、/language、/translate、/setlang、/settrans、/silent、/setsilent、/setdisplay、/import、/filter 的 set/clear 形式、/digest 的 enable/disable/now）仅群主/管理员可用；只读命令（/list、/info、/status、/export、/test、/digest show 等）所有成员可用。**私聊永不受限**。设为 `false` 恢复旧的任何成员可管理行为 |
+| `TELEGRAM_ADMIN_ONLY` | `true` | Telegram **群组**里的变更型命令（/add、/remove、/pause、/resume、/language、/translate、/setlang、/settrans、/silent、/setsilent、/setdisplay、/settopic、/import、/filter 与 /template 的 set/clear/reset 形式、/digest 的 enable/disable/now）仅群主/管理员可用；只读命令（/list、/info、/status、/export、/test、/digest show、裸 /filter 与 /template 查看等）所有成员可用。**私聊永不受限**。设为 `false` 恢复旧的任何成员可管理行为 |
 | `ADMIN_USER_IDS` | 空 | 全局管理员用户 id 列表（数字 id），**始终**通过 Telegram 群管理员检查。支持逗号分隔（`123,456`）或 JSON 数组两种写法。Discord 端不消费此项——Discord 用原生命令权限（见下） |
 
 Discord 端无需配置：`/feed`、`/settings`、`/digest` 三个命令组自带 `default_permissions`（Manage Server），普通成员默认看不到这些命令；服务器管理员可在 **服务器设置 → 整合（Integrations）** 里按角色/频道放宽整组。顶级 `/status` 保持公开。Discord 平台限制：权限只能设到命令组一级，无法给组内单个子命令单独放行。管理员身份判断结果在 bot 侧缓存 60 秒（Telegram），提升/撤销管理员最迟 1 分钟生效。

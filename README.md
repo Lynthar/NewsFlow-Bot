@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Self-hosted RSS push backend — subscriptions, translation, keyword filtering, AI digests for Discord / Telegram bots**
+**Self-hosted feed delivery for Discord & Telegram — built-in translation, AI digests, beyond-RSS sources, message templates & mentions**
 
 [![Python](https://img.shields.io/badge/Python-3.11%20–%203.13-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -20,9 +20,31 @@ English | [简体中文](README_CN.md)
 
 ## 🎯 What is this?
 
-An **RSS push backend you run on your own server**. Hand it a Discord or Telegram bot token, run `/feed add <url>` in a channel, and the bot pushes new articles there as they appear — optionally translating, filtering by keyword, and rolling them up into periodic AI-generated digests.
+A **feed-delivery backend you run on your own server**. Hand it a Discord or Telegram bot token, run `/feed add <url>` in a channel, and new articles arrive as they're published — translated into your language, filtered by keyword, laid out with your own message template, and rolled up into AI daily/weekly digests if you want them. Sources aren't limited to RSS: the same pipeline ingests JSON APIs, IMAP newsletters, and inbound webhooks.
 
 **Design principles**: self-hosted first · zero-config start · progressive complexity · swappable components.
+
+---
+
+## 🧭 Why NewsFlow?
+
+Most feed bots do one thing: new post → channel. NewsFlow keeps that part boring and reliable, then adds the layer the established bots don't have:
+
+- 🌍 **The feed is in one language, your channel reads another.** Built-in translation (DeepL / OpenAI / Google) with per-feed target languages — and bilingual layouts via message templates.
+- 📰 **It can summarize, not just relay.** Optional AI daily/weekly digests turn a firehose channel into one readable briefing.
+- 🧩 **It ingests more than RSS.** JSON APIs, IMAP newsletters, and inbound webhook pushes flow through the same filter → translate → template → digest pipeline.
+
+|  | NewsFlow | [MonitoRSS](https://github.com/synzen/MonitoRSS) | [RSStT](https://github.com/Rongronggg9/RSS-to-Telegram-Bot) | [flowerss](https://github.com/indes/flowerss-bot) |
+|---|:---:|:---:|:---:|:---:|
+| Built-in translation | ✅ | ❌ | ❌ | ❌ |
+| AI daily / weekly digest | ✅ | ❌ | ❌ | ❌ |
+| Beyond-RSS sources (JSON API / newsletter / webhook-in) | ✅ | ❌ | ❌ | ❌ |
+| Message templates (`{title}` placeholders) | ✅ | ✅ | toggles only | ❌ |
+| Per-feed role / user mentions | ✅ | ✅ | — | — |
+| Platforms in one process | Discord + Telegram + webhook | Discord | Telegram | Telegram |
+| Self-hosted | ✅ | ✅ (hosted option too) | ✅ | ✅ |
+
+<sub>Feature comparison as of 2026-07, from each project's public docs — corrections welcome. All three are solid projects; if classic RSS-to-channel on a single platform is all you need, they serve that well.</sub>
 
 ---
 
@@ -30,14 +52,16 @@ An **RSS push backend you run on your own server**. Hand it a Discord or Telegra
 
 | Feature | Notes |
 |---|---|
-| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap; paste a site homepage to auto-discover its feed, plus `gh:` / `gnews:` / `yt:` … shortcuts |
+| 🌍 **Auto-translation** | DeepL / OpenAI-compatible / Google, per-feed target language, two-tier cache (DB + memory/Redis), same-language short-circuit — no translation API calls wasted |
+| 📰 **AI digest** | Optional LLM daily / weekly briefings per channel, scheduled in your timezone (or `/digest now`) |
 | 🧩 **Non-RSS sources** | Declarative `sources.yaml`: poll any **JSON API** (JSONPath) or **IMAP mailbox / newsletter**, or receive **inbound webhook** pushes — all through the same filter/translate/digest/deliver pipeline |
+| 🎨 **Message templates** | Per-feed `{title}` `{summary}` `{translated_title}` … placeholder layouts — bilingual output, compact mode, your own footer (`/feed template` · `/template`) |
+| 🔔 **Mentions & topics** | Per-feed Discord role/user pings that actually notify (ping-safe baseline — feed content can never `@everyone`); Telegram forum-topic routing (`/feed mention` · `/settopic`) |
+| 📡 **RSS / Atom / JSON Feed** | `feedparser` + `aiohttp`, conditional requests, concurrent fetch, SSRF guard, size cap; paste a site homepage to auto-discover its feed, plus `gh:` / `gnews:` / `yt:` … shortcuts |
 | 🌐 **Multi-platform** | Discord slash commands + Telegram prefix commands in one process |
 | 🔌 **Webhook (outbound)** | Push to Slack / ntfy / Feishu / Work-WeChat / n8n / Zapier / any HTTP endpoint via declarative `webhooks.yaml`; HMAC-SHA256 signing supported |
 | 📥 **Inbound ingest API** | `POST /api/ingest/{source}` (API-key auth) lets n8n / CI / scripts push entries into NewsFlow |
-| 🌍 **Auto-translation** | DeepL / OpenAI / Google, two-tier cache (DB + memory/Redis) |
-| 🎯 **Keyword filter** | Per-subscription include/exclude; filtered entries skip translate |
-| 📰 **AI digest** | Optional LLM-generated daily / weekly briefings |
+| 🎯 **Keyword filter** | Per-subscription include/exclude keywords or `/regex/`; filtered entries skip translate |
 | 📋 **OPML import/export** | Migrate from Feedly / Reeder; repo ships a curated 22-feed OPML |
 | 🔁 **Exponential backoff** | Dying sources auto-stretch retries; 10 fails → auto-disable + notify |
 | ⏸ **Pause / resume** | Temporarily stop without deleting the subscription |
@@ -121,6 +145,8 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 /feed add <url>          subscribe (one preview pushed within seconds)
 /feed remove <url>       unsubscribe
 /feed list               show channel subscriptions
+/feed template <url> ... custom message layout ({title}, {url}, …)
+/feed mention <url> ...  ping a role / user on new entries
 /feed filter-set ...     keyword filter
 /digest enable ...       turn on daily / weekly digest
 ```
@@ -130,6 +156,8 @@ You're live when you see `Discord bot logged in as ...` or `Telegram bot started
 ```
 /add <url>               subscribe
 /list                    show subscriptions
+/template <url> ...      custom message layout
+/settopic <url>          deliver a feed to the current forum topic
 /filter <url> ...        keyword filter
 /digest enable daily 9   turn on daily digest
 ```
@@ -205,7 +233,7 @@ Fast dev loop:
 uv venv --python 3.13
 uv pip install -e ".[all]"
 uv pip install pytest pytest-asyncio
-make test      # 365 tests
+make test      # 650 tests
 make lint
 ```
 

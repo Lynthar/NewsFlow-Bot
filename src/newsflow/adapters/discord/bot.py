@@ -6,6 +6,7 @@ Uses Slash Commands (Application Commands) as recommended by Discord.
 """
 
 import logging
+import re
 from datetime import UTC, datetime
 
 import discord
@@ -16,6 +17,11 @@ from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_filter_field
 from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
+from newsflow.core.message_template import (
+    PLACEHOLDER_LIST,
+    normalize_template,
+    validate_template,
+)
 from newsflow.core.timeutil import relative_time, time_until
 from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
 from newsflow.models.base import get_session_factory
@@ -32,6 +38,32 @@ LIST_PAGE_SIZE = 20
 # within both limits itself.
 AUTOCOMPLETE_MAX_CHOICES = 25
 AUTOCOMPLETE_MAX_LEN = 100
+
+# Stored subscription.mention shapes — always produced from a native
+# Role/User option pick, so anything else is treated as "ping nobody".
+_ROLE_MENTION_RE = re.compile(r"^<@&(\d+)>$")
+_USER_MENTION_RE = re.compile(r"^<@!?(\d+)>$")
+
+
+def _mention_allowance(mention: str) -> discord.AllowedMentions:
+    """AllowedMentions permitting exactly the configured mention target.
+
+    The client-wide default is AllowedMentions.none() — feed-controlled
+    text (titles/summaries flowing through templates as plain content)
+    must never be able to ping. Delivery re-enables just the one
+    role/user the channel explicitly configured.
+    """
+    match = _ROLE_MENTION_RE.match(mention)
+    if match:
+        return discord.AllowedMentions(
+            everyone=False, users=False, roles=[discord.Object(int(match.group(1)))]
+        )
+    match = _USER_MENTION_RE.match(mention)
+    if match:
+        return discord.AllowedMentions(
+            everyone=False, users=[discord.Object(int(match.group(1)))], roles=False
+        )
+    return discord.AllowedMentions.none()
 
 
 def _sub_status_chip(sub: Subscription) -> str | None:
@@ -223,6 +255,12 @@ class NewsFlowBot(commands.Bot):
             command_prefix=commands.when_mentioned,
             intents=intents,
             help_command=None,
+            # Ping-safe baseline: nothing pings unless a send explicitly
+            # re-enables it. Feed titles/summaries flow into plain message
+            # content on the template path, so an article containing
+            # "@everyone" must stay inert; /feed mention deliveries pass
+            # a per-send allowance for exactly the configured target.
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
         self.settings = get_settings()
@@ -538,6 +576,204 @@ class FeedCommands(commands.Cog):
             color=discord.Color.blurple() if result.success else discord.Color.red(),
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feed_group.command(
+        name="template",
+        description="Custom message layout: {title} {summary} {url} … placeholders, \\n for line break",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL, or 'all' to apply to every feed in this channel",
+        template="Template text (\\n = line break). Omit to show the current template",
+        reset="Clear the template and return to the default layout",
+    )
+    async def feed_template(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        template: str | None = None,
+        reset: bool = False,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        channel_id = str(interaction.channel_id)
+        target_all = url.strip().lower() == "all"
+
+        async def _reply(text: str) -> None:
+            await interaction.followup.send(text, ephemeral=True)
+
+        if reset:
+            async with session_factory() as session:
+                service = SubscriptionService(session)
+                if target_all:
+                    count = await service.set_channel_template("discord", channel_id, None)
+                    text = (
+                        f"✅ Template cleared on {count} subscription(s)."
+                        if count
+                        else "No subscriptions in this channel."
+                    )
+                else:
+                    result = await service.set_feed_template("discord", channel_id, url, None)
+                    text = ("✅ " if result.success else "⚠️ ") + result.message
+                await session.commit()
+            await _reply(text)
+            return
+
+        if template is None:
+            # Show the current template.
+            if target_all:
+                await _reply("Pass `template` to apply one to every feed, or `reset: True`.")
+                return
+            async with session_factory() as session:
+                service = SubscriptionService(session)
+                detail = await service.get_subscription_detail(
+                    platform="discord", channel_id=channel_id, feed_url=url, entry_limit=1
+                )
+            if detail is None:
+                await _reply("No subscription to that URL in this channel.")
+                return
+            current = detail.subscription.message_template
+            if not current:
+                await _reply(
+                    "No template set — default layout.\n"
+                    f"Placeholders: `{PLACEHOLDER_LIST}`\n"
+                    r"Example: `📌 **{title}**\n{summary}\n🔗 {url}`"
+                )
+                return
+            # Show \n-escaped so the text can be pasted straight back into
+            # this command's single-line option box.
+            shown = current.replace("\n", "\\n")
+            await _reply(f"Current template:\n```\n{shown}\n```")
+            return
+
+        normalized = normalize_template(template)
+        if not normalized:
+            await _reply("Template is empty — pass text, or use `reset: True` to clear.")
+            return
+        errors = validate_template(normalized)
+        if errors:
+            await _reply("⚠️ " + "\n".join(errors))
+            return
+
+        preview_entry = None
+        preview_language: str | None = None
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            if target_all:
+                count = await service.set_channel_template("discord", channel_id, normalized)
+                if not count:
+                    await session.commit()
+                    await _reply("No subscriptions in this channel.")
+                    return
+                header = f"Template applied to {count} subscription(s)."
+            else:
+                detail = await service.get_subscription_detail(
+                    platform="discord", channel_id=channel_id, feed_url=url, entry_limit=1
+                )
+                if detail is None:
+                    await _reply("No subscription to that URL in this channel.")
+                    return
+                result = await service.set_feed_template("discord", channel_id, url, normalized)
+                if not result.success:
+                    await _reply("⚠️ " + result.message)
+                    return
+                header = result.message
+                if detail.recent_entries:
+                    preview_entry = detail.recent_entries[0]
+                if detail.subscription.translate:
+                    preview_language = detail.subscription.target_language
+            await session.commit()
+
+        preview = SubscriptionService.build_template_preview(
+            normalized, preview_entry, preview_language
+        )
+        if len(preview) > 1500:
+            preview = preview[:1499] + "…"
+        label = "latest entry" if preview_entry is not None else "sample data"
+        await _reply(f"✅ {header}\n\n**Preview** ({label}):\n{preview}")
+
+    @feed_group.command(
+        name="mention",
+        description="Ping a role or user whenever this feed posts (or 'all' feeds)",
+    )
+    @app_commands.describe(
+        url="The RSS feed URL, or 'all' for every feed in this channel",
+        target="Role or user to ping on each new entry",
+        clear="Remove the mention",
+    )
+    async def feed_mention(
+        self,
+        interaction: discord.Interaction,
+        url: str,
+        target: discord.Role | discord.Member | discord.User | None = None,
+        clear: bool = False,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        session_factory = get_session_factory()
+        channel_id = str(interaction.channel_id)
+        target_all = url.strip().lower() == "all"
+
+        async def _reply(text: str) -> None:
+            await interaction.followup.send(text, ephemeral=True)
+
+        if clear:
+            async with session_factory() as session:
+                service = SubscriptionService(session)
+                if target_all:
+                    count = await service.set_channel_mention("discord", channel_id, None)
+                    text = (
+                        f"✅ Mention cleared on {count} subscription(s)."
+                        if count
+                        else "No subscriptions in this channel."
+                    )
+                else:
+                    result = await service.set_feed_mention("discord", channel_id, url, None)
+                    text = ("✅ " if result.success else "⚠️ ") + result.message
+                await session.commit()
+            await _reply(text)
+            return
+
+        if target is None:
+            # Show the current mention.
+            if target_all:
+                await _reply("Pass `target` to set a mention on every feed, or `clear: True`.")
+                return
+            async with session_factory() as session:
+                service = SubscriptionService(session)
+                detail = await service.get_subscription_detail(
+                    platform="discord", channel_id=channel_id, feed_url=url, entry_limit=1
+                )
+            if detail is None:
+                await _reply("No subscription to that URL in this channel.")
+                return
+            current = detail.subscription.mention
+            if not current:
+                await _reply("No mention set — new entries don't ping anyone.")
+                return
+            # Ephemeral + the client-wide AllowedMentions.none() default:
+            # echoing the mention renders the chip without pinging.
+            await _reply(f"Current mention: {current} (pinged with every new entry)")
+            return
+
+        mention_str = target.mention
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            if target_all:
+                count = await service.set_channel_mention("discord", channel_id, mention_str)
+                if not count:
+                    await session.commit()
+                    await _reply("No subscriptions in this channel.")
+                    return
+                text = (
+                    f"✅ Mention applied to {count} subscription(s) — "
+                    f"new entries will start with {mention_str}."
+                )
+            else:
+                result = await service.set_feed_mention("discord", channel_id, url, mention_str)
+                text = ("✅ " if result.success else "⚠️ ") + result.message
+                if result.success:
+                    text += f"\nNew entries will start with {mention_str}."
+            await session.commit()
+        await _reply(text)
 
     @feed_group.command(name="status", description="Detailed status of one feed in this channel")
     @app_commands.describe(url="The RSS feed URL")
@@ -881,6 +1117,8 @@ class FeedCommands(commands.Cog):
     @feed_resume.autocomplete("url")
     @feed_silent.autocomplete("url")
     @feed_display.autocomplete("url")
+    @feed_template.autocomplete("url")
+    @feed_mention.autocomplete("url")
     @feed_status.autocomplete("url")
     @feed_language.autocomplete("url")
     @feed_translate.autocomplete("url")
@@ -928,6 +1166,12 @@ class FeedCommands(commands.Cog):
             if command == "resume" and subs and needle in "all":
                 choices.append(
                     app_commands.Choice(name="all — resume every paused feed", value="all")
+                )
+            elif command in ("template", "mention") and subs and needle in "all":
+                choices.append(
+                    app_commands.Choice(
+                        name="all — apply to every feed in this channel", value="all"
+                    )
                 )
 
             for sub in subs:
@@ -1464,8 +1708,37 @@ class DiscordAdapter(BaseAdapter):
                 )
                 return False
 
+            mention = message.mention
+
+            if message.template_text is not None:
+                # Custom template: plain content (Discord renders the
+                # Markdown natively). show_image was already applied to
+                # message.image_url by the dispatcher — when an image is
+                # left, carry it in an image-only embed so the template
+                # keeps full authority over the text. A configured mention
+                # is prefixed unless the template already placed it via
+                # {mention} (then the rendered text contains it verbatim).
+                content = message.template_text
+                if mention and mention not in content:
+                    content = f"{mention}\n{content}"
+                if len(content) > 2000:
+                    content = content[:1999] + "…"
+                allowed = _mention_allowance(mention) if mention else discord.AllowedMentions.none()
+                if message.image_url:
+                    image_embed = discord.Embed()
+                    image_embed.set_image(url=message.image_url)
+                    await channel.send(content=content, embed=image_embed, allowed_mentions=allowed)
+                else:
+                    await channel.send(content, allowed_mentions=allowed)
+                return True
+
             embed = self._create_embed(message)
-            await channel.send(embed=embed)
+            if mention:
+                await channel.send(
+                    content=mention, embed=embed, allowed_mentions=_mention_allowance(mention)
+                )
+            else:
+                await channel.send(embed=embed)
             return True
 
         except discord.NotFound as e:

@@ -61,6 +61,29 @@ class ChannelMigratedError(Exception):
         self.reason = reason
 
 
+class TopicGoneError(Exception):
+    """Adapter signals that the forum topic (message thread) a message
+    targets no longer exists, while the chat itself is alive.
+
+    Telegram-specific in practice: sends into a deleted topic fail with
+    BadRequest "message thread not found" from then on — a permanent
+    condition that must not loop as a transient retry. The dispatcher
+    reacts by clearing the subscription's message_thread_id so delivery
+    self-heals to the chat's default view; the affected entry goes out on
+    the next cycle. Contrast ChannelGoneError (the whole destination is
+    dead → deactivate) and plain False returns (might recover → retry).
+    """
+
+    def __init__(self, channel_id: str, thread_id: int, reason: str = "") -> None:
+        msg = f"topic {thread_id} in channel {channel_id} is gone"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+        self.channel_id = channel_id
+        self.thread_id = thread_id
+        self.reason = reason
+
+
 @dataclass
 class Message:
     """
@@ -80,6 +103,20 @@ class Message:
     title_translated: str | None = None
     summary_translated: str | None = None
 
+    # Rendered custom template (core/message_template.py), filled by the
+    # dispatcher when the subscription has one. When set, Discord/Telegram
+    # send this Markdown-ish text instead of their default layout; webhook
+    # converters ignore it (structured payloads stay canonical).
+    template_text: str | None = None
+
+    # Platform-specific delivery directives, filled from the subscription.
+    # `mention` (Discord): "<@&roleid>" / "<@userid>" pinged with the entry
+    # — prefixed as a content line unless the template already placed it
+    # via {mention}. `thread_id` (Telegram): forum topic to deliver into.
+    # Other adapters ignore both.
+    mention: str | None = None
+    thread_id: int | None = None
+
     @property
     def display_title(self) -> str:
         """Get title, preferring translated version."""
@@ -89,6 +126,30 @@ class Message:
     def display_summary(self) -> str:
         """Get summary, preferring translated version."""
         return self.summary_translated or self.summary
+
+    def to_template_values(self) -> dict[str, str]:
+        """Placeholder values for core/message_template.render_template.
+
+        Keys are pinned to message_template.PLACEHOLDERS by test — add
+        both sides together. {title}/{summary} are the effective
+        (translated-first) values; the original_/translated_ variants
+        enable bilingual layouts.
+        """
+        published = self.published_at.strftime("%Y-%m-%d %H:%M") if self.published_at else ""
+        return {
+            "title": self.display_title,
+            "summary": self.display_summary,
+            "url": self.link,
+            "link": self.link,
+            "source": self.source,
+            "published": published,
+            "image_url": self.image_url or "",
+            "mention": self.mention or "",
+            "original_title": self.title,
+            "translated_title": self.title_translated or "",
+            "original_summary": self.summary,
+            "translated_summary": self.summary_translated or "",
+        }
 
 
 class BaseAdapter(ABC):

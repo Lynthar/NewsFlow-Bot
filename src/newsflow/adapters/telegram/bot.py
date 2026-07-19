@@ -34,10 +34,16 @@ from newsflow.adapters.base import (
     ChannelGoneError,
     ChannelMigratedError,
     Message,
+    TopicGoneError,
 )
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_filter_field
 from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
+from newsflow.core.message_template import (
+    PLACEHOLDER_LIST,
+    normalize_template,
+    validate_template,
+)
 from newsflow.core.telegram_markdown import markdown_to_telegram_html
 from newsflow.core.timeutil import relative_time, time_until
 from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
@@ -210,6 +216,8 @@ WELCOME_TEXT = (
     "/settrans &lt;url&gt; &lt;on/off&gt; — Per-feed translate\n"
     "/setsilent &lt;url&gt; &lt;on/off&gt; — Per-feed silent\n"
     "/setdisplay &lt;url&gt; &lt;summary|image&gt; &lt;on/off&gt; — Per-feed display (compact mode)\n"
+    "/template &lt;url|all&gt; [text | reset] — Custom message layout ({title}, {url}, …)\n"
+    "/settopic &lt;url|all&gt; [clear] — Deliver a feed to the current forum topic\n"
     "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
     "<b>AI Digest:</b>\n"
     "/digest show — Show current digest config\n"
@@ -240,6 +248,8 @@ _MENU_COMMANDS: list[tuple[str, str]] = [
     ("test", "Check whether a URL is a valid feed"),
     ("language", "Set the default translation language"),
     ("translate", "Toggle translation on or off"),
+    ("template", "Custom message layout for a feed"),
+    ("settopic", "Deliver a feed to the current topic"),
     ("digest", "Configure the AI daily/weekly digest"),
     ("status", "Show bot status"),
     ("help", "Show the full command list"),
@@ -298,6 +308,11 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     url = args[0]
     user_id = str(user.id)
+    # Record the forum topic the command ran in so entries deliver there.
+    # is_topic_message guard: plain reply threads also carry a
+    # message_thread_id and must NOT be recorded. Channel-bound calls come
+    # from private chats, where is_topic_message is never set.
+    thread_id = msg.message_thread_id if msg.is_topic_message else None
 
     # Send processing message
     processing_msg = await msg.reply_text("⏳ Adding feed...")
@@ -311,6 +326,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             user_id=user_id,
             channel_id=chat_id,
             feed_url=url,
+            message_thread_id=thread_id,
         )
 
         await session.commit()
@@ -387,6 +403,15 @@ async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def _escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _is_thread_gone(e: Exception) -> bool:
+    """Telegram's marker for a send into a deleted forum topic — BadRequest
+    "Message thread not found". The chat itself is alive (that would be a
+    different error), so this maps to TopicGoneError, not ChannelGone."""
+    from telegram.error import BadRequest
+
+    return isinstance(e, BadRequest) and "message thread not found" in str(e).lower()
 
 
 def _sub_status_chip(sub: Subscription) -> str | None:
@@ -1139,6 +1164,210 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def settopic_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /settopic <url|all> [clear] — deliver a feed to the forum
+    topic this command is issued in.
+
+    Deliberately no channel binding (channels have no topics): the command
+    is about "deliver where I'm typing". Inside a topic it points delivery
+    there; in General, a non-forum chat, or with `clear` it returns
+    delivery to the default view. Always mutating → always gated.
+    """
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    if not await _require_group_admin(update, context):
+        return
+    args = list(context.args or [])
+    if not args:
+        await msg.reply_text(
+            "Usage (run inside the target topic):\n"
+            "/settopic &lt;url&gt; — deliver that feed to this topic\n"
+            "/settopic all — deliver every feed in this group here\n"
+            "/settopic &lt;url|all&gt; clear — back to General\n\n"
+            "New subscriptions made inside a topic pick it up automatically.",
+            parse_mode="HTML",
+        )
+        return
+
+    url = args[0]
+    target_all = url.lower() == "all"
+    clear = len(args) > 1 and args[1].lower() == "clear"
+    thread_id = None if clear else (msg.message_thread_id if msg.is_topic_message else None)
+    chat_id = str(chat.id)
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        if target_all:
+            count = await service.set_channel_thread("telegram", chat_id, thread_id)
+            if count:
+                where = "this topic" if thread_id else "the default topic (General)"
+                text = f"✅ {count} subscription(s) will deliver to {where}."
+            else:
+                text = "No subscriptions in this chat."
+        else:
+            result = await service.set_feed_thread("telegram", chat_id, url, thread_id)
+            text = ("✅ " if result.success else "⚠️ ") + result.message
+        await session.commit()
+    await msg.reply_text(text)
+
+
+async def template_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /template <url|all> [template text | reset].
+
+    Forms:
+      /template <url>            → show current template
+      /template <url|all> reset  → back to the default layout
+      /template <url|all> <text> → set a custom layout (multiline OK)
+    """
+    msg = update.message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    resolved = await _resolve_target(update, context)
+    if resolved is None:
+        return
+    chat_id, fargs = resolved
+    if not fargs:
+        await msg.reply_text(
+            "Usage:\n"
+            "/template &lt;url&gt; — show current template\n"
+            "/template &lt;url|all&gt; reset — back to the default layout\n"
+            "/template &lt;url|all&gt; &lt;template text&gt; — set a custom layout\n\n"
+            f"Placeholders: {PLACEHOLDER_LIST}\n"
+            "{title}/{summary} prefer the translation; the original_/translated_ "
+            "variants make bilingual layouts. **bold** and [text](url) Markdown "
+            "work. A line whose placeholders all come up empty is dropped. "
+            "Multiline is fine; \\n also works as a line break.",
+            parse_mode="HTML",
+        )
+        return
+
+    url = fargs[0]
+    rest = fargs[1:]
+    # Bare `/template <url>` just shows the template; set/reset mutate.
+    if rest and not await _require_group_admin(update, context):
+        return
+    target_all = url.lower() == "all"
+    session_factory = get_session_factory()
+
+    # Show
+    if not rest:
+        if target_all:
+            await msg.reply_text("Pass a template after all, or /template all reset to clear.")
+            return
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            detail = await service.get_subscription_detail(
+                platform="telegram", channel_id=chat_id, feed_url=url, entry_limit=1
+            )
+        if detail is None:
+            await msg.reply_text(
+                f"⚠️ No subscription to <code>{_escape_html(url)}</code> in this chat.",
+                parse_mode="HTML",
+            )
+            return
+        current = detail.subscription.message_template
+        if not current:
+            await msg.reply_text(
+                f"No template set — default layout.\nPlaceholders: {PLACEHOLDER_LIST}"
+            )
+            return
+        await msg.reply_text(
+            f"<b>Template</b>\n<pre>{_escape_html(current)}</pre>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Clear
+    if len(rest) == 1 and rest[0].lower() == "reset":
+        async with session_factory() as session:
+            service = SubscriptionService(session)
+            if target_all:
+                count = await service.set_channel_template("telegram", chat_id, None)
+                text = (
+                    f"✅ Template cleared on {count} subscription(s)."
+                    if count
+                    else "No subscriptions in this chat."
+                )
+            else:
+                result = await service.set_feed_template("telegram", chat_id, url, None)
+                text = ("✅ " if result.success else "⚠️ ") + result.message
+            await session.commit()
+        await msg.reply_text(text)
+        return
+
+    # Set: recover the raw text after the url token so newlines survive
+    # (context.args flattens all whitespace). _resolve_target consumed the
+    # command token plus possibly one channel-target token ahead of fargs.
+    raw = msg.text or ""
+    consumed = 1 + (len(context.args or []) - len(fargs)) + 1
+    parts = raw.split(None, consumed)
+    template_raw = parts[consumed] if len(parts) > consumed else ""
+    normalized = normalize_template(template_raw)
+    if not normalized:
+        await msg.reply_text("Template is empty — see /template for usage.")
+        return
+    errors = validate_template(normalized)
+    if errors:
+        await msg.reply_text("⚠️ " + "\n".join(errors))
+        return
+
+    preview_entry = None
+    preview_language: str | None = None
+    async with session_factory() as session:
+        service = SubscriptionService(session)
+        if target_all:
+            count = await service.set_channel_template("telegram", chat_id, normalized)
+            if not count:
+                await session.commit()
+                await msg.reply_text("No subscriptions in this chat.")
+                return
+            header = f"Template applied to {count} subscription(s)."
+        else:
+            detail = await service.get_subscription_detail(
+                platform="telegram", channel_id=chat_id, feed_url=url, entry_limit=1
+            )
+            if detail is None:
+                await msg.reply_text(
+                    f"⚠️ No subscription to <code>{_escape_html(url)}</code> in this chat.",
+                    parse_mode="HTML",
+                )
+                return
+            result = await service.set_feed_template("telegram", chat_id, url, normalized)
+            if not result.success:
+                await msg.reply_text("⚠️ " + result.message)
+                return
+            header = result.message
+            if detail.recent_entries:
+                preview_entry = detail.recent_entries[0]
+            if detail.subscription.translate:
+                preview_language = detail.subscription.target_language
+        await session.commit()
+
+    preview = SubscriptionService.build_template_preview(
+        normalized, preview_entry, preview_language
+    )
+    if len(preview) > 1500:
+        preview = preview[:1499] + "…"
+    label = "latest entry" if preview_entry is not None else "sample data"
+    reply_md = f"✅ {header}\n\nPreview ({label}):\n{preview}"
+
+    from telegram.error import BadRequest
+
+    try:
+        await msg.reply_text(
+            markdown_to_telegram_html(reply_md),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except BadRequest:
+        # Converter blind spot — a plain preview beats no confirmation.
+        await msg.reply_text(reply_md, disable_web_page_preview=True)
+
+
 async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /filter <url> [show | clear | include=... exclude=...]
 
@@ -1510,6 +1739,9 @@ async def _do_opml_import(update: Update, chat_id: str, user_id: str, opml_conte
     msg = update.message
     if msg is None:
         return
+    # Same topic capture as /add: an import run inside a forum topic
+    # delivers all its feeds there.
+    thread_id = msg.message_thread_id if msg.is_topic_message else None
     processing = await msg.reply_text("⏳ Importing…")
 
     session_factory = get_session_factory()
@@ -1520,6 +1752,7 @@ async def _do_opml_import(update: Update, chat_id: str, user_id: str, opml_conte
             user_id=user_id,
             channel_id=chat_id,
             opml_content=opml_content,
+            message_thread_id=thread_id,
         )
         await session.commit()
 
@@ -2133,6 +2366,8 @@ class TelegramAdapter(BaseAdapter):
         self.app.add_handler(CommandHandler("silent", silent_command))
         self.app.add_handler(CommandHandler("setsilent", setsilent_command))
         self.app.add_handler(CommandHandler("setdisplay", setdisplay_command))
+        self.app.add_handler(CommandHandler("template", template_command))
+        self.app.add_handler(CommandHandler("settopic", settopic_command))
         self.app.add_handler(CommandHandler("filter", filter_command))
         self.app.add_handler(CommandHandler("digest", digest_command))
         self.app.add_handler(CommandHandler("import", import_command))
@@ -2239,15 +2474,23 @@ class TelegramAdapter(BaseAdapter):
             return False
 
         try:
+            if message.template_text is not None:
+                await self._send_template_message(
+                    channel_id, message.template_text, message.thread_id
+                )
+                return True
             text = self._format_message(message)
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=text,
                 parse_mode="HTML",
                 disable_web_page_preview=False,
+                message_thread_id=message.thread_id,
             )
             return True
         except Exception as e:
+            if message.thread_id is not None and _is_thread_gone(e):
+                raise TopicGoneError(channel_id, message.thread_id, reason=str(e)) from e
             new_id = self._migrated_chat_id(e)
             if new_id is not None:
                 raise ChannelMigratedError(channel_id, new_id, reason=str(e)) from e
@@ -2400,6 +2643,53 @@ class TelegramAdapter(BaseAdapter):
                 disable_web_page_preview=True,
             )
         return sent
+
+    async def _send_template_message(
+        self, channel_id: str, template_text: str, thread_id: int | None = None
+    ) -> None:
+        """Send a template-rendered entry: Markdown → Telegram HTML with a
+        plain-text fallback when Telegram rejects the entities. Link
+        previews stay ON, matching the default entry layout. Raises on
+        chat-level failures so send_message's gone/migrated/topic handling
+        applies unchanged."""
+        assert self.app is not None
+        from telegram.error import BadRequest
+
+        text = template_text
+        if len(text) > 3500:
+            text = text[:3499] + "…"
+        html = markdown_to_telegram_html(text)
+        if len(html) > 4096:
+            # Entity escaping can outgrow Telegram's hard cap even when the
+            # Markdown fits; the trimmed plain text always fits.
+            await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=text,
+                disable_web_page_preview=False,
+                message_thread_id=thread_id,
+            )
+            return
+        try:
+            await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=html,
+                parse_mode="HTML",
+                disable_web_page_preview=False,
+                message_thread_id=thread_id,
+            )
+        except BadRequest as e:
+            if "parse entities" not in str(e).lower():
+                raise
+            logger.warning(
+                f"Template HTML rejected by Telegram for {channel_id}; "
+                f"falling back to plain text: {e}"
+            )
+            await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=text,
+                disable_web_page_preview=False,
+                message_thread_id=thread_id,
+            )
 
     async def unpin_message(self, channel_id: str, message_id: str) -> bool:
         """Unpin a specific message. Returns False on error; the caller

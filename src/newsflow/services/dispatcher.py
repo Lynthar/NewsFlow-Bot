@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError, Message
+from newsflow.adapters.base import (
+    ChannelGoneError,
+    ChannelMigratedError,
+    Message,
+    TopicGoneError,
+)
 from newsflow.config import get_settings
 from newsflow.core.content_processor import (
     MAX_SUMMARY_LENGTH,
@@ -25,6 +30,7 @@ from newsflow.core.content_processor import (
 )
 from newsflow.core.filter import FilterRule
 from newsflow.core.languages import same_primary_language, text_clearly_in_language
+from newsflow.core.message_template import render_template
 from newsflow.models.base import get_session_factory
 from newsflow.models.feed import FeedEntry
 from newsflow.models.subscription import Subscription
@@ -409,6 +415,23 @@ class Dispatcher:
                 # avoid bursty spikes when many entries are due at once.
                 await asyncio.sleep(0.1)
 
+            except TopicGoneError as e:
+                # The forum topic this subscription targets was deleted while
+                # the chat itself is alive. Self-heal: clear the thread so
+                # delivery falls back to the chat's default view — this
+                # entry stays unsent and goes out next cycle; the REMAINING
+                # entries in this batch already build against the cleared
+                # value and deliver immediately. Plain attribute write: the
+                # per-subscription commit persists it, and a rollback just
+                # means we heal again next round (idempotent).
+                subscription.message_thread_id = None
+                logger.warning(
+                    f"Topic {e.thread_id} in {subscription.platform}/"
+                    f"{subscription.platform_channel_id} is gone; subscription "
+                    f"{subscription.id} repointed to the default topic"
+                )
+                continue
+
             except ChannelMigratedError as e:
                 # Telegram group upgraded to supergroup: the channel still
                 # exists but under a new chat id, and the old id rejects
@@ -640,6 +663,34 @@ class Dispatcher:
                 entry, subscription.target_language, session, plain_summary
             )
 
+        # Custom template: rendered from PRE-trim values, so {summary} and
+        # {image_url} always resolve — the template has full authority over
+        # its text and show_summary is deliberately ignored (show_image
+        # below still governs the platform-side image attachment). Render
+        # problems (or a template resolving to nothing) fall back to the
+        # default layout: a broken template must never lose an article.
+        template_text: str | None = None
+        if subscription.message_template:
+            pretrim = Message(
+                title=entry.title,
+                summary=plain_summary,
+                link=entry.link,
+                source=source,
+                published_at=entry.published_at,
+                image_url=entry.image_url,
+                title_translated=title_translated,
+                summary_translated=summary_translated,
+                mention=subscription.mention,
+            )
+            try:
+                template_text = (
+                    render_template(subscription.message_template, pretrim.to_template_values())
+                    or None
+                )
+            except Exception:
+                logger.exception(f"Template render failed for subscription {subscription.id}")
+                template_text = None
+
         # Per-subscription display controls (/feed display, /setdisplay).
         # Applied at message build only, AFTER translation, so a hidden
         # summary still warms the shared translation cache for other
@@ -658,6 +709,9 @@ class Dispatcher:
             image_url=image_url,
             title_translated=title_translated,
             summary_translated=summary_translated,
+            template_text=template_text,
+            mention=subscription.mention,
+            thread_id=subscription.message_thread_id,
         )
 
     async def run_platform_monitor(self, interval_seconds: int = 30) -> None:

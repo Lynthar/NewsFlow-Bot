@@ -147,6 +147,7 @@ class SubscriptionRepository:
         translate: bool = True,
         target_language: str = "zh-CN",
         silent: bool = False,
+        message_thread_id: int | None = None,
     ) -> Subscription:
         """Create a new subscription."""
         subscription = Subscription(
@@ -158,6 +159,7 @@ class SubscriptionRepository:
             translate=translate,
             target_language=target_language,
             silent=silent,
+            message_thread_id=message_thread_id,
         )
         self.session.add(subscription)
         await self.session.flush()
@@ -174,13 +176,15 @@ class SubscriptionRepository:
         silent: bool = False,
         translate: bool = True,
         target_language: str = "zh-CN",
+        message_thread_id: int | None = None,
     ) -> tuple[Subscription, bool]:
         """
         Get existing subscription or create new one.
 
-        `silent` / `translate` / `target_language` are applied only when
-        a new subscription is created (typically the channel defaults —
-        see ChannelSettings). An existing subscription's preferences are
+        `silent` / `translate` / `target_language` / `message_thread_id`
+        are applied only when a new subscription is created (typically the
+        channel defaults — see ChannelSettings — plus the forum topic the
+        command ran in). An existing subscription's preferences are
         preserved: re-subscribing won't flip them back.
 
         Returns:
@@ -203,6 +207,7 @@ class SubscriptionRepository:
             silent=silent,
             translate=translate,
             target_language=target_language,
+            message_thread_id=message_thread_id,
         )
         return subscription, True
 
@@ -241,6 +246,95 @@ class SubscriptionRepository:
             .where(Subscription.id == subscription_id)
             .values(filter_rule=filter_rule)
         )
+
+    async def set_subscription_template(
+        self,
+        subscription_id: int,
+        template: str | None,
+    ) -> None:
+        """Set or clear the message_template column. `None` clears it."""
+        await self.session.execute(
+            update(Subscription)
+            .where(Subscription.id == subscription_id)
+            .values(message_template=template)
+        )
+
+    async def set_channel_template(
+        self,
+        platform: str,
+        channel_id: str,
+        template: str | None,
+    ) -> int:
+        """Bulk set/clear message_template for every subscription in a
+        channel — paused ones included, so they don't resume with a stale
+        layout. Returns how many rows were updated."""
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+            )
+            .values(message_template=template)
+        )
+        return rowcount(result)
+
+    async def set_subscription_mention(
+        self,
+        subscription_id: int,
+        mention: str | None,
+    ) -> None:
+        """Set or clear the mention column. `None` clears it."""
+        await self.session.execute(
+            update(Subscription).where(Subscription.id == subscription_id).values(mention=mention)
+        )
+
+    async def set_channel_mention(
+        self,
+        platform: str,
+        channel_id: str,
+        mention: str | None,
+    ) -> int:
+        """Bulk set/clear mention for every subscription in a channel
+        (paused included). Returns how many rows were updated."""
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+            )
+            .values(mention=mention)
+        )
+        return rowcount(result)
+
+    async def set_subscription_thread(
+        self,
+        subscription_id: int,
+        thread_id: int | None,
+    ) -> None:
+        """Set or clear the message_thread_id column. `None` = default view."""
+        await self.session.execute(
+            update(Subscription)
+            .where(Subscription.id == subscription_id)
+            .values(message_thread_id=thread_id)
+        )
+
+    async def set_channel_thread(
+        self,
+        platform: str,
+        channel_id: str,
+        thread_id: int | None,
+    ) -> int:
+        """Bulk-point every subscription in a channel at a forum topic
+        (paused included). Returns how many rows were updated."""
+        result = await self.session.execute(
+            update(Subscription)
+            .where(
+                Subscription.platform == platform,
+                Subscription.platform_channel_id == channel_id,
+            )
+            .values(message_thread_id=thread_id)
+        )
+        return rowcount(result)
 
     async def deactivate_subscription(
         self,

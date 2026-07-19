@@ -5,11 +5,21 @@ Subscription service - Business logic for subscription management.
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from newsflow.adapters.base import Message
 from newsflow.config import get_settings
+from newsflow.core.content_processor import (
+    MAX_SUMMARY_LENGTH,
+    clean_html,
+    dedup_summary,
+    get_source_name,
+    truncate_text,
+)
 from newsflow.core.filter import FilterRule
+from newsflow.core.message_template import render_template
 from newsflow.core.opml import OpmlEntry, OpmlParseError, build_opml, parse_opml
 from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed, FeedEntry
@@ -93,6 +103,7 @@ class SubscriptionService:
         channel_id: str,
         feed_url: str,
         guild_id: str | None = None,
+        message_thread_id: int | None = None,
     ) -> SubscribeResult:
         """
         Subscribe a channel to a feed.
@@ -107,6 +118,9 @@ class SubscriptionService:
             channel_id: Channel/chat ID
             feed_url: RSS feed URL
             guild_id: Guild/server ID (for Discord)
+            message_thread_id: Telegram forum topic the subscribe command
+                ran in — new entries deliver to that topic (None = default
+                view). Applied only when the subscription is created.
 
         Returns:
             SubscribeResult with subscription object
@@ -163,6 +177,7 @@ class SubscriptionService:
             silent=inherit_silent,
             translate=inherit_translate,
             target_language=inherit_language,
+            message_thread_id=message_thread_id,
         )
 
         if not created:
@@ -624,6 +639,164 @@ class SubscriptionService:
             return None
         return FilterRule.from_json(sub.filter_rule)
 
+    async def set_feed_template(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        template: str | None,
+    ) -> SubscriptionActionResult:
+        """Set or clear (template=None) one subscription's message template.
+
+        The template arrives normalized and validated — adapters run
+        core.message_template.normalize_template/validate_template before
+        calling this.
+        """
+        feed_url = expand_source_shortcut(feed_url)
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(success=False, message="Feed not found")
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(success=False, message="Subscription not found")
+        await self.sub_repo.set_subscription_template(sub.id, template)
+        action = "set" if template else "cleared"
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Template {action} for {feed.title or feed_url}",
+        )
+
+    async def set_channel_template(
+        self,
+        platform: str,
+        channel_id: str,
+        template: str | None,
+    ) -> int:
+        """Bulk-apply/clear a template on every subscription in the channel
+        (paused included). Returns the number of subscriptions updated —
+        new subscriptions do NOT inherit it (no channel-level default)."""
+        return await self.sub_repo.set_channel_template(platform, channel_id, template)
+
+    async def set_feed_mention(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        mention: str | None,
+    ) -> SubscriptionActionResult:
+        """Set or clear (mention=None) one subscription's delivery mention.
+
+        The string arrives pre-built from a native Role/User option pick
+        ("<@&id>" / "<@id>") — never free text.
+        """
+        feed_url = expand_source_shortcut(feed_url)
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(success=False, message="Feed not found")
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(success=False, message="Subscription not found")
+        await self.sub_repo.set_subscription_mention(sub.id, mention)
+        action = "set" if mention else "cleared"
+        return SubscriptionActionResult(
+            success=True,
+            message=f"Mention {action} for {feed.title or feed_url}",
+        )
+
+    async def set_channel_mention(
+        self,
+        platform: str,
+        channel_id: str,
+        mention: str | None,
+    ) -> int:
+        """Bulk-apply/clear a mention on every subscription in the channel
+        (paused included). Returns the number updated."""
+        return await self.sub_repo.set_channel_mention(platform, channel_id, mention)
+
+    async def set_feed_thread(
+        self,
+        platform: str,
+        channel_id: str,
+        feed_url: str,
+        thread_id: int | None,
+    ) -> SubscriptionActionResult:
+        """Point one subscription's delivery at a forum topic (Telegram).
+        thread_id=None returns it to the chat's default view."""
+        feed_url = expand_source_shortcut(feed_url)
+        feed = await self.feed_repo.get_feed_by_url(feed_url)
+        if not feed:
+            return SubscriptionActionResult(success=False, message="Feed not found")
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if not sub:
+            return SubscriptionActionResult(success=False, message="Subscription not found")
+        await self.sub_repo.set_subscription_thread(sub.id, thread_id)
+        where = "this topic" if thread_id else "the default topic (General)"
+        return SubscriptionActionResult(
+            success=True,
+            message=f"{feed.title or feed_url} will deliver to {where}",
+        )
+
+    async def set_channel_thread(
+        self,
+        platform: str,
+        channel_id: str,
+        thread_id: int | None,
+    ) -> int:
+        """Bulk-point every subscription in the channel at a forum topic
+        (paused included). Returns the number updated."""
+        return await self.sub_repo.set_channel_thread(platform, channel_id, thread_id)
+
+    @staticmethod
+    def build_template_preview(
+        template: str,
+        entry: FeedEntry | None,
+        target_language: str | None,
+    ) -> str:
+        """Render a template for the set-command preview reply.
+
+        Uses a real entry when the feed has one — same cleaning chain as
+        dispatch (clean_html → truncate → dedup) and the entry's CACHED
+        translation when it matches the subscription's language; never
+        spends a translation API call. Falls back to sample values on a
+        feed with no entries yet.
+        """
+        if entry is not None:
+            plain_summary, _ = clean_html(entry.content or entry.summary or "")
+            plain_summary = truncate_text(plain_summary, MAX_SUMMARY_LENGTH)
+            plain_summary = dedup_summary(entry.title, plain_summary)
+            lang = "zh" if (target_language or "").startswith("zh") else "en"
+            title_translated = None
+            summary_translated = None
+            if target_language and entry.translation_language == target_language:
+                title_translated = entry.title_translated or None
+                summary_translated = entry.summary_translated or None
+            message = Message(
+                title=entry.title,
+                summary=plain_summary,
+                link=entry.link,
+                source=get_source_name(entry.link, lang),
+                published_at=entry.published_at,
+                image_url=entry.image_url,
+                title_translated=title_translated,
+                summary_translated=summary_translated,
+            )
+        else:
+            message = Message(
+                title="Example headline",
+                summary="An example summary sentence for previewing your template.",
+                link="https://example.com/article",
+                source="Example Source",
+                published_at=datetime.now(UTC),
+                image_url=None,
+            )
+        return render_template(template, message.to_template_values())
+
     async def set_feed_silent(
         self,
         platform: str,
@@ -729,6 +902,7 @@ class SubscriptionService:
         channel_id: str,
         opml_content: str,
         guild_id: str | None = None,
+        message_thread_id: int | None = None,
     ) -> OpmlImportResult:
         """Parse an OPML document and bulk-subscribe. Preview dispatch is
         intentionally NOT triggered here — a 20-feed import would otherwise
@@ -752,6 +926,7 @@ class SubscriptionService:
                 channel_id=channel_id,
                 feed_url=entry.url,
                 guild_id=guild_id,
+                message_thread_id=message_thread_id,
             )
             if sub_result.success:
                 if sub_result.is_new:

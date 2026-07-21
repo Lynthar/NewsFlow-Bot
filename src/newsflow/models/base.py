@@ -111,7 +111,7 @@ def get_engine() -> AsyncEngine:
             connect_args["timeout"] = 15
         _engine = create_async_engine(
             settings.database_url,
-            echo=settings.log_level == "DEBUG",
+            echo=settings.db_echo,
             future=True,
             connect_args=connect_args,
         )

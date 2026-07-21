@@ -213,6 +213,19 @@ class Dispatcher:
 
                 result.new_entries = len(new_entries)
 
+                # Commit the fetch writes (feed metadata + new entries) NOW,
+                # before the subscription loop. On SQLite these writes hold the
+                # single-writer lock, and leaving them uncommitted through the
+                # loop blocks the webhook adapter's breaker accounting — which
+                # runs in its OWN session/connection — for the full 15s
+                # busy-timeout on every failing send, so the breaker never trips
+                # and each round stalls. Committing here releases the lock; the
+                # per-subscription commits below are unchanged, and feed
+                # metadata (etag / backoff / last_fetched) rightly persists
+                # regardless of send outcome — the same reason the round-end
+                # commit exists.
+                await session.commit()
+
                 # Dispatch to subscriptions every cycle, not only when this
                 # cycle produced new entries. A subscription can still hold a
                 # backlog of unsent entries from an earlier cycle whose send

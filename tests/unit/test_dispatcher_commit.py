@@ -282,12 +282,18 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(session,
     # with A's flushed marks — exactly the state the recovery rollback has
     # to clean up.
     real_commit = type(session).commit
-    tripped = {"done": False}
+    commit_calls = {"n": 0}
 
     async def flaky_commit(self):
-        if self is session and not tripped["done"]:
-            tripped["done"] = True
-            raise OperationalError("stmt", None, Exception("database is locked"))
+        if self is session:
+            commit_calls["n"] += 1
+            # Commit #1 is the fetch-writes commit added before the sub loop
+            # (it releases the SQLite write lock so the webhook breaker's
+            # separate-session accounting can persist). Commit #2 is the per-sub
+            # commit after subscription A — that's the one we make fail,
+            # SQLITE_BUSY-style.
+            if commit_calls["n"] == 2:
+                raise OperationalError("stmt", None, Exception("database is locked"))
         return await real_commit(self)
 
     monkeypatch.setattr(type(session), "commit", flaky_commit)

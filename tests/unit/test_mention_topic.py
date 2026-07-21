@@ -205,7 +205,8 @@ async def test_discord_mention_rides_default_embed():
     assert ok is True
     kwargs = channel.send.await_args.kwargs
     assert kwargs["content"] == "<@&9>"
-    assert kwargs["embed"].description == "[T](https://x.test/a)"
+    assert kwargs["embed"].title == "T"
+    assert kwargs["embed"].url == "https://x.test/a"
     assert [o.id for o in kwargs["allowed_mentions"].roles] == [9]
 
 

@@ -14,6 +14,33 @@ from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
 
+# Column-length caps for untrusted feed-derived text (mirrors the FeedEntry /
+# Feed model columns). Feeds are untrusted and some serve titles/URLs longer
+# than the column limit: on Postgres an over-length value fails the INSERT with
+# StringDataRightTruncationError and takes the whole feed's fetch down; on
+# SQLite it stores but the oversized text then overruns platform message limits
+# at render. Truncate at ingest so neither can happen.
+_ENTRY_TITLE_CAP, _ENTRY_URL_CAP, _ENTRY_AUTHOR_CAP = 1024, 2048, 256
+_FEED_TITLE_CAP, _FEED_HEADER_CAP = 512, 256
+
+
+def _cap(value: str | None, limit: int) -> str | None:
+    """None-safe truncation for optional text fields."""
+    return value[:limit] if value is not None else None
+
+
+def _clamp_future_date(published_at: datetime | None, now: datetime) -> datetime | None:
+    """Clamp a clearly-future published_at (more than a day ahead) to `now`.
+
+    A broken or hostile feed can stamp entries far in the future; left as-is the
+    entry shows an absurd timestamp and sorts as the newest item forever-first
+    in the backlog. Only dates >1 day ahead are clamped, so a legitimately
+    timezone-skewed near-future entry is left untouched."""
+    if published_at is None:
+        return None
+    aware = published_at if published_at.tzinfo else published_at.replace(tzinfo=UTC)
+    return now if aware > now + timedelta(days=1) else published_at
+
 
 class FeedRepository:
     """
@@ -111,13 +138,13 @@ class FeedRepository:
             "next_retry_at": None,
         }
         if title:
-            update_data["title"] = title
+            update_data["title"] = title[:_FEED_TITLE_CAP]
         if description:
-            update_data["description"] = description
+            update_data["description"] = description  # Text column — no cap
         if etag:
-            update_data["etag"] = etag
+            update_data["etag"] = etag[:_FEED_HEADER_CAP]
         if last_modified:
-            update_data["last_modified"] = last_modified
+            update_data["last_modified"] = last_modified[:_FEED_HEADER_CAP]
 
         await self.session.execute(update(Feed).where(Feed.id == feed_id).values(**update_data))
 
@@ -207,7 +234,10 @@ class FeedRepository:
         if not entries_data:
             return []
 
-        guids = [data["guid"] for data in entries_data]
+        # Truncate guid to its column length up front so the existence check
+        # matches previously-stored (also-truncated) rows — otherwise a
+        # >2048-char guid would miss the check and then collide on INSERT.
+        guids = [data["guid"][:_ENTRY_URL_CAP] for data in entries_data]
         result = await self.session.execute(
             select(FeedEntry.guid).where(
                 FeedEntry.feed_id == feed_id,
@@ -224,10 +254,11 @@ class FeedRepository:
         # that IntegrityError would poison the shared session for the rest of
         # the dispatch cycle (every other feed's metadata/backoff updates and
         # pending SentEntry writes would be rolled back).
+        now = datetime.now(UTC)
         seen: set[str] = set()
         new_entries: list[FeedEntry] = []
         for data in entries_data:
-            guid = data["guid"]
+            guid = data["guid"][:_ENTRY_URL_CAP]
             if guid in existing_guids or guid in seen:
                 continue
             seen.add(guid)
@@ -235,13 +266,13 @@ class FeedRepository:
                 FeedEntry(
                     feed_id=feed_id,
                     guid=guid,
-                    title=data["title"],
-                    link=data["link"],
+                    title=data["title"][:_ENTRY_TITLE_CAP],
+                    link=data["link"][:_ENTRY_URL_CAP],
                     summary=data.get("summary"),
                     content=data.get("content"),
-                    author=data.get("author"),
-                    published_at=data.get("published_at"),
-                    image_url=data.get("image_url"),
+                    author=_cap(data.get("author"), _ENTRY_AUTHOR_CAP),
+                    published_at=_clamp_future_date(data.get("published_at"), now),
+                    image_url=_cap(data.get("image_url"), _ENTRY_URL_CAP),
                 )
             )
 

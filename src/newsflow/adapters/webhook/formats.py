@@ -218,14 +218,23 @@ def _json(payload: dict) -> WireRequest:
 
 
 def _rfc2047(s: str) -> str:
-    """Encode a header value for safe transport over HTTP. ASCII passes
-    through unchanged; non-ASCII gets =?UTF-8?B?..?= which ntfy and any
-    RFC-2047-aware receiver can decode back to the original string.
+    """Encode a header value as a single safe line for HTTP transport.
 
-    Note: Header(s, 'utf-8').encode() is what actually emits the
-    encoded-word form. str(Header(...)) just returns the raw unicode
-    string, which aiohttp would then reject as invalid latin-1."""
-    return Header(s, "utf-8").encode()
+    Collapse every whitespace run (incl. CR/LF/tab) to a single space, then
+    RFC-2047 encode with folding suppressed (high ``maxlinelen``). Two reasons:
+
+    - ``Header(s).encode()`` defaults to ``maxlinelen=76`` and FOLDS long or
+      non-ASCII values by inserting a newline. aiohttp rejects any header value
+      containing a control char, so a folded ``Title`` raised ValueError and the
+      ntfy send failed permanently — hitting every CJK title (base64 grows past
+      76) and any title over ~40 chars.
+    - A raw newline in the source title would otherwise inject a header line;
+      collapsing whitespace closes that too.
+
+    ntfy decodes the resulting ``=?UTF-8?B?..?=`` / ``=?UTF-8?Q?..?=`` word back
+    to the original string."""
+    collapsed = " ".join(s.split())
+    return Header(collapsed, "utf-8").encode(maxlinelen=998)
 
 
 def _safe_header_url(value: str | None) -> str | None:

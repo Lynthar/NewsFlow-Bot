@@ -77,12 +77,23 @@ def setup_logging(settings: Settings) -> None:
     root.addHandler(handler)
     root.setLevel(log_level)
 
-    # Quiet noisy third-party loggers. httpx/httpcore are not just noise:
-    # python-telegram-bot routes every Bot API call through httpx, whose
-    # INFO-level request line contains the full URL — with the bot token in
-    # the path — so leaving them at INFO writes the token into the logs on
-    # every poll.
-    for logger_name in ["aiohttp", "discord", "telegram", "apscheduler", "httpx", "httpcore"]:
+    # Quiet noisy third-party loggers. Several don't just add noise — they leak
+    # secrets at DEBUG: python-telegram-bot routes every Bot API call through
+    # httpx, whose INFO request line carries the bot token in the URL path; and
+    # aiosqlite logs each SQL statement with its bound parameters at DEBUG
+    # (webhook URL tokens, HMAC secrets, stored API keys). Pinning them to
+    # WARNING keeps those out of the logs even when the app itself runs at DEBUG.
+    # (Opt into SQL tracing explicitly via DB_ECHO, never as a LOG_LEVEL=DEBUG
+    # side effect.)
+    for logger_name in [
+        "aiohttp",
+        "discord",
+        "telegram",
+        "apscheduler",
+        "httpx",
+        "httpcore",
+        "aiosqlite",
+    ]:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 

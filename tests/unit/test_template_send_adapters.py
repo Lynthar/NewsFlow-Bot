@@ -171,4 +171,5 @@ async def test_discord_no_template_keeps_embed_layout():
     call = channel.send.await_args
     assert not call.args
     assert "content" not in call.kwargs
-    assert call.kwargs["embed"].description == "[T](https://x.test/a)"
+    assert call.kwargs["embed"].title == "T"
+    assert call.kwargs["embed"].url == "https://x.test/a"

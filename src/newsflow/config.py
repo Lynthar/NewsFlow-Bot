@@ -138,6 +138,12 @@ class Settings(BaseSettings):
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "console"
+    # SQLAlchemy engine SQL echo — deliberately decoupled from LOG_LEVEL.
+    # Raising LOG_LEVEL to DEBUG for application troubleshooting must NOT dump
+    # every SQL statement's bound parameters (webhook URL tokens, HMAC secrets,
+    # stored API keys) into the logs. Opt in explicitly with DB_ECHO=true when
+    # you actually want SQL tracing.
+    db_echo: bool = False
 
     # ===== Permissions =====
 

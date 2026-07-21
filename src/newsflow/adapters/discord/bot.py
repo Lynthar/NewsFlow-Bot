@@ -1849,8 +1849,18 @@ class DiscordAdapter(BaseAdapter):
         ts = message.published_at or datetime.now(UTC)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=UTC)
+        # Title goes in the embed TITLE field (with url), NOT as a markdown link
+        # in the description. The title field is not markdown-parsed, so a feed
+        # title containing "](" can no longer inject a clickable link into the
+        # embed (a phishing vector). Discord caps the title at 256 chars, so
+        # truncating here also stops an oversized title from failing the send.
+        # url is set only for a real http(s) link (Discord rejects a non-URL
+        # embed url).
+        title = message.display_title[:256] or "(untitled)"
+        url = message.link if message.link.startswith(("http://", "https://")) else None
         embed = discord.Embed(
-            description=f"[{message.display_title}]({message.link})",
+            title=title,
+            url=url,
             color=discord.Color.blue(),
             timestamp=ts,
         )

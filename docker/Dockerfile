@@ -48,7 +48,7 @@ LABEL maintainer="NewsFlow Bot"
 LABEL description="Self-hosted RSS to Discord/Telegram bot with translation support"
 # Keep in sync with pyproject.toml [tool.poetry] version and
 # src/newsflow/__init__.py __version__ on every release bump.
-LABEL version="0.10.0"
+LABEL version="0.10.1"
 
 WORKDIR /app
 

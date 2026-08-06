@@ -310,6 +310,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | 单篇文章喂给 LLM 时的字符上限 |
 | `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | 调度循环的检查间隔 |
 | `DIGEST_SYSTEM_PROMPT` | 空 | 日报 prompt 覆盖（见 §3.3） |
+| `DIGEST_MENTION_ON_DELIVERY` | `false` | 投递 digest 时加一行可见抬头，Discord 端附带 `@here`，让定时日报在刷屏频道里不被淹没。**默认关**，老部署升级后不会突然开始 ping 人。Discord 要真正响铃需要 bot 在该频道有 "Mention Everyone" 权限，没有则 `@here` 只显示为文字；其他平台只加抬头 |
+| `DIGEST_AUTO_PIN` | `false` | 每次投递自动置顶本次 digest 并取消上一次的置顶，让频道置顶列表恒为"最新一期"。需要 Discord 的 "Manage Messages" / Telegram 管理员权限。置顶失败（缺权限、到 50 条上限）优雅降级：digest 照发、旧置顶保留、日志出 warning。webhook 目的地静默跳过 |
 
 ### 2.7 REST API（可选）
 
@@ -320,7 +322,17 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `API_PORT` | `8000` | 监听端口 |
 | `API_KEY` | `（空）` | API 共享密钥。**空 = 禁用所有写端点（fail-closed）**、读端点开放；**一旦设置，读端点（health/ready/live 探针除外）同样要求携带**。请求带 `Authorization: Bearer <API_KEY>` |
 | `API_CORS_ORIGINS` | 空 | 浏览器跨域来源白名单（逗号或 JSON 数组）。**空 = 完全不发 CORS 头**；写 `*` 恢复旧的全放行 |
-| `SOURCES_CONFIG_PATH` | `./data/sources.yaml` | 非 RSS 源声明文件；文件存在即启用同步（见 §4B）。Docker 下 compose 已把它指向挂载的 `config/sources.yaml` |
+
+### 2.7B 声明式配置文件
+
+这两项指向 YAML 文件，**文件存在与否就是功能开关**——想关掉某个功能，删文件即可，不需要改任何环境变量。
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `WEBHOOKS_CONFIG_PATH` | `./data/webhooks.yaml` | 出站 webhook 目的地与订阅声明（见 §4）。文件存在即启用，启动日志打印 `Webhook: ✓ enabled` |
+| `SOURCES_CONFIG_PATH` | `./data/sources.yaml` | 非 RSS 源（JSON-API / IMAP / 入站 webhook）声明（见 §4B）。文件存在即启用同步 |
+
+> **Docker 下别用上面的默认值**：compose 已把两者分别覆盖为 `/app/config/webhooks.yaml` 和 `/app/config/sources.yaml`，对应宿主机上挂载进去的 `config/` 目录（只读）。也就是说 Docker 部署只要把文件放进仓库根目录的 `config/` 就行，`.env` 里**不用**设这两个变量。表中的路径是裸机运行的默认值。
 
 ### 2.8 日志
 
@@ -328,12 +340,14 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LOG_FORMAT` | `console` | `console`（彩色）或 `json`（结构化） |
+| `DB_ECHO` | `false` | 把每条 SQL（含绑定参数）打进日志。**故意与 `LOG_LEVEL` 解耦**：调应用问题把 LOG_LEVEL 开到 DEBUG 时，不应该顺带把 DB 里存的密钥（webhook URL 里的 token、HMAC secret、API key）冲进日志。只在本地调 SQL 时开 |
 
 ### 2.9 配额（0 = 无限制）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `MAX_FEEDS_PER_CHANNEL` | `0` | 单频道最多订阅数 |
+| `MULTI_TENANT` | `false` | 多租户模式开关，为将来的托管服务预留。**自建用户忽略即可**，代码里目前没有依赖它的逻辑分支 |
 
 ### 2.10 权限
 
@@ -762,7 +776,7 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 
 ### 5.3 预置源列表
 
-仓库 `samples/curated-feeds.opml` 提供 23 个精选源（WSJ、FT、NYT、Bloomberg、Economist、Reuters、Atlantic、Foreign Affairs、Nautilus、Longreads、Cloudflare Blog、EFF 等）。
+仓库 `samples/curated-feeds.opml` 提供 22 个精选源（WSJ、FT、NYT、Bloomberg、Economist、Reuters、Atlantic、Foreign Affairs、Nautilus、Longreads、Cloudflare Blog、EFF 等）。另有三份按主题拆分的子集：`curated-feeds-general.opml`（11 源）、`curated-feeds-finance.opml`（7 源）、`curated-feeds-tech.opml`（4 源）。
 
 **使用**：下载该文件到本地 → 用上面任一导入方式批量订阅。
 
@@ -1490,16 +1504,30 @@ poetry run python -m newsflow.main
 ```bash
 uv venv --python 3.13
 uv pip install -e ".[all]"
-uv pip install pytest pytest-asyncio
+uv pip install pytest pytest-asyncio ruff mypy
 cp .env.example .env
 .venv/bin/python -m newsflow.main     # Windows: .venv\Scripts\python.exe ...
 ```
+
+> ⚠️ **走 uv 路线就别用 `make`**。Makefile 里每个 target 都是 `poetry run ...`，
+> 在只装了 uv 的环境里 `make test` / `make lint` / `make typecheck` / `make db-*`
+> 全都会失败（或者更糟：poetry 恰好装了，但它指向另一个虚拟环境，你测的不是你
+> 改的那份代码）。uv 路线直接调工具：
+>
+> ```bash
+> .venv/bin/pytest tests/ -v
+> .venv/bin/ruff check src/ && .venv/bin/ruff format --check src/
+> .venv/bin/mypy src/
+> .venv/bin/alembic upgrade head
+> ```
 
 > **Python 版本**：3.11 – 3.13。3.14 暂不能用，因为 `lxml` 还没发布 3.14 的
 > 预编译 wheel，Windows 上从源码编译需要 libxml2 开发头。等 lxml 上游发
 > wheel 后自动可用。
 
 ### 13.2 Make 常用命令
+
+下表**仅适用于 Poetry 路线**（每条都是 `poetry run ...` 的薄封装）；uv 路线见上一节的直调写法。
 
 | 命令 | 说明 |
 |---|---|
@@ -1610,13 +1638,20 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 - API 启用时调 `POST /api/feeds/<id>/refresh`
 - 或者直接改 `FETCH_INTERVAL_MINUTES=1` 启动测试
 
-### 15.2 "Windows 上 `make dev` 崩了"
+### 15.2 "Windows 上跑起来有什么不一样？"
 
-`loop.add_signal_handler(SIGINT, ...)` 在 Windows 的 asyncio 上抛
-`NotImplementedError`。这是 Python 的已知限制。
+信号处理有差异，但**不会崩**——`main.py` 注册 `SIGINT` / `SIGTERM` 时用
+`try/except NotImplementedError` 包住了（Windows 的 ProactorEventLoop 不支持
+`loop.add_signal_handler`），捕获后降级：Ctrl+C 仍然以 `KeyboardInterrupt`
+形式从 `asyncio.run()` 抛出，由 `cli()` 接住走正常关闭流程。
 
-解决办法（待修）：用 try/except 包一下，Windows 上 fallback 到默认 KeyboardInterrupt。
-PR welcome。目前 Windows 开发建议跑测试验证，实际运行用 Docker / Linux VPS。
+Windows 上实际缺的是两件事：
+
+- **SIGHUP 热重载不可用**（Windows 根本没有 SIGHUP）。改了 `webhooks.yaml` /
+  `sources.yaml` 要么重启进程，要么用 `POST /api/admin/reload`（见 §6）。
+- **`make` 不是自带的**，得先装 GNU make；用 git-bash 时路径要写 Unix 风格。
+
+生产仍建议 Docker / Linux VPS，但 Windows 上做开发和跑测试是完全正常的。
 
 ### 15.3 "AsyncSession 不能 gather"
 
@@ -1665,10 +1700,12 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 1. **Issue 先行**：非 trivial 改动先开 issue 讨论方向，避免白干。
 2. **小 PR**：一个 PR 一件事。三件事分三个 PR。
 3. **描述**：PR 描述写清楚 **为什么** 和 **改动要点**，而不是罗列 commit。
-4. **测试必须过**：`make lint && make typecheck && make test` 全绿。
+4. **测试必须过**：`make lint && make typecheck && make test` 全绿（uv 路线没有 `make`，
+   改用 §13.1 里的直调写法，三条都要过）。
 5. **新行为要有测试**：fix 要有回归测试；feature 要有正向测试。
-6. **文档同步**：加了新配置项、新命令、新 extras 要同步改 `.env.example`、
-   `README.md`（或 `README_EN.md`）、本文档。
+6. **文档同步**：加了新配置项、新命令、新 extras 要**同步改四处**——
+   `.env.example`、`README.md`（英文主）、`README_CN.md`（中文）、本文档
+   （新配置项进 §2 对应小节，新命令进 §1，新文件进 §17 速查表）。
 
 ### Commit message
 
@@ -1693,6 +1730,8 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 NewsFlow-Bot/
 ├── .github/workflows/            # CI：test.yml（pytest + ruff + mypy 三门禁）+ docker-publish.yml
 ├── alembic/                      # 迁移脚本 + env.py
+├── config/                       # webhooks.yaml / sources.yaml 放这里
+│                                 #   （Docker 以只读挂载进 /app/config）
 ├── docker/                       # Dockerfile + compose
 ├── samples/                      # 预置 OPML + webhooks/sources 示例 YAML
 ├── src/newsflow/
@@ -1707,18 +1746,25 @@ NewsFlow-Bot/
 │   │   ├── url_security.py       # SSRF 校验
 │   │   ├── filter.py             # FilterRule 关键词匹配
 │   │   ├── opml.py               # OPML 解析 / 生成
+│   │   ├── message_template.py   # {占位符} 模板替换（无状态原语）
+│   │   ├── telegram_markdown.py  # Markdown → Telegram HTML + 降级
+│   │   ├── languages.py          # 语言码校验 + 同语言短路启发式
+│   │   ├── timezones.py          # IANA 名 / 固定偏移 → UTC 换算
 │   │   └── timeutil.py           # 相对时间格式化
 │   ├── models/                   # SQLAlchemy ORM
 │   │   ├── base.py               # Base + engine + FK pragma
 │   │   ├── feed.py               # Feed / FeedEntry（source_type/config）
 │   │   ├── subscription.py       # Subscription / SentEntry
 │   │   ├── digest.py             # ChannelDigest
+│   │   ├── channel_settings.py   # ChannelSettings（频道级默认值）
 │   │   ├── webhook.py            # WebhookDestination
 │   │   └── migrate.py            # alembic upgrade 封装
 │   ├── repositories/             # DB 查询
 │   │   ├── feed_repository.py
 │   │   ├── subscription_repository.py
-│   │   └── digest_repository.py
+│   │   ├── channel_settings_repository.py
+│   │   ├── digest_repository.py
+│   │   └── _result.py            # DML rowcount 的跨方言小垫片
 │   ├── services/                 # 业务逻辑
 │   │   ├── dispatcher.py         # ★ 中央循环 + cleanup + digest + monitor
 │   │   ├── feed_service.py
@@ -1726,6 +1772,7 @@ NewsFlow-Bot/
 │   │   ├── digest_service.py         # AI 日报/周报生成
 │   │   ├── webhook_sync.py           # webhooks.yaml → DB 对账（owner="yaml"）
 │   │   ├── source_sync.py            # sources.yaml → DB 对账（owner="source-yaml"）
+│   │   ├── config_reload.py          # SIGHUP / POST /api/admin/reload 的热重载
 │   │   ├── cache.py                  # 内存 / Redis 抽象
 │   │   ├── translation/              # 翻译 provider + 工厂
 │   │   ├── summarization/            # Digest LLM provider + 工厂
@@ -1735,7 +1782,11 @@ NewsFlow-Bot/
 │   │   ├── discord/bot.py        # /feed, /settings, /digest 命令
 │   │   ├── telegram/bot.py       # /add, /filter, /digest 命令
 │   │   └── webhook/              # 出站 HTTP 推送 + payload formats
-│   └── api/                      # FastAPI 路由（feeds/stats/health/ingest）
+│   ├── api/                      # FastAPI 路由
+│   │   ├── deps.py               # 鉴权依赖（写门禁 + 读门禁）
+│   │   └── routes/               # health / feeds / stats / subscriptions
+│   │                             #   / ingest / metrics / admin
+│   └── checkconfig.py            # 离线校验 .env + 两份 YAML（make checkconfig）
 ├── tests/
 │   ├── conftest.py               # 内存 SQLite session fixture
 │   ├── unit/                     # 单元测试（CI 在 3.11/3.13 上全量跑）
@@ -1751,5 +1802,5 @@ NewsFlow-Bot/
 ---
 
 读到这里就差不多了。剩下的细节建议直接读代码 —— 这个项目不大，
-`src/newsflow/` 总共 ~13000 行，核心路径一天能通读。有任何这份文档没覆盖到的
+`src/newsflow/` 总共 ~14500 行，核心路径一天能通读。有任何这份文档没覆盖到的
 陷阱、决策、或困惑，欢迎开 issue 或直接 PR 补充到这里。

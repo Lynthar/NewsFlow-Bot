@@ -232,10 +232,14 @@ Fast dev loop:
 ```bash
 uv venv --python 3.13
 uv pip install -e ".[all]"
-uv pip install pytest pytest-asyncio
-make test      # 650 tests
-make lint
+uv pip install pytest pytest-asyncio ruff mypy
+.venv/bin/pytest tests/ -v     # 658 tests   (Windows: .venv\Scripts\pytest)
+.venv/bin/ruff check src/
 ```
+
+> Every `make` target shells out to `poetry run`, so `make test` / `make lint`
+> only work on the Poetry route (`poetry install --all-extras`). On the uv
+> route call the tools directly, as above.
 
 ---
 

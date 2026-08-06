@@ -151,10 +151,19 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 
-# Clean Docker resources. `-v` DELETES the newsflow-data volume — that is
-# the SQLite database: every subscription, setting, and the SentEntry
-# dedupe history (losing it re-pushes old articles). Back up first:
-#   docker run --rm -v newsflow-data:/data -v "$$PWD":/backup alpine \
+# Clean Docker resources. `-v` DELETES the data volume — that is the SQLite
+# database: every subscription, setting, and the SentEntry dedupe history
+# (losing it re-pushes old articles). Back up first.
+#
+# NOTE the volume name: compose derives the project name from the directory
+# holding the compose file, so the volume declared as `newsflow-data` is
+# actually created as `docker_newsflow-data`. Naming the bare `newsflow-data`
+# here would silently create an EMPTY volume and tar up nothing — a backup
+# that looks fine and restores zero rows. Read the real name off the
+# container instead of hardcoding either spelling:
+#   VOL=$$(docker inspect newsflow-bot \
+#     --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}')
+#   docker run --rm -v "$$VOL":/data -v "$$PWD":/backup alpine \
 #     tar czf /backup/newsflow-data.tgz -C /data .
 docker-clean:
 	@echo "WARNING: this deletes the newsflow-data volume (your entire database)."

@@ -232,10 +232,14 @@ API_KEY=一串足够长的随机字符串            # API 写操作 / 入站推
 ```bash
 uv venv --python 3.13
 uv pip install -e ".[all]"
-uv pip install pytest pytest-asyncio
-make test      # 650 个测试
-make lint
+uv pip install pytest pytest-asyncio ruff mypy
+.venv/bin/pytest tests/ -v     # 658 个测试   (Windows: .venv\Scripts\pytest)
+.venv/bin/ruff check src/
 ```
+
+> `make` 的每个 target 都是 `poetry run ...`，所以 `make test` / `make lint`
+> 只在 Poetry 路线（`poetry install --all-extras`）下可用。走 uv 路线请像上面
+> 这样直接调工具。
 
 ---
 

@@ -4,6 +4,7 @@ Health check endpoints.
 Provides endpoints for monitoring service health.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from newsflow import __version__
 from newsflow.api.deps import get_db
 from newsflow.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -81,6 +84,9 @@ async def readiness_check(
         await db.execute(text("SELECT 1"))
         checks["database"] = True
     except Exception:
+        # The 503 alone says nothing about why; without this the operator has
+        # a flapping readiness probe and no record of the cause.
+        logger.warning("Readiness probe: database check failed", exc_info=True)
         checks["database"] = False
 
     # Check settings

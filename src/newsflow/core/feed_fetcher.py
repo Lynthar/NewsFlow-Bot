@@ -11,6 +11,8 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -67,6 +69,44 @@ async def read_body_capped(
             return None
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+class FeedFetchError(Exception):
+    """A fetch failed before any usable body could be read."""
+
+
+@asynccontextmanager
+async def follow_redirects(
+    session: aiohttp.ClientSession,
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> AsyncIterator[aiohttp.ClientResponse]:
+    """Yield the first non-redirect response, re-validating every hop through
+    validate_feed_url: aiohttp's own following would chase a Location header into
+    a private or metadata address. `url` itself is the caller's to validate.
+
+    Raises:
+        FeedFetchError: a redirect target failed the SSRF allow-list, a 3xx
+            carried no Location, or the hop budget ran out.
+    """
+    current_url = url
+    for _hop in range(MAX_REDIRECTS + 1):
+        async with session.get(current_url, headers=headers, allow_redirects=False) as response:
+            if response.status not in REDIRECT_STATUSES:
+                yield response
+                return
+            location = response.headers.get("Location")
+            if not location:
+                raise FeedFetchError(f"HTTP {response.status} redirect without Location header")
+            next_url = urljoin(current_url, location)
+            try:
+                validate_feed_url(next_url)
+            except InvalidFeedURLError as e:
+                logger.warning(f"Rejected redirect from {url!r} to {next_url!r}: {e}")
+                raise FeedFetchError(f"Unsafe redirect target: {e}") from e
+            current_url = next_url
+    logger.warning(f"Too many redirects fetching {url}")
+    raise FeedFetchError(f"Too many redirects (>{MAX_REDIRECTS})")
 
 
 @dataclass
@@ -180,150 +220,113 @@ class FeedFetcher:
         if last_modified:
             headers["If-Modified-Since"] = last_modified
 
-        # Follow redirects manually so each hop is re-validated against the
-        # SSRF allow-list (see MAX_REDIRECTS). allow_redirects=False makes
-        # aiohttp hand us the 3xx response instead of chasing Location itself.
-        current_url = url
         try:
-            for _hop in range(MAX_REDIRECTS + 1):
-                async with session.get(
-                    current_url, headers=headers, allow_redirects=False
-                ) as response:
-                    if response.status in REDIRECT_STATUSES:
-                        location = response.headers.get("Location")
-                        if not location:
-                            return FetchResult(
-                                url=url,
-                                success=False,
-                                entries=[],
-                                error=(f"HTTP {response.status} redirect without Location header"),
-                            )
-                        next_url = urljoin(current_url, location)
-                        try:
-                            validate_feed_url(next_url)
-                        except InvalidFeedURLError as e:
-                            logger.warning(f"Rejected redirect from {url!r} to {next_url!r}: {e}")
-                            return FetchResult(
-                                url=url,
-                                success=False,
-                                entries=[],
-                                error=f"Unsafe redirect target: {e}",
-                            )
-                        current_url = next_url
-                        continue
-
-                    # Handle 304 Not Modified
-                    if response.status == 304:
-                        logger.debug(f"Feed not modified: {url}")
-                        return FetchResult(
-                            url=url,
-                            success=True,
-                            entries=[],
-                            not_modified=True,
-                            etag=etag,
-                            last_modified=last_modified,
-                        )
-
-                    # Check for errors
-                    if response.status >= 400:
-                        error_msg = f"HTTP {response.status}: {response.reason}"
-                        logger.warning(f"Failed to fetch {url}: {error_msg}")
-                        return FetchResult(
-                            url=url,
-                            success=False,
-                            entries=[],
-                            error=error_msg,
-                        )
-
-                    # Refuse the response up-front if Content-Length is too large.
-                    if (
-                        response.content_length is not None
-                        and response.content_length > MAX_FEED_SIZE_BYTES
-                    ):
-                        logger.warning(
-                            f"Feed {url} too large: "
-                            f"{response.content_length} > {MAX_FEED_SIZE_BYTES}"
-                        )
-                        return FetchResult(
-                            url=url,
-                            success=False,
-                            entries=[],
-                            error=(f"Feed exceeds size limit ({response.content_length} bytes)"),
-                        )
-
-                    # Read streaming, capped. A server that lies about
-                    # Content-Length (or omits it) can't drain our memory.
-                    raw = await read_body_capped(response.content)
-                    if raw is None:
-                        logger.warning(f"Feed {url} exceeded size limit mid-stream")
-                        return FetchResult(
-                            url=url,
-                            success=False,
-                            entries=[],
-                            error="Feed exceeds size limit",
-                        )
-
-                    content = raw.decode(response.charset or "utf-8", errors="replace")
-
-                    # JSON Feed: feedparser only parses XML, so detect and map it here. Detection is
-                    # conservative (official content-type or a jsonfeed.org version marker) so XML
-                    # never enters this branch.
-                    json_feed = self._parse_json_feed(content, response.content_type, url)
-                    if json_feed is not None:
-                        json_entries, json_title = json_feed
-                        return FetchResult(
-                            url=url,
-                            success=True,
-                            entries=json_entries,
-                            etag=response.headers.get("ETag"),
-                            last_modified=response.headers.get("Last-Modified"),
-                            feed_title=json_title,
-                        )
-
-                    feed = feedparser.parse(content)
-
-                    # If the body was an HTML page advertising a feed (<link rel="alternate">, which
-                    # feedparser surfaces in feed.feed.links), hand those back so add_feed can
-                    # resolve and retry the real URL.
-                    if feed.bozo and not feed.entries:
-                        error_msg = str(feed.bozo_exception)
-                        logger.warning(f"Failed to parse {url}: {error_msg}")
-                        return FetchResult(
-                            url=url,
-                            success=False,
-                            entries=[],
-                            error=f"Parse error: {error_msg}",
-                            discovered_feeds=self._discover_feeds(feed, url),
-                        )
-
-                    # Extract entries
-                    entries = [self._parse_entry(entry, url) for entry in feed.entries]
-
-                    # Get new cache headers
-                    new_etag = response.headers.get("ETag")
-                    new_last_modified = response.headers.get("Last-Modified")
-
-                    # Get feed metadata
-                    feed_info = feed.feed
+            async with follow_redirects(session, url, headers) as response:
+                # Handle 304 Not Modified
+                if response.status == 304:
+                    logger.debug(f"Feed not modified: {url}")
                     return FetchResult(
                         url=url,
                         success=True,
-                        entries=entries,
-                        etag=new_etag,
-                        last_modified=new_last_modified,
-                        feed_title=feed_info.get("title"),
-                        feed_description=feed_info.get("description"),
-                        feed_link=feed_info.get("link"),
+                        entries=[],
+                        not_modified=True,
+                        etag=etag,
+                        last_modified=last_modified,
                     )
 
-            logger.warning(f"Too many redirects fetching {url}")
-            return FetchResult(
-                url=url,
-                success=False,
-                entries=[],
-                error=f"Too many redirects (>{MAX_REDIRECTS})",
-            )
+                # Check for errors
+                if response.status >= 400:
+                    error_msg = f"HTTP {response.status}: {response.reason}"
+                    logger.warning(f"Failed to fetch {url}: {error_msg}")
+                    return FetchResult(
+                        url=url,
+                        success=False,
+                        entries=[],
+                        error=error_msg,
+                    )
 
+                # Refuse the response up-front if Content-Length is too large.
+                if (
+                    response.content_length is not None
+                    and response.content_length > MAX_FEED_SIZE_BYTES
+                ):
+                    logger.warning(
+                        f"Feed {url} too large: {response.content_length} > {MAX_FEED_SIZE_BYTES}"
+                    )
+                    return FetchResult(
+                        url=url,
+                        success=False,
+                        entries=[],
+                        error=(f"Feed exceeds size limit ({response.content_length} bytes)"),
+                    )
+
+                # Read streaming, capped. A server that lies about
+                # Content-Length (or omits it) can't drain our memory.
+                raw = await read_body_capped(response.content)
+                if raw is None:
+                    logger.warning(f"Feed {url} exceeded size limit mid-stream")
+                    return FetchResult(
+                        url=url,
+                        success=False,
+                        entries=[],
+                        error="Feed exceeds size limit",
+                    )
+
+                content = raw.decode(response.charset or "utf-8", errors="replace")
+
+                # JSON Feed: feedparser only parses XML, so detect and map it here. Detection is
+                # conservative (official content-type or a jsonfeed.org version marker) so XML
+                # never enters this branch.
+                json_feed = self._parse_json_feed(content, response.content_type, url)
+                if json_feed is not None:
+                    json_entries, json_title = json_feed
+                    return FetchResult(
+                        url=url,
+                        success=True,
+                        entries=json_entries,
+                        etag=response.headers.get("ETag"),
+                        last_modified=response.headers.get("Last-Modified"),
+                        feed_title=json_title,
+                    )
+
+                feed = feedparser.parse(content)
+
+                # If the body was an HTML page advertising a feed (<link rel="alternate">, which
+                # feedparser surfaces in feed.feed.links), hand those back so add_feed can
+                # resolve and retry the real URL.
+                if feed.bozo and not feed.entries:
+                    error_msg = str(feed.bozo_exception)
+                    logger.warning(f"Failed to parse {url}: {error_msg}")
+                    return FetchResult(
+                        url=url,
+                        success=False,
+                        entries=[],
+                        error=f"Parse error: {error_msg}",
+                        discovered_feeds=self._discover_feeds(feed, url),
+                    )
+
+                # Extract entries
+                entries = [self._parse_entry(entry, url) for entry in feed.entries]
+
+                # Get new cache headers
+                new_etag = response.headers.get("ETag")
+                new_last_modified = response.headers.get("Last-Modified")
+
+                # Get feed metadata
+                feed_info = feed.feed
+                return FetchResult(
+                    url=url,
+                    success=True,
+                    entries=entries,
+                    etag=new_etag,
+                    last_modified=new_last_modified,
+                    feed_title=feed_info.get("title"),
+                    feed_description=feed_info.get("description"),
+                    feed_link=feed_info.get("link"),
+                )
+
+        except FeedFetchError as e:
+            return FetchResult(url=url, success=False, entries=[], error=str(e))
         except TimeoutError:
             logger.warning(f"Timeout fetching {url}")
             return FetchResult(
@@ -348,6 +351,26 @@ class FeedFetcher:
                 entries=[],
                 error=f"Unexpected error: {str(e)}",
             )
+
+    async def fetch_bytes_capped(self, url: str, cap: int = MAX_FEED_SIZE_BYTES) -> bytes | None:
+        """Fetch a whole response body, or None when it is larger than `cap`.
+        Streams instead of StreamReader.read(n), which returns only what is
+        buffered and truncates a chunked response silently; hops are SSRF-checked.
+
+        Raises:
+            InvalidFeedURLError: `url` itself is malformed or unsafe.
+            FeedFetchError: HTTP >= 400, an unsafe or Location-less redirect,
+                or more than MAX_REDIRECTS hops.
+        """
+        validate_feed_url(url)
+        async with self._semaphore:
+            session = await self._get_session()
+            async with follow_redirects(session, url) as response:
+                if response.status >= 400:
+                    raise FeedFetchError(f"HTTP {response.status}: {response.reason}")
+                if response.content_length is not None and response.content_length > cap:
+                    return None
+                return await read_body_capped(response.content, cap)
 
     def _parse_entry(self, entry: Any, feed_url: str) -> dict[str, Any]:
         """Parse a feedparser entry into a normalized dict."""

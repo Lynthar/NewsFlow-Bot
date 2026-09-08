@@ -36,6 +36,18 @@ from newsflow.adapters.base import (
     Message,
     TopicGoneError,
 )
+from newsflow.adapters.views import (
+    TELEGRAM_TEXT_LIMIT,
+    TITLE_LIMIT,
+    URL_LIMIT,
+    clip,
+    last_error_text,
+    paginate_lines,
+    recent_entry_parts,
+    sub_line_parts,
+    sub_state,
+    sub_status_chip,
+)
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_filter_field
 from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
@@ -45,7 +57,7 @@ from newsflow.core.message_template import (
     validate_template,
 )
 from newsflow.core.telegram_markdown import markdown_to_telegram_html
-from newsflow.core.timeutil import relative_time, time_until
+from newsflow.core.timeutil import relative_time
 from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
@@ -432,62 +444,20 @@ def _is_thread_gone(e: Exception) -> bool:
     return isinstance(e, BadRequest) and "message thread not found" in str(e).lower()
 
 
-def _sub_status_chip(sub: Subscription) -> str | None:
-    feed = sub.feed
-    if not sub.is_active:
-        return "⏸ paused"
-    if not feed.is_active:
-        return "🛑 auto-disabled"
-    if feed.error_count > 0:
-        return f"⚠️ {feed.error_count} errors, retry {time_until(feed.next_retry_at)}"
-    if sub.silent:
-        return "🔇 silent (digest only)"
-    return None
-
-
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 def _format_sub_line(sub: Subscription) -> str:
-    feed = sub.feed
-    # Clip BEFORE escaping so an entity cannot be cut in half. feed.title is up to
-    # 512 chars and feed.url up to 2048; unclipped, one page blows the 4096 cap and
-    # the whole /list 400s. Full URLs stay available via /export (OPML).
-    title = _escape_html(_clip(feed.title or "Untitled", 80))
-    # target_language is stored verbatim from user input — unescaped, a value
-    # like `<b` breaks the HTML parse for every subsequent /list in the chat.
-    parts = [f"🌐 {_escape_html(sub.target_language)}" if sub.translate else "📰 no translate"]
-    chip = _sub_status_chip(sub)
-    if chip:
-        parts.append(chip)
-    meta = " · ".join(parts)
-    return f"<b>{title}</b> · {meta}\n{_escape_html(_clip(feed.url, 200))}"
+    # sub_line_parts clips before we escape, so an entity can never be cut in
+    # half; target_language is stored verbatim from user input, and unescaped a
+    # value like "<b" breaks the HTML parse for every later /list in the chat.
+    title, meta, url = sub_line_parts(sub)
+    return f"<b>{_escape_html(title)}</b> · {_escape_html(meta)}\n{_escape_html(url)}"
 
 
-# Pages are packed greedily by character budget (LIST_PAGE_SIZE is a secondary
-# item cap) so a page can never exceed Telegram's 4096 even with worst-case
-# escaped titles/URLs. The budget leaves headroom for the header line.
+# Budget for one /list page. The headroom under TELEGRAM_TEXT_LIMIT absorbs the
+# header line and the expansion HTML escaping adds to the packed text.
 _LIST_CHAR_BUDGET = 3500
 
-
-def _paginate_lines(lines: list[str]) -> list[list[str]]:
-    """Deterministically pack rendered lines into pages. Same input order →
-    same page boundaries, so prev/next navigation stays stable across
-    renders (subscriptions are id-ordered upstream)."""
-    pages: list[list[str]] = []
-    current: list[str] = []
-    used = 0
-    for line in lines:
-        cost = len(line) + 2  # "\n\n" separator
-        if current and (used + cost > _LIST_CHAR_BUDGET or len(current) >= LIST_PAGE_SIZE):
-            pages.append(current)
-            current, used = [], 0
-        current.append(line)
-        used += cost
-    if current:
-        pages.append(current)
-    return pages
+# Budget for one /info message. Headroom covers the trailing overflow marker.
+_INFO_CHAR_BUDGET = TELEGRAM_TEXT_LIMIT - 96
 
 
 def _list_keyboard(
@@ -539,7 +509,11 @@ async def _render_list(
         )
 
     total = len(subs)
-    pages = _paginate_lines([_format_sub_line(s) for s in subs])
+    pages = paginate_lines(
+        [_format_sub_line(s) for s in subs],
+        budget=_LIST_CHAR_BUDGET,
+        max_items=LIST_PAGE_SIZE,
+    )
     total_pages = len(pages)
     page = max(1, min(page, total_pages))
 
@@ -647,7 +621,7 @@ def _manage_list_view(
     rows = [
         [
             InlineKeyboardButton(
-                f"{_manage_chip(s)} {_clip(s.feed.title or s.feed.url, 32)}",
+                f"{_manage_chip(s)} {clip(s.feed.title or s.feed.url, 32)}",
                 callback_data=f"mg:v:{s.id}:{page}{suffix}",
             )
         ]
@@ -671,11 +645,11 @@ def _manage_detail_view(
     sub: Subscription, page: int, target: str | None
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Action buttons for one subscription."""
-    feed = sub.feed
-    chip = _sub_status_chip(sub)
+    chip = sub_status_chip(sub)
+    title, _meta, url = sub_line_parts(sub)
     lines = [
-        f"<b>{_escape_html(_clip(feed.title or 'Untitled', 80))}</b>",
-        f"<code>{_escape_html(_clip(feed.url, 200))}</code>",
+        f"<b>{_escape_html(title)}</b>",
+        f"<code>{_escape_html(url)}</code>",
         f"State: {chip or '✅ active'}",
         f"Translate: {'on → ' + _escape_html(sub.target_language) if sub.translate else 'off'}",
     ]
@@ -704,7 +678,7 @@ def _manage_confirm_view(
     """Remove needs a second tap — it cascades filter + dedupe history."""
     tail = f"{sub.id}:{page}{_mg_suffix(target)}"
     text = (
-        f"Remove <b>{_escape_html(_clip(sub.feed.title or sub.feed.url, 80))}</b>?\n\n"
+        f"Remove <b>{_escape_html(clip(sub.feed.title or sub.feed.url, 80))}</b>?\n\n"
         "This also deletes its keyword filter and delivery history "
         "(re-adding later starts fresh)."
     )
@@ -870,18 +844,11 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     sub = detail.subscription
     feed = detail.feed
-    if not sub.is_active:
-        state = "⏸ Paused"
-    elif not feed.is_active:
-        state = "🛑 Auto-disabled (10+ consecutive errors)"
-    elif feed.error_count > 0:
-        state = f"⚠️ {feed.error_count} errors — retry {time_until(feed.next_retry_at)}"
-    else:
-        state = "✅ Healthy"
+    _state_key, state = sub_state(sub, feed)
 
     lines = [
-        f"📊 <b>{_escape_html(feed.title or 'Untitled Feed')}</b>",
-        f"🔗 {_escape_html(feed.url)}",
+        f"📊 <b>{_escape_html(clip(feed.title or 'Untitled Feed', TITLE_LIMIT))}</b>",
+        f"🔗 {_escape_html(clip(feed.url, URL_LIMIT))}",
         "",
         f"<b>State:</b> {state}",
         f"<b>Translation:</b> "
@@ -891,25 +858,30 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"<b>Backlog:</b> {detail.unsent_count} entr"
         f"{'y' if detail.unsent_count == 1 else 'ies'} queued for this chat",
     ]
-    if feed.last_error and feed.error_count > 0:
-        err = feed.last_error
-        if len(err) > 200:
-            err = err[:200] + "…"
+    err = last_error_text(feed)
+    if err:
         lines.append(f"<b>Last error:</b> {_escape_html(err)}")
 
     if detail.recent_entries:
         lines.append("")
         lines.append("<b>Recent articles:</b>")
         for entry in detail.recent_entries:
-            ts = relative_time(entry.published_at) if entry.published_at else ""
-            title_line = entry.title[:80] + ("…" if len(entry.title) > 80 else "")
+            entry_title, link, ts = recent_entry_parts(entry)
             suffix = f" — {ts}" if ts else ""
-            lines.append(
-                f'• <a href="{_escape_html(entry.link)}">{_escape_html(title_line)}</a>{suffix}'
-            )
+            label = _escape_html(entry_title)
+            body = f'<a href="{_escape_html(link)}">{label}</a>' if link else label
+            lines.append(f"• {body}{suffix}")
+
+    # Every line above is individually bounded, so packing to a budget is what
+    # keeps the whole message under Telegram's cap; overflow is dropped with a
+    # marker rather than cut mid-tag, which would fail the HTML parse.
+    pages = paginate_lines(lines, budget=_INFO_CHAR_BUDGET, separator="\n")
+    body_lines = pages[0]
+    if len(pages) > 1:
+        body_lines = [*body_lines, "…"]
 
     await msg.reply_text(
-        "\n".join(lines),
+        "\n".join(body_lines),
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
@@ -1073,56 +1045,28 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-        # Session 1: load config + generate digest text. Closes before the Telegram IO so
-        # no pooled connection is held across a multi-second round-trip.
-        async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            config = await repo.get("telegram", chat_id)
-            if config is None:
-                await msg.reply_text("No digest configured. Use /digest enable first.")
-                return
-
-            config_id = config.id
-            prior_pin_id = config.last_pinned_message_id
-
-            service = DigestService(session, summarizer)
-            now = datetime.now(UTC)
-            result = await service.generate(config, now=now)
-
-        if result is None:
-            await msg.reply_text("No articles in the current window — nothing to summarize.")
-            return
-        if not result.success:
-            await msg.reply_text(f"❌ Digest generation failed: {result.error}")
-            return
-
-        # Phase 2: deliver to the chat — no session held.
-        dispatcher = get_dispatcher()
-        adapter = dispatcher._adapters.get("telegram")
-        if adapter is None:
-            await msg.reply_text("Telegram adapter not registered yet — try again.")
-            return
-        chunks, new_pin_id = await dispatcher.deliver_digest(
-            adapter,
+        # The digest lands in the chat, so a successful run says nothing more.
+        outcome = await DigestService.run_now(
+            get_dispatcher(),
+            "telegram",
             chat_id,
-            dispatcher.apply_digest_header(result.text, "telegram"),
-            chunk_size=3800,
-            prior_pin_id=prior_pin_id,
+            summarizer,
+            datetime.now(UTC),
+            # A manual run must not consume the schedule slot on an empty
+            # window, or it eats the digest the user was going to receive.
+            mark_empty_delivered=False,
         )
-        if not chunks:
+        if outcome.status == "no_adapter":
+            await msg.reply_text("Telegram adapter not registered yet — try again.")
+        elif outcome.status == "no_config":
+            await msg.reply_text("No digest configured. Use /digest enable first.")
+        elif outcome.status == "no_articles":
+            await msg.reply_text("No articles in the current window — nothing to summarize.")
+        elif outcome.status == "generation_failed":
+            await msg.reply_text(f"❌ Digest generation failed: {outcome.error}")
+        elif outcome.status == "delivery_failed":
             await msg.reply_text("❌ Digest generated but delivery failed.")
-            return
-
-        # Session 2: persist the delivery mark, kept tiny so it does not contend with the
-        # dispatch loop's long write transaction. The digest is already in the chat, so
-        # a failed mark surfaces a warning rather than pretending nothing happened.
-        try:
-            async with session_factory() as session:
-                repo = ChannelDigestRepository(session)
-                await repo.mark_delivered(config_id, now, pinned_message_id=new_pin_id)
-                await session.commit()
-        except Exception:
-            logger.exception(f"Failed to mark digest delivered for telegram/{chat_id}")
+        elif outcome.mark_failed:
             await msg.reply_text(
                 "⚠️ Digest delivered, but recording the delivery failed — "
                 "the next scheduled run may resend it."
@@ -1854,58 +1798,25 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     url = context.args[0]
-    from urllib.parse import urljoin
 
     from newsflow.core import get_fetcher
-    from newsflow.core.feed_fetcher import MAX_REDIRECTS, REDIRECT_STATUSES
-    from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
+    from newsflow.core.url_security import InvalidFeedURLError
 
+    # fetch_bytes_capped carries the SSRF per-hop revalidation and the
+    # streaming size cap; reading the body here with read(n) would truncate a
+    # chunked OPML silently and import only part of it.
     try:
-        validate_feed_url(url)
+        raw = await get_fetcher().fetch_bytes_capped(url, cap=1024 * 1024)
     except InvalidFeedURLError as e:
         await msg.reply_text(f"❌ Rejected URL: {e}")
         return
-
-    # Follow redirects manually, re-validating each hop, so a redirect can't
-    # smuggle the OPML fetch into a private address — the same SSRF guard the
-    # core feed fetcher applies.
-    try:
-        fetcher = get_fetcher()
-        client = await fetcher._get_session()
-        current = url
-        content = None
-        for _hop in range(MAX_REDIRECTS + 1):
-            async with client.get(current, allow_redirects=False) as response:
-                if response.status in REDIRECT_STATUSES:
-                    location = response.headers.get("Location")
-                    if not location:
-                        await msg.reply_text(
-                            f"❌ Failed to fetch OPML: HTTP {response.status} "
-                            "redirect without Location"
-                        )
-                        return
-                    current = urljoin(current, location)
-                    try:
-                        validate_feed_url(current)
-                    except InvalidFeedURLError as e:
-                        await msg.reply_text(f"❌ Rejected redirect target: {e}")
-                        return
-                    continue
-                if response.status != 200:
-                    await msg.reply_text(f"❌ Failed to fetch OPML: HTTP {response.status}")
-                    return
-                data = await response.content.read(1024 * 1024 + 1)
-                if len(data) > 1024 * 1024:
-                    await msg.reply_text("❌ OPML file too large (1 MB cap)")
-                    return
-                content = data.decode("utf-8", errors="replace")
-                break
-        else:
-            await msg.reply_text("❌ Failed to fetch OPML: too many redirects")
-            return
     except Exception as e:
         await msg.reply_text(f"❌ Failed to fetch OPML: {e}")
         return
+    if raw is None:
+        await msg.reply_text("❌ OPML file too large (1 MB cap)")
+        return
+    content = raw.decode("utf-8", errors="replace")
 
     await _do_opml_import(
         update,
@@ -2387,6 +2298,10 @@ async def _on_manage_callback(
 
 class TelegramAdapter(BaseAdapter):
     """Telegram adapter implementation."""
+
+    # Telegram caps a message at 4096; the headroom absorbs the growth
+    # send_digest_text adds when it re-renders Markdown as HTML.
+    digest_chunk_size = 3800
 
     def __init__(self, token: str) -> None:
         self.token = token

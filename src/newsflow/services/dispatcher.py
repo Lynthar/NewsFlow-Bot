@@ -68,6 +68,9 @@ class MessageSender(Protocol):
 
     def is_connected(self) -> bool: ...
 
+    # Per-message character budget for digest chunks.
+    digest_chunk_size: int
+
 
 @dataclass
 class DispatchResult:
@@ -982,93 +985,27 @@ class Dispatcher:
         for config in configs:
             if not is_due(config, now):
                 continue
-            adapter = self._adapters.get(config.platform)
-            if adapter is None:
-                logger.debug(
-                    f"Digest due for {config.platform}/"
-                    f"{config.platform_channel_id} but adapter not registered; "
-                    f"deferring"
-                )
-                continue
+            channel = f"{config.platform}/{config.platform_channel_id}"
 
-            # Fresh session per channel, split into three phases so no session is held
-            # across the LLM call or platform IO — that collided with the dispatch loop's
-            # long write transaction (SQLITE_BUSY).
             try:
-                # Phase 1: load config + generate digest text.
-                async with session_factory() as session:
-                    from newsflow.repositories.digest_repository import (
-                        ChannelDigestRepository,
-                    )
-
-                    service = DigestService(session, summarizer)
-                    service.repo = ChannelDigestRepository(session)
-                    fresh_config = await service.repo.get(
-                        config.platform, config.platform_channel_id
-                    )
-                    if fresh_config is None:
-                        continue
-
-                    config_id = fresh_config.id
-                    prior_pin_id = fresh_config.last_pinned_message_id
-
-                    result = await service.generate(fresh_config, now=now)
-                    if result is None:
-                        # No articles in window; still mark delivered so we
-                        # don't keep re-firing this slot.
-                        await service.repo.mark_delivered(config_id, now)
-                        await session.commit()
-                        continue
-
-                    if not result.success:
-                        logger.warning(
-                            f"Digest generation failed for "
-                            f"{config.platform}/{config.platform_channel_id}: "
-                            f"{result.error}"
-                        )
-                        continue
-
-                    digest_text = self.apply_digest_header(result.text, config.platform)
-
-                # Phase 2: deliver with no session held (platform IO can take seconds).
-                # 1900 chars fits both Discord (~2000) and Telegram (4096).
-                chunks_sent, new_pin_id = await self.deliver_digest(
-                    adapter,
+                outcome = await DigestService.run_now(
+                    self,
+                    config.platform,
                     config.platform_channel_id,
-                    digest_text,
-                    chunk_size=1900,
-                    prior_pin_id=prior_pin_id,
+                    summarizer,
+                    now,
+                    # A scheduled run consumes its slot even on an empty window,
+                    # or is_due re-fires it on every tick until the hour passes.
+                    mark_empty_delivered=True,
                 )
-                if chunks_sent == 0:
-                    logger.warning(
-                        f"Digest generated but send failed for "
-                        f"{config.platform}/{config.platform_channel_id}"
-                    )
-                    continue
-
-                # Phase 3: persist the delivery mark in a short session. If it still fails the
-                # digest has already landed, so log and move on — the next tick's is_due()
-                # may re-fire, which beats crashing the loop iteration.
-                try:
-                    async with session_factory() as session:
-                        from newsflow.repositories.digest_repository import (
-                            ChannelDigestRepository,
-                        )
-
-                        repo = ChannelDigestRepository(session)
-                        await repo.mark_delivered(config_id, now, pinned_message_id=new_pin_id)
-                        await session.commit()
-                except Exception:
-                    logger.exception(
-                        f"mark_delivered failed for {config.platform}/"
-                        f"{config.platform_channel_id}; digest was "
-                        f"delivered ({chunks_sent} chunks) but state is stale"
-                    )
-
-                logger.info(
-                    f"Delivered digest to {config.platform}/"
-                    f"{config.platform_channel_id} ({chunks_sent} chunks)"
-                )
+                if outcome.status == "no_adapter":
+                    logger.debug(f"Digest due for {channel} but adapter not registered; deferring")
+                elif outcome.status == "generation_failed":
+                    logger.warning(f"Digest generation failed for {channel}: {outcome.error}")
+                elif outcome.status == "delivery_failed":
+                    logger.warning(f"Digest generated but send failed for {channel}")
+                elif outcome.status == "delivered":
+                    logger.info(f"Delivered digest to {channel} ({outcome.chunks} chunks)")
             except ChannelMigratedError as e:
                 # Same channel, new chat id (supergroup upgrade). Repoint in a fresh session;
                 # the digest was not marked delivered, so the next tick redelivers.

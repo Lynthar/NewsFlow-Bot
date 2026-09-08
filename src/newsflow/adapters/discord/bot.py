@@ -14,6 +14,17 @@ from discord import app_commands
 from discord.ext import commands
 
 from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
+from newsflow.adapters.views import (
+    DISCORD_EMBED_DESCRIPTION_LIMIT,
+    DISCORD_EMBED_FIELD_VALUE_LIMIT,
+    DISCORD_EMBED_TITLE_LIMIT,
+    clip,
+    last_error_text,
+    paginate_lines,
+    recent_entry_parts,
+    sub_line_parts,
+    sub_state,
+)
 from newsflow.config import get_settings
 from newsflow.core.filter import parse_filter_field
 from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
@@ -22,15 +33,20 @@ from newsflow.core.message_template import (
     normalize_template,
     validate_template,
 )
-from newsflow.core.timeutil import relative_time, time_until
+from newsflow.core.timeutil import relative_time
 from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
 
-# Max subscriptions per /feed list page. Discord embed description caps
-# at 4096 chars; 20 entries × ~150 chars each leaves comfortable headroom.
+# Secondary item cap for one /feed list page; _LIST_CHAR_BUDGET is the binding
+# one. A single row runs to ~2.6K (title 512 + url 2048 at their column caps),
+# so counting entries alone cannot keep a page under the description limit.
 LIST_PAGE_SIZE = 20
+
+# Budget for one /feed list description, with headroom under the embed limit
+# for the title and footer that share the message-wide 6000-char allowance.
+_LIST_CHAR_BUDGET = DISCORD_EMBED_DESCRIPTION_LIMIT - 200
 
 # Discord caps autocomplete at 25 choices and 100 chars per name/value, and
 # discord.py enforces neither — an oversized response is rejected wholesale.
@@ -64,36 +80,20 @@ def _mention_allowance(mention: str) -> discord.AllowedMentions:
     return discord.AllowedMentions.none()
 
 
-def _sub_status_chip(sub: Subscription) -> str | None:
-    """Return a one-line status chip when the sub needs user attention, else None.
-
-    Priority: user-paused > feed auto-disabled > feed errored > silent.
-    Faults outrank silent because they're actionable; silent is a
-    deliberate user choice and only worth showing when nothing else is.
-    Healthy non-silent subs get no chip to keep the list uncluttered.
-    """
-    feed = sub.feed
-    if not sub.is_active:
-        return "⏸ paused"
-    if not feed.is_active:
-        return "🛑 auto-disabled (too many errors)"
-    if feed.error_count > 0:
-        return f"⚠️ {feed.error_count} errors, retry {time_until(feed.next_retry_at)}"
-    if sub.silent:
-        return "🔇 silent (digest only)"
-    return None
+# Embed colour per health state. The state itself comes from views.sub_state,
+# so the two platforms cannot drift apart on which state a subscription is in.
+_STATE_COLORS = {
+    "paused": discord.Color.orange(),
+    "disabled": discord.Color.red(),
+    "errors": discord.Color.gold(),
+    "healthy": discord.Color.green(),
+}
 
 
 def _format_sub_line(sub: Subscription) -> str:
     """Format one subscription for the /feed list description."""
-    feed = sub.feed
-    title = feed.title or "Untitled"
-    parts = [f"🌐 {sub.target_language}" if sub.translate else "📰 no translate"]
-    chip = _sub_status_chip(sub)
-    if chip:
-        parts.append(chip)
-    meta = " · ".join(parts)
-    return f"**{title}** · {meta}\n{feed.url}"
+    title, meta, url = sub_line_parts(sub)
+    return f"**{title}** · {meta}\n{url}"
 
 
 def _build_import_embed(result) -> discord.Embed:  # type: ignore[no-untyped-def]
@@ -132,26 +132,14 @@ def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def
     sub = detail.subscription
     feed = detail.feed
 
-    if not sub.is_active:
-        state = "⏸ Paused"
-        color = discord.Color.orange()
-    elif not feed.is_active:
-        state = "🛑 Auto-disabled (10+ consecutive errors)"
-        color = discord.Color.red()
-    elif feed.error_count > 0:
-        state = f"⚠️ {feed.error_count} errors — retry {time_until(feed.next_retry_at)}"
-        color = discord.Color.gold()
-    else:
-        state = "✅ Healthy"
-        color = discord.Color.green()
-
+    state_key, state = sub_state(sub, feed)
+    # An embed over any single field limit is rejected whole, and feed titles
+    # are stored to 512 chars — twice what a title field accepts.
     embed = discord.Embed(
-        title=feed.title or "Untitled Feed",
+        title=clip(feed.title or "Untitled Feed", DISCORD_EMBED_TITLE_LIMIT),
         url=feed.url,
-        description=feed.description[:300] + "…"
-        if feed.description and len(feed.description) > 300
-        else (feed.description or ""),
-        color=color,
+        description=clip(feed.description or "", 300),
+        color=_STATE_COLORS[state_key],
     )
     embed.add_field(name="State", value=state, inline=False)
     embed.add_field(
@@ -174,21 +162,22 @@ def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def
         value=relative_time(feed.last_fetched_at),
         inline=True,
     )
-    if feed.last_error and feed.error_count > 0:
-        err = feed.last_error
-        if len(err) > 200:
-            err = err[:200] + "…"
+    err = last_error_text(feed)
+    if err:
         embed.add_field(name="Last Error", value=err, inline=False)
 
     if detail.recent_entries:
         lines = []
         for entry in detail.recent_entries:
-            ts = relative_time(entry.published_at) if entry.published_at else ""
-            title_line = entry.title[:80] + ("…" if len(entry.title) > 80 else "")
-            lines.append(f"• [{title_line}]({entry.link})" + (f" — {ts}" if ts else ""))
-        val = "\n".join(lines)
-        if len(val) > 1024:
-            val = val[:1020] + "…"
+            entry_title, link, ts = recent_entry_parts(entry)
+            label = f"[{entry_title}]({link})" if link else entry_title
+            lines.append(f"• {label}" + (f" — {ts}" if ts else ""))
+        # Packing whole rows keeps the field under its limit without cutting a
+        # markdown link in half the way a flat slice of the joined text would.
+        pages = paginate_lines(lines, budget=DISCORD_EMBED_FIELD_VALUE_LIMIT - 16, separator="\n")
+        val = "\n".join(pages[0])
+        if len(pages) > 1:
+            val += "\n…"
         embed.add_field(name="Recent Articles", value=val, inline=False)
 
     return embed
@@ -429,12 +418,14 @@ class FeedCommands(commands.Cog):
             return
 
         total = len(subscriptions)
-        total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+        pages = paginate_lines(
+            [_format_sub_line(sub) for sub in subscriptions],
+            budget=_LIST_CHAR_BUDGET,
+            max_items=LIST_PAGE_SIZE,
+        )
+        total_pages = len(pages)
         page = max(1, min(page, total_pages))
-        start = (page - 1) * LIST_PAGE_SIZE
-        page_subs = subscriptions[start : start + LIST_PAGE_SIZE]
-
-        description = "\n\n".join(_format_sub_line(sub) for sub in page_subs)
+        description = "\n\n".join(pages[page - 1])
 
         embed = discord.Embed(
             title=f"Subscribed Feeds ({total})",
@@ -1543,9 +1534,6 @@ class DigestCommands(commands.Cog):
 
         from datetime import datetime
 
-        from newsflow.repositories.digest_repository import (
-            ChannelDigestRepository,
-        )
         from newsflow.services.digest_service import DigestService
         from newsflow.services.summarization import get_summarizer
 
@@ -1558,89 +1546,38 @@ class DigestCommands(commands.Cog):
             )
             return
 
-        session_factory = get_session_factory()
-
-        # Session 1: load config + generate digest text. Closes before Discord IO so no
-        # pooled connection is held across a multi-second round-trip. Scalars are
-        # captured explicitly to avoid subtle detached-instance bugs.
-        async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            config = await repo.get("discord", str(interaction.channel_id))
-            if config is None:
-                await interaction.followup.send(
-                    "No digest configured. Run `/digest enable` first.",
-                    ephemeral=True,
-                )
-                return
-
-            config_id = config.id
-            prior_pin_id = config.last_pinned_message_id
-
-            service = DigestService(session, summarizer)
-            now = datetime.now(UTC)
-            result = await service.generate(config, now=now)
-
-        if result is None:
-            await interaction.followup.send(
-                "No articles in the current window — nothing to summarize.",
-                ephemeral=True,
-            )
-            return
-        if not result.success:
-            await interaction.followup.send(
-                f"❌ Digest generation failed: {result.error}",
-                ephemeral=True,
-            )
-            return
-
-        # Post into the channel (not ephemeral — this IS the digest).
-        dispatcher = get_dispatcher()
-        adapter = dispatcher._adapters.get("discord")
-        if adapter is None:
-            await interaction.followup.send(
-                "Discord adapter not registered yet — try again.",
-                ephemeral=True,
-            )
-            return
-
-        chunks, new_pin_id = await dispatcher.deliver_digest(
-            adapter,
+        # The digest itself goes into the channel (not ephemeral — this IS the
+        # digest); only the outcome report below is ephemeral.
+        outcome = await DigestService.run_now(
+            get_dispatcher(),
+            "discord",
             str(interaction.channel_id),
-            dispatcher.apply_digest_header(result.text, "discord"),
-            chunk_size=1900,
-            prior_pin_id=prior_pin_id,
+            summarizer,
+            datetime.now(UTC),
+            # A manual run must not consume the schedule slot on an empty
+            # window, or it eats the digest the user was going to receive.
+            mark_empty_delivered=False,
         )
 
-        if chunks == 0:
-            await interaction.followup.send(
-                "❌ Digest generated but delivery failed.",
-                ephemeral=True,
-            )
-            return
-
-        # Session 2: persist the delivery mark, kept tiny so it does not contend with the
-        # dispatch loop's long write transaction. The digest is already in the channel,
-        # so a failed UPDATE warns the user instead of dying with "did not respond".
-        mark_failed = False
-        try:
-            async with session_factory() as session:
-                repo = ChannelDigestRepository(session)
-                await repo.mark_delivered(config_id, now, pinned_message_id=new_pin_id)
-                await session.commit()
-        except Exception:
-            logger.exception(
-                "digest_now: mark_delivered failed; digest was delivered "
-                "but last_delivered_at/last_pinned_message_id are stale"
-            )
-            mark_failed = True
-
-        msg = f"✅ Digest delivered ({chunks} message{'s' if chunks != 1 else ''})."
-        if mark_failed:
-            msg += (
-                " ⚠️ Could not update delivery record (DB was busy). "
-                "The scheduler may re-fire this slot."
-            )
-        await interaction.followup.send(msg, ephemeral=True)
+        if outcome.status == "no_adapter":
+            reply = "Discord adapter not registered yet — try again."
+        elif outcome.status == "no_config":
+            reply = "No digest configured. Run `/digest enable` first."
+        elif outcome.status == "no_articles":
+            reply = "No articles in the current window — nothing to summarize."
+        elif outcome.status == "generation_failed":
+            reply = f"❌ Digest generation failed: {outcome.error}"
+        elif outcome.status == "delivery_failed":
+            reply = "❌ Digest generated but delivery failed."
+        else:
+            plural = "s" if outcome.chunks != 1 else ""
+            reply = f"✅ Digest delivered ({outcome.chunks} message{plural})."
+            if outcome.mark_failed:
+                reply += (
+                    " ⚠️ Could not update delivery record (DB was busy). "
+                    "The scheduler may re-fire this slot."
+                )
+        await interaction.followup.send(reply, ephemeral=True)
 
 
 class DiscordAdapter(BaseAdapter):

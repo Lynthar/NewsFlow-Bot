@@ -1,15 +1,21 @@
-"""Redirect handling in FeedFetcher._do_fetch.
+"""Redirect handling and capped body reads in FeedFetcher.
 
 aiohttp's default behavior follows redirects automatically, which would let a
 public (validated) feed 302 the fetcher into a private / cloud-metadata address.
 The fetcher now follows redirects manually and re-validates every hop against
 the SSRF allow-list. We stub aiohttp with a fake session keyed by URL so we can
 assert which hosts are (and crucially are NOT) contacted.
+
+fetch_bytes_capped shares that redirect walk and is the only sanctioned way for
+non-feed callers (OPML import) to read a body.
 """
 
 from __future__ import annotations
 
-from newsflow.core.feed_fetcher import MAX_REDIRECTS, FeedFetcher
+import pytest
+
+from newsflow.core.feed_fetcher import MAX_REDIRECTS, FeedFetcher, FeedFetchError
+from newsflow.core.url_security import InvalidFeedURLError
 
 _VALID_RSS = b"""<?xml version="1.0"?>
 <rss version="2.0"><channel><title>T</title>
@@ -18,19 +24,23 @@ _VALID_RSS = b"""<?xml version="1.0"?>
 """
 
 
+# Deliberately tiny chunks. A real body arrives in pieces, and capping the read
+# with read(n) would silently keep only the first one.
+_CHUNK_BYTES = 16
+
+
 class _FakeContent:
     def __init__(self, body: bytes) -> None:
         self._body = body
 
     async def read(self, n: int = -1) -> bytes:
-        return self._body[:n] if n >= 0 else self._body
+        # StreamReader.read(n) returns only what is already buffered, so a
+        # caller that size-caps this way sees just the first chunk.
+        return self._body if n < 0 else self._body[: min(n, _CHUNK_BYTES)]
 
     async def iter_chunked(self, size: int):
-        # Deliberately tiny chunks. A real body arrives in pieces, and capping
-        # the read with read(n) would silently keep only the first one.
-        step = 16
-        for i in range(0, len(self._body), step):
-            yield self._body[i : i + step]
+        for i in range(0, len(self._body), _CHUNK_BYTES):
+            yield self._body[i : i + _CHUNK_BYTES]
 
 
 class _FakeResp:
@@ -161,3 +171,65 @@ async def test_normal_feed_without_redirect_still_works():
     assert result.success is True
     assert result.etag == '"v1"'
     assert len(result.entries) == 1
+
+
+async def test_fetch_bytes_capped_reassembles_a_chunked_body():
+    # _FakeContent hands the body out in 16-byte pieces. read(n) would have
+    # returned only the first one — this is the /import truncation bug.
+    body = b"<opml>" + b"x" * 500 + b"</opml>"
+    pub = "https://example.com/subs.opml"
+    f = _fetcher({pub: _FakeResp(200, body=body, content_type="text/x-opml")})
+
+    assert await f.fetch_bytes_capped(pub) == body
+
+
+async def test_fetch_bytes_capped_returns_none_over_cap_mid_stream():
+    body = b"y" * 400
+    pub = "https://example.com/big.opml"
+    resp = _FakeResp(200, body=body)
+    resp.content_length = None  # server omits it; only the stream cap can catch this
+    f = _fetcher({pub: resp})
+
+    assert await f.fetch_bytes_capped(pub, cap=100) is None
+
+
+async def test_fetch_bytes_capped_returns_none_on_declared_oversize():
+    pub = "https://example.com/big.opml"
+    f = _fetcher({pub: _FakeResp(200, body=b"z" * 400)})
+
+    assert await f.fetch_bytes_capped(pub, cap=100) is None
+
+
+async def test_fetch_bytes_capped_follows_and_revalidates_redirects():
+    start = "https://example.com/subs"
+    final = "https://example.com/subs.opml"
+    f = _fetcher(
+        {
+            start: _FakeResp(301, {"Location": final}),
+            final: _FakeResp(200, body=b"<opml/>"),
+        }
+    )
+
+    assert await f.fetch_bytes_capped(start) == b"<opml/>"
+
+    f2 = _fetcher({start: _FakeResp(302, {"Location": "http://169.254.169.254/latest/"})})
+    with pytest.raises(FeedFetchError, match="Unsafe redirect target"):
+        await f2.fetch_bytes_capped(start)
+    assert "http://169.254.169.254/latest/" not in f2._session.requested  # type: ignore[attr-defined]
+
+
+async def test_fetch_bytes_capped_rejects_unsafe_url_before_connecting():
+    f = _fetcher({})
+
+    with pytest.raises(InvalidFeedURLError):
+        await f.fetch_bytes_capped("http://127.0.0.1/subs.opml")
+
+    assert f._session.requested == []  # type: ignore[attr-defined]
+
+
+async def test_fetch_bytes_capped_raises_on_http_error():
+    pub = "https://example.com/subs.opml"
+    f = _fetcher({pub: _FakeResp(404, reason="Not Found")})
+
+    with pytest.raises(FeedFetchError, match="HTTP 404"):
+        await f.fetch_bytes_capped(pub)

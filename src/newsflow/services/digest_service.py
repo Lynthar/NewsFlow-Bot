@@ -5,10 +5,12 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.core.content_processor import clean_html, get_source_name
+from newsflow.models.base import get_session_factory
 from newsflow.models.digest import ChannelDigest
 from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.services.summarization import (
@@ -16,6 +18,9 @@ from newsflow.services.summarization import (
     DigestResult,
     SummarizationProvider,
 )
+
+if TYPE_CHECKING:
+    from newsflow.services.dispatcher import Dispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +32,28 @@ _DEDUPE_DELTA_DAILY = timedelta(hours=23)
 _DEDUPE_DELTA_WEEKLY = timedelta(days=6)
 
 
+# What one digest run ended up doing. Callers phrase it for their platform —
+# the scheduler logs it, the two /digest now handlers reply with it.
+DigestRunStatus = Literal[
+    "no_adapter",
+    "no_config",
+    "no_articles",
+    "generation_failed",
+    "delivery_failed",
+    "delivered",
+]
+
+
 @dataclass
 class DigestDeliveryResult:
-    success: bool
-    article_count: int = 0
-    message: str = ""
+    """Outcome of one digest run: generate, deliver, record."""
+
+    status: DigestRunStatus
+    chunks: int = 0
+    error: str | None = None
+    # The digest landed but the delivery record did not; the next scheduled
+    # run may therefore resend it.
+    mark_failed: bool = False
 
 
 # Inline citation as taught by the digest prompt: [3] or [1][4].
@@ -203,6 +225,80 @@ class DigestService:
         self.session = session
         self.summarizer = summarizer
         self.repo = ChannelDigestRepository(session)
+
+    @staticmethod
+    async def run_now(
+        dispatcher: "Dispatcher",
+        platform: str,
+        channel_id: str,
+        summarizer: SummarizationProvider,
+        now: datetime,
+        *,
+        mark_empty_delivered: bool,
+    ) -> DigestDeliveryResult:
+        """Generate one channel's digest, deliver it, record the delivery — the
+        single entry for the scheduler and both /digest now handlers. With
+        `mark_empty_delivered` an empty window still consumes the schedule slot.
+
+        Raises:
+            ChannelGoneError, ChannelMigratedError: propagated from delivery so
+                the scheduler can deactivate or repoint the channel.
+        """
+        adapter = dispatcher.get_adapter(platform)
+        if adapter is None:
+            return DigestDeliveryResult("no_adapter")
+
+        session_factory = get_session_factory()
+        # A session per phase: holding one across the LLM call or the platform
+        # send collided with the dispatch loop's long write transaction and
+        # stalled it for the whole busy-timeout.
+        async with session_factory() as session:
+            service = DigestService(session, summarizer)
+            config = await service.repo.get(platform, channel_id)
+            if config is None:
+                return DigestDeliveryResult("no_config")
+
+            config_id = config.id
+            prior_pin_id = config.last_pinned_message_id
+            result = await service.generate(config, now=now)
+
+            if result is None:
+                if mark_empty_delivered:
+                    await service.repo.mark_delivered(config_id, now)
+                    await session.commit()
+                return DigestDeliveryResult("no_articles")
+            if not result.success:
+                return DigestDeliveryResult("generation_failed", error=result.error)
+
+            digest_text = dispatcher.apply_digest_header(result.text, platform)
+
+        chunks, new_pin_id = await dispatcher.deliver_digest(
+            adapter,
+            channel_id,
+            digest_text,
+            chunk_size=adapter.digest_chunk_size,
+            prior_pin_id=prior_pin_id,
+        )
+        if chunks == 0:
+            return DigestDeliveryResult("delivery_failed")
+
+        # The digest is already on-platform, so a failed UPDATE is reported,
+        # not raised: dying here would lose the fact that it was delivered.
+        mark_failed = False
+        try:
+            async with session_factory() as session:
+                await ChannelDigestRepository(session).mark_delivered(
+                    config_id, now, pinned_message_id=new_pin_id
+                )
+                await session.commit()
+        except Exception:
+            logger.exception(
+                f"mark_delivered failed for {platform}/{channel_id}; the digest was "
+                f"delivered ({chunks} chunks) but the stored state is stale"
+            )
+            mark_failed = True
+
+        return DigestDeliveryResult("delivered", chunks=chunks, mark_failed=mark_failed)
 
     async def generate(
         self,

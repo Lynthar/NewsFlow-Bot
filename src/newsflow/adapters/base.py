@@ -161,6 +161,11 @@ class BaseAdapter(ABC):
     Each platform (Discord, Telegram, Webhook) implements this interface.
     """
 
+    # Per-message character budget for digest chunks. 1900 clears Discord's
+    # ~2000-char content limit; adapters with more room raise it. One value per
+    # adapter is what keeps a scheduled digest and a manual one chunked alike.
+    digest_chunk_size: int = 1900
+
     @property
     @abstractmethod
     def platform_name(self) -> str:

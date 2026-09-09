@@ -129,20 +129,6 @@ class FetchResult:
     discovered_feeds: list[str] = field(default_factory=list)
 
 
-@dataclass
-class ParsedEntry:
-    """Parsed RSS entry with normalized fields."""
-
-    guid: str
-    title: str
-    link: str
-    summary: str | None
-    content: str | None
-    author: str | None
-    published_at: datetime | None
-    image_url: str | None
-
-
 class FeedFetcher:
     """
     Async RSS feed fetcher with caching support.

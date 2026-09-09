@@ -82,10 +82,6 @@ class DeepLProvider(TranslationProvider):
         code = lang_code.lower()
         return DEEPL_LANGUAGES.get(code, code.upper())
 
-    def supports_language(self, lang_code: str) -> bool:
-        """Check if DeepL supports the language."""
-        return lang_code.lower() in DEEPL_LANGUAGES
-
     async def translate(
         self,
         text: str,

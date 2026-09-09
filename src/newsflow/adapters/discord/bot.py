@@ -1875,8 +1875,3 @@ async def stop_discord() -> None:
     if _bot:
         await _bot.close()
         _bot = None
-
-
-def get_discord_bot() -> NewsFlowBot | None:
-    """Get the Discord bot instance."""
-    return _bot

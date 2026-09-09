@@ -795,21 +795,6 @@ class Dispatcher:
             return "@here 📰 **Digest**\n\n" + body
         return "📰 **Digest**\n\n" + text
 
-    async def _send_text_split(
-        self, adapter: "MessageSender", channel_id: str, text: str, chunk_size: int
-    ) -> int:
-        """Split long text on paragraph boundaries and send in chunks.
-        Returns the number of successfully-sent chunks.
-        """
-        chunks = self._chunk_text(text, chunk_size)
-        sent = 0
-        for i, chunk in enumerate(chunks):
-            if i > 0:
-                await asyncio.sleep(0.1)  # small smoothing
-            if await adapter.send_text(channel_id, chunk):
-                sent += 1
-        return sent
-
     @staticmethod
     def _chunk_text(text: str, chunk_size: int) -> list[str]:
         """Split `text` so each chunk is ≤ chunk_size characters.
@@ -921,7 +906,7 @@ class Dispatcher:
         chunks_sent = 1
 
         for chunk in chunks[1:]:
-            await asyncio.sleep(0.1)  # smoothing, mirrors _send_text_split
+            await asyncio.sleep(0.1)  # smoothing between chunks
             if await adapter.send_digest_text(channel_id, chunk):
                 chunks_sent += 1
 

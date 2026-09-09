@@ -93,10 +93,6 @@ class OpenAIProvider(TranslationProvider):
         code = lang_code.lower()
         return LANGUAGE_NAMES.get(code, lang_code)
 
-    def supports_language(self, lang_code: str) -> bool:
-        """OpenAI supports virtually all languages."""
-        return True
-
     async def translate(
         self,
         text: str,

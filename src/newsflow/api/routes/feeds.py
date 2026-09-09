@@ -11,6 +11,7 @@ from pydantic import BaseModel, HttpUrl
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_api_key
+from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.services.feed_service import FeedService
@@ -237,7 +238,7 @@ async def test_feed(
     from newsflow.core import get_fetcher
 
     fetcher = get_fetcher()
-    result = await fetcher.fetch_feed(str(feed_data.url))
+    result = await fetcher.fetch_feed(expand_source_shortcut(str(feed_data.url)))
 
     return FeedTestResponse(
         success=result.success,

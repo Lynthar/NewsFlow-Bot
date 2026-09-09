@@ -227,18 +227,6 @@ class FeedService:
             return existing
         return await self.repo.create_feed(url=url, source_type=source_type, config=config)
 
-    async def test_feed(self, url: str) -> FetchResult:
-        """
-        Test if a feed URL is valid.
-
-        Args:
-            url: The RSS feed URL
-
-        Returns:
-            FetchResult with success status and entries
-        """
-        return await self.fetcher.fetch_feed(expand_source_shortcut(url))
-
     async def _apply_fetch_result(self, feed: Feed, result: FetchResult) -> FetchFeedResult:
         """Write a FetchResult to the DB. No network I/O — safe to call
         sequentially over a batch of already-fetched results."""
@@ -420,29 +408,6 @@ class FeedService:
                 error=f"{type(e).__name__}: {e}",
             )
 
-    async def get_feed(self, feed_id: int) -> Feed | None:
-        """Get a feed by ID."""
-        return await self.repo.get_feed_by_id(feed_id)
-
     async def get_feed_by_url(self, url: str) -> Feed | None:
         """Get a feed by URL."""
         return await self.repo.get_feed_by_url(url)
-
-    async def delete_feed(self, feed_id: int) -> bool:
-        """Delete a feed and all its entries."""
-        return await self.repo.delete_feed(feed_id)
-
-    async def get_recent_entries(
-        self,
-        feed_id: int,
-        limit: int = 20,
-    ) -> list[FeedEntry]:
-        """Get recent entries for a feed."""
-        entries = await self.repo.get_recent_entries(feed_id, limit)
-        return list(entries)
-
-    async def cleanup_old_entries(self, days: int = 7) -> int:
-        """Cleanup old entries."""
-        count = await self.repo.cleanup_old_entries(days)
-        logger.info(f"Cleaned up {count} old entries")
-        return count

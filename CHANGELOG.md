@@ -9,6 +9,33 @@ between minor releases. [docs/compatibility.md](docs/compatibility.md) states
 what is covered, what never will be, and what 1.0 is going to freeze — read it
 before you pin a version.
 
+## [0.9.5] - 2026-09-10
+
+### Security
+
+- aiohttp 3.14.3, cryptography 50.0.0 and pyasn1 0.6.4, clearing the security
+  advisories published against the versions 0.9.4 pinned.
+
+### Fixed
+
+- `/import` read the OPML file with `StreamReader.read(n)` — the same call
+  that truncated large feeds before 0.9.4 — so a chunked OPML silently
+  imported only its first part. It now goes through the fetcher's capped,
+  redirect-validated read.
+- Discord `/feed list` and `/feed status`, and Telegram `/info`, built their
+  replies from unclipped titles and URLs and could exceed the platform's
+  message limit. Replies are now packed to a budget by whole rows, so no
+  title or link is cut in half.
+- The readiness probe logs why the database check failed instead of only
+  reporting unhealthy.
+
+### Changed
+
+- Scheduled digests on Telegram use the same 3800-character chunks as
+  `/digest now`. They were chunked at Discord's 1900 before, so a long
+  digest arrived as twice as many messages.
+- The Docker image includes `LICENSE`.
+
 ## [0.9.4] - 2026-08-25
 
 Version numbering: this release follows 0.10.1. The minor field in this project
@@ -161,6 +188,7 @@ Tags `v0.1.0` through `v0.8.0` were added retroactively to mark development
 milestones that predate versioning. They have no changelog entries and no
 published Docker images.
 
+[0.9.5]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.3...v0.9.4
 [0.10.1]: https://github.com/Lynthar/NewsFlow-Bot/compare/ca2a8db...5d8d43c
 [0.10.0]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.3...ca2a8db

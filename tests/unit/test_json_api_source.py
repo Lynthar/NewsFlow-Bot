@@ -1,17 +1,17 @@
-"""Tests for the JSON-API source: JSONPath mapping, guid hash-fallback, SSRF
-guard, config validation, bad-JSON handling, and lazy registration.
-
-HTTP is bypassed (``_safe_get`` is stubbed) so these stay offline and pin the
-mapping/guard logic, not aiohttp.
-"""
+"""JSON-API source: JSONPath mapping, guid hash-fallback, SSRF guard, config
+validation, bad JSON, lazy registration. Offline throughout — the mapping tests
+stub ``_safe_get``, the redirect tests swap in a fake session keyed by URL."""
 
 import json
 from datetime import UTC
 
+import aiohttp
 import pytest
 
+from newsflow.core.feed_fetcher import MAX_FEED_SIZE_BYTES, MAX_REDIRECTS
 from newsflow.core.source_fetcher import SourceRequest, get_source_fetcher
 from newsflow.core.sources.json_api import JsonApiSourceFetcher
+from tests.unit.test_feed_fetcher_redirect import _FakeResp, _FakeSession
 
 pytest.importorskip("jsonpath_ng")  # needs the source-json extra
 
@@ -171,3 +171,88 @@ async def test_non_mapping_headers_config_fails():
     )
     assert res.success is False
     assert "mapping" in (res.error or "")
+
+
+# ─── redirects, error statuses and the size cap on the real request path ─────
+
+
+class _OversizeContent:
+    """Streams one byte past the cap without ever holding the body in memory."""
+
+    async def iter_chunked(self, size: int):
+        sent = 0
+        while sent <= MAX_FEED_SIZE_BYTES:
+            yield b"x" * size
+            sent += size
+
+
+def _fetcher_over(responses: dict[str, _FakeResp], monkeypatch) -> tuple:
+    session = _FakeSession(responses)
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda **kwargs: session)
+    return JsonApiSourceFetcher(), session
+
+
+def _request(url: str) -> SourceRequest:
+    return SourceRequest(url=url, config={"items": "$.data[*]", "guid": "id"})
+
+
+async def test_redirect_to_public_host_is_followed(monkeypatch):
+    start, final = "http://api.example.com/v1", "https://api.example.com/v1"
+    f, session = _fetcher_over(
+        {
+            start: _FakeResp(301, {"Location": final}),
+            final: _FakeResp(200, body=b'{"data": [{"id": "a"}]}'),
+        },
+        monkeypatch,
+    )
+
+    res = await f.fetch(_request(start))
+
+    assert res.success is True
+    assert [e["guid"] for e in res.entries] == ["a"]
+    assert session.requested == [start, final]
+
+
+async def test_redirect_to_private_host_is_rejected_before_connecting(monkeypatch):
+    start = "https://api.example.com/v1"
+    private = "http://169.254.169.254/latest/meta-data/"
+    f, session = _fetcher_over({start: _FakeResp(302, {"Location": private})}, monkeypatch)
+
+    res = await f.fetch(_request(start))
+
+    assert res.success is False
+    assert "Unsafe redirect target" in (res.error or "")
+    assert session.requested == [start]
+
+
+async def test_redirect_loop_stops_at_the_hop_budget(monkeypatch):
+    start = "https://api.example.com/loop"
+    f, session = _fetcher_over({start: _FakeResp(302, {"Location": start})}, monkeypatch)
+
+    res = await f.fetch(_request(start))
+
+    assert res.success is False
+    assert "redirects (>" in (res.error or "")
+    assert len(session.requested) == MAX_REDIRECTS + 1
+
+
+async def test_http_error_status_fails_the_fetch(monkeypatch):
+    url = "https://api.example.com/v1"
+    f, _ = _fetcher_over({url: _FakeResp(404, reason="Not Found")}, monkeypatch)
+
+    res = await f.fetch(_request(url))
+
+    assert res.success is False
+    assert "HTTP 404" in (res.error or "")
+
+
+async def test_oversize_body_fails_the_fetch(monkeypatch):
+    url = "https://api.example.com/v1"
+    resp = _FakeResp(200)
+    resp.content = _OversizeContent()  # type: ignore[assignment]
+    f, _ = _fetcher_over({url: resp}, monkeypatch)
+
+    res = await f.fetch(_request(url))
+
+    assert res.success is False
+    assert "size limit" in (res.error or "")

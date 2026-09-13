@@ -5,13 +5,19 @@ third-party text, so two rows already overrun Telegram's 4096-character
 message and Discord's 4096-character embed description. An embed over any
 single field limit is rejected whole — the command then returns nothing at
 all. These drive the real renderers with worst-case rows and assert the
-platform limits hold.
+platform limits hold. The OPML import summary is pinned here too, since both
+platforms render it from the same rows.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from newsflow.adapters.discord.bot import FeedCommands, _build_status_embed, _format_sub_line
-from newsflow.adapters.telegram.bot import info_command
+from newsflow.adapters.discord.bot import (
+    FeedCommands,
+    _build_import_embed,
+    _build_status_embed,
+    _format_sub_line,
+)
+from newsflow.adapters.telegram.bot import _do_opml_import, info_command
 from newsflow.adapters.views import (
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     DISCORD_EMBED_FIELD_VALUE_LIMIT,
@@ -202,3 +208,67 @@ async def test_telegram_info_message_stays_under_the_telegram_limit():
     text = msg.reply_text.call_args.args[0]
     assert len(text) <= TELEGRAM_TEXT_LIMIT
     assert "<b>State:</b>" in text  # the header survived the budget packing
+
+
+# --- OPML import summary -----------------------------------------------------
+
+
+def _import_result():
+    """2 added, 1 skipped, 12 failed; the first failure overruns both display
+    widths and carries markup-sensitive characters."""
+    long_url = "https://ex.com/feed?" + "a&b" * 20
+    long_reason = "HTTP 404: <not found> " + "x" * 90
+    failed = [(long_url, long_reason)] + [(f"https://ex.com/{i}", "boom") for i in range(11)]
+    return MagicMock(added=["u1", "u2"], already_subscribed=["u3"], failed=failed)
+
+
+async def test_telegram_import_summary_lists_ten_failures_escaped_and_clipped():
+    processing = MagicMock()
+    processing.edit_text = AsyncMock()
+    msg = MagicMock()
+    msg.reply_text = AsyncMock(return_value=processing)
+    update = MagicMock()
+    update.message = msg
+    service = MagicMock()
+    service.import_opml = AsyncMock(return_value=_import_result())
+
+    with (
+        patch(
+            "newsflow.adapters.telegram.bot.get_session_factory",
+            return_value=lambda: _SessionCtx(),
+        ),
+        patch("newsflow.adapters.telegram.bot.SubscriptionService", return_value=service),
+    ):
+        await _do_opml_import(update, chat_id="1", user_id="2", opml_content="<opml/>")
+
+    lines = processing.edit_text.call_args.args[0].split("\n")
+    assert lines[:6] == [
+        "<b>OPML Import Result</b>",
+        "✅ Added: <b>2</b>",
+        "⏭️ Already subscribed: <b>1</b>",
+        "❌ Failed: <b>12</b>",
+        "",
+        "<b>Failures:</b>",
+    ]
+    assert lines[6] == (
+        "• <code>https://ex.com/feed?a&amp;ba&amp;ba&amp;ba&amp;ba&amp;ba&amp;ba&amp;ba&amp;ba&amp;b"
+        "a&amp;ba&amp;ba&amp;ba&amp;ba</code>: "
+        "HTTP 404: &lt;not found&gt; xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    )
+    assert sum(ln.startswith("• ") for ln in lines) == 10
+    assert lines[-1] == "…and 2 more"
+
+
+def test_discord_import_embed_lists_ten_failures_clipped():
+    embed = _build_import_embed(_import_result())
+
+    assert embed.title == "OPML Import Result"
+    assert embed.description == "✅ Added: **2**\n⏭️ Already subscribed: **1**\n❌ Failed: **12**"
+    assert [f.name for f in embed.fields] == ["Failures"]
+    lines = embed.fields[0].value.split("\n")
+    assert lines[0] == (
+        "• `https://ex.com/feed?a&ba&ba&ba&ba&ba&ba&ba&ba&ba&ba&ba&ba&ba` — "
+        "HTTP 404: <not found> xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    )
+    assert sum(ln.startswith("• ") for ln in lines) == 10
+    assert lines[-1] == "…and 2 more"

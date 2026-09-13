@@ -28,6 +28,7 @@ from newsflow.models.base import get_session_factory
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services._yamlcfg import reject_unknown_keys, require_bool, yaml_keys
 from newsflow.services.feed_service import FeedService, SourceFeedConflictError
 
 logger = logging.getLogger(__name__)
@@ -40,34 +41,6 @@ _SUB_PLATFORMS = frozenset({"discord", "telegram", "webhook"})
 class SourceConfigError(ValueError):
     """Raised when sources.yaml is malformed. Startup fails fast on this rather
     than limping with a half-synced state."""
-
-
-# Unknown keys are rejected, not ignored — a typo'd key used to vanish
-# silently. `config:` stays free-form on purpose: its keys belong to the
-# individual SourceFetcher contracts, not this schema.
-_TOP_LEVEL_KEYS = frozenset({"sources"})
-_SOURCE_KEYS = frozenset({"url", "type", "config", "subscribers", "fetch_interval_minutes"})
-_SUBSCRIBER_KEYS = frozenset({"platform", "channel", "translate", "language", "silent"})
-
-
-def _reject_unknown_keys(context: str, cfg: dict[Any, Any], allowed: frozenset[str]) -> None:
-    unknown = sorted(str(k) for k in cfg.keys() if k not in allowed)
-    if unknown:
-        raise SourceConfigError(f"{context}: unknown key(s) {unknown}. Allowed: {sorted(allowed)}")
-
-
-def _require_bool(context: str, key: str, value: Any, default: bool) -> bool:
-    """YAML booleans must actually BE booleans — `bool("false")` is True
-    (non-empty string), silently inverting the operator's intent. Mirrors
-    webhook_sync's check."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    raise SourceConfigError(
-        f"{context}: `{key}` must be a YAML boolean (true/false), got {value!r} "
-        f'— remove the quotes if you wrote "false"'
-    )
 
 
 @dataclass
@@ -92,6 +65,14 @@ class SourceCfg:
     fetch_interval_minutes: int | None = None
 
 
+# Unknown keys are rejected, not ignored — a typo'd key used to vanish
+# silently. `config:` stays free-form on purpose: its keys belong to the
+# individual SourceFetcher contracts, not this schema.
+_TOP_LEVEL_KEYS = frozenset({"sources"})
+_SOURCE_KEYS = yaml_keys(SourceCfg) - {"name"}  # `name` is the mapping key, not a block key
+_SUBSCRIBER_KEYS = yaml_keys(SubscriberCfg)
+
+
 # ─── parsing ─────────────────────────────────────────────────────────────────
 
 
@@ -108,7 +89,7 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
         raise SourceConfigError(f"malformed YAML in {path}: {e}") from e
     if not isinstance(raw, dict):
         raise SourceConfigError(f"{path}: top-level must be a mapping with a `sources:` key")
-    _reject_unknown_keys(f"{path}", raw, _TOP_LEVEL_KEYS)
+    reject_unknown_keys(SourceConfigError, f"{path}", raw, _TOP_LEVEL_KEYS)
 
     sources_raw = raw.get("sources") or {}
     if not isinstance(sources_raw, dict):
@@ -122,7 +103,7 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
             raise SourceConfigError(f"source name must be a non-empty string, got {name!r}")
         if not isinstance(cfg, dict):
             raise SourceConfigError(f"source {name!r}: must be a mapping")
-        _reject_unknown_keys(f"source {name!r}", cfg, _SOURCE_KEYS)
+        reject_unknown_keys(SourceConfigError, f"source {name!r}", cfg, _SOURCE_KEYS)
 
         url = cfg.get("url")
         if not url or not isinstance(url, str):
@@ -173,7 +154,9 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
     for item in raw:
         if not isinstance(item, dict):
             raise SourceConfigError(f"source {source_name!r}: each subscriber must be a mapping")
-        _reject_unknown_keys(f"source {source_name!r} subscriber", item, _SUBSCRIBER_KEYS)
+        reject_unknown_keys(
+            SourceConfigError, f"source {source_name!r} subscriber", item, _SUBSCRIBER_KEYS
+        )
         platform = item.get("platform")
         if platform not in _SUB_PLATFORMS:
             raise SourceConfigError(
@@ -190,9 +173,11 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
             SubscriberCfg(
                 platform=platform,
                 channel=channel,
-                translate=_require_bool(ctx, "translate", item.get("translate"), False),
+                translate=require_bool(
+                    SourceConfigError, ctx, "translate", item.get("translate"), False
+                ),
                 language=str(item.get("language", "zh-CN")),
-                silent=_require_bool(ctx, "silent", item.get("silent"), False),
+                silent=require_bool(SourceConfigError, ctx, "silent", item.get("silent"), False),
             )
         )
     return out

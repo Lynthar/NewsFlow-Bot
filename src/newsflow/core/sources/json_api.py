@@ -28,16 +28,15 @@ import os
 import re
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urljoin
 
 import aiohttp
 from dateutil import parser as date_parser
 
 from newsflow.core.feed_fetcher import (
     DEFAULT_HEADERS,
-    MAX_REDIRECTS,
-    REDIRECT_STATUSES,
+    FeedFetchError,
     FetchResult,
+    follow_redirects,
     read_body_capped,
 )
 from newsflow.core.source_fetcher import SourceRequest, register_source_fetcher
@@ -152,8 +151,8 @@ class JsonApiSourceFetcher:
 
         try:
             raw = await self._safe_get(req.url, extra_headers)
-        except InvalidFeedURLError as e:
-            return _fail(req.url, f"Unsafe redirect target: {e}")
+        except FeedFetchError as e:
+            return _fail(req.url, str(e))
         except Exception as e:
             return _fail(req.url, f"{type(e).__name__}: {e}")
 
@@ -173,24 +172,14 @@ class JsonApiSourceFetcher:
         """GET with the same SSRF (per-hop revalidation) and size guards as the
         RSS fetcher. Raises on unsafe redirect, HTTP >= 400, or oversize body."""
         headers = {**DEFAULT_HEADERS, **(extra_headers or {})}
-        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers=headers) as session:
-            current = url
-            for _hop in range(MAX_REDIRECTS + 1):
-                async with session.get(current, allow_redirects=False) as resp:
-                    if resp.status in REDIRECT_STATUSES:
-                        location = resp.headers.get("Location")
-                        if not location:
-                            raise ValueError(f"HTTP {resp.status} redirect without Location")
-                        current = urljoin(current, location)
-                        validate_feed_url(current)  # raises on unsafe target
-                        continue
-                    if resp.status >= 400:
-                        raise ValueError(f"HTTP {resp.status}")
-                    raw = await read_body_capped(resp.content)
-                    if raw is None:
-                        raise ValueError("response exceeds size limit")
-                    return raw
-            raise ValueError(f"too many redirects (>{MAX_REDIRECTS})")
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            async with follow_redirects(session, url, headers) as resp:
+                if resp.status >= 400:
+                    raise ValueError(f"HTTP {resp.status}")
+                raw = await read_body_capped(resp.content)
+        if raw is None:
+            raise ValueError("response exceeds size limit")
+        return raw
 
     def _map_item(
         self, item: dict[str, Any], field_exprs: dict[str, Any], feed_url: str

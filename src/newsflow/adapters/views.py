@@ -5,6 +5,7 @@ can cut an HTML tag or a markdown link in half."""
 from newsflow.core.timeutil import relative_time, time_until
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
+from newsflow.services.subscription_service import OpmlImportResult
 
 # Platform hard limits. Discord additionally caps the sum of every embed
 # title / description / field across one message at 6000 characters.
@@ -19,6 +20,12 @@ DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024
 TITLE_LIMIT = 80
 URL_LIMIT = 200
 ERROR_LIMIT = 200
+
+# The OPML import summary lists at most this many failures, each cut to width.
+IMPORT_RESULT_TITLE = "OPML Import Result"
+IMPORT_FAILURES_SHOWN = 10
+IMPORT_URL_LIMIT = 60
+IMPORT_REASON_LIMIT = 80
 
 
 def clip(text: str, limit: int) -> str:
@@ -109,3 +116,23 @@ def paginate_lines(
     if current:
         pages.append(current)
     return pages
+
+
+def import_count_rows(result: OpmlImportResult) -> list[tuple[str, int]]:
+    """(label, count) rows of the import summary, in display order."""
+    return [
+        ("✅ Added", len(result.added)),
+        ("⏭️ Already subscribed", len(result.already_subscribed)),
+        ("❌ Failed", len(result.failed)),
+    ]
+
+
+def import_failure_rows(result: OpmlImportResult) -> tuple[list[tuple[str, str]], str | None]:
+    """The first IMPORT_FAILURES_SHOWN (url, reason) pairs, each cut to width, and
+    a footer counting the rest — None when every failure made the list."""
+    shown = [
+        (url[:IMPORT_URL_LIMIT], reason[:IMPORT_REASON_LIMIT])
+        for url, reason in result.failed[:IMPORT_FAILURES_SHOWN]
+    ]
+    left_out = len(result.failed) - len(shown)
+    return shown, (f"…and {left_out} more" if left_out else None)

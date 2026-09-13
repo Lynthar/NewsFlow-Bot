@@ -88,6 +88,13 @@ class _FakeSession:
     async def close(self) -> None:
         self.closed = True
 
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        await self.close()
+        return False
+
 
 def _fetcher(responses: dict[str, _FakeResp]) -> FeedFetcher:
     f = FeedFetcher(max_concurrent=2)

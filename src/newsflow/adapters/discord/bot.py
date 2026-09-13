@@ -18,7 +18,10 @@ from newsflow.adapters.views import (
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     DISCORD_EMBED_FIELD_VALUE_LIMIT,
     DISCORD_EMBED_TITLE_LIMIT,
+    IMPORT_RESULT_TITLE,
     clip,
+    import_count_rows,
+    import_failure_rows,
     last_error_text,
     paginate_lines,
     recent_entry_parts,
@@ -38,6 +41,7 @@ from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
 from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
+from newsflow.services.subscription_service import OpmlImportResult
 
 # Secondary item cap for one /feed list page; _LIST_CHAR_BUDGET is the binding
 # one. A single row runs to ~2.6K (title 512 + url 2048 at their column caps),
@@ -96,7 +100,7 @@ def _format_sub_line(sub: Subscription) -> str:
     return f"**{title}** · {meta}\n{url}"
 
 
-def _build_import_embed(result) -> discord.Embed:  # type: ignore[no-untyped-def]
+def _build_import_embed(result: OpmlImportResult) -> discord.Embed:
     """Summary embed for /feed import."""
     added = len(result.added)
     existing = len(result.already_subscribed)
@@ -106,24 +110,21 @@ def _build_import_embed(result) -> discord.Embed:  # type: ignore[no-untyped-def
         if added and not failed
         else (discord.Color.orange() if added or existing else discord.Color.red())
     )
-    lines = [
-        f"✅ Added: **{added}**",
-        f"⏭️ Already subscribed: **{existing}**",
-        f"❌ Failed: **{failed}**",
-    ]
+    lines = [f"{label}: **{count}**" for label, count in import_count_rows(result)]
     embed = discord.Embed(
-        title="OPML Import Result",
+        title=IMPORT_RESULT_TITLE,
         description="\n".join(lines),
         color=color,
     )
-    if result.failed:
-        fail_lines = []
-        for url, err in result.failed[:10]:
-            fail_lines.append(f"• `{url[:60]}` — {err[:80]}")
-        if len(result.failed) > 10:
-            fail_lines.append(f"…and {len(result.failed) - 10} more")
+    failures, footer = import_failure_rows(result)
+    if failures:
+        fail_lines = [f"• `{url}` — {reason}" for url, reason in failures]
+        if footer:
+            fail_lines.append(footer)
         value = "\n".join(fail_lines)
-        embed.add_field(name="Failures", value=value[:1024], inline=False)
+        embed.add_field(
+            name="Failures", value=value[:DISCORD_EMBED_FIELD_VALUE_LIMIT], inline=False
+        )
     return embed
 
 

@@ -8,6 +8,7 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from typing import Any
 
@@ -37,10 +38,13 @@ from newsflow.adapters.base import (
     TopicGoneError,
 )
 from newsflow.adapters.views import (
+    IMPORT_RESULT_TITLE,
     TELEGRAM_TEXT_LIMIT,
     TITLE_LIMIT,
     URL_LIMIT,
     clip,
+    import_count_rows,
+    import_failure_rows,
     last_error_text,
     paginate_lines,
     recent_entry_parts,
@@ -1760,19 +1764,17 @@ async def _do_opml_import(update: Update, chat_id: str, user_id: str, opml_conte
         )
         await session.commit()
 
-    lines = [
-        "<b>OPML Import Result</b>",
-        f"✅ Added: <b>{len(result.added)}</b>",
-        f"⏭️ Already subscribed: <b>{len(result.already_subscribed)}</b>",
-        f"❌ Failed: <b>{len(result.failed)}</b>",
-    ]
-    if result.failed:
-        lines.append("")
-        lines.append("<b>Failures:</b>")
-        for url, err in result.failed[:10]:
-            lines.append(f"• <code>{_escape_html(url[:60])}</code>: {_escape_html(err[:80])}")
-        if len(result.failed) > 10:
-            lines.append(f"…and {len(result.failed) - 10} more")
+    lines = [f"<b>{IMPORT_RESULT_TITLE}</b>"]
+    lines += [f"{label}: <b>{count}</b>" for label, count in import_count_rows(result)]
+    failures, footer = import_failure_rows(result)
+    if failures:
+        lines += ["", "<b>Failures:</b>"]
+        lines += [
+            f"• <code>{_escape_html(url)}</code>: {_escape_html(reason)}"
+            for url, reason in failures
+        ]
+        if footer:
+            lines.append(footer)
 
     await processing.edit_text("\n".join(lines), parse_mode="HTML")
 
@@ -2296,6 +2298,38 @@ async def _on_manage_callback(
     await render(text, keyboard)
 
 
+_CommandCallback = Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]]
+
+# Every /command the bot answers. WELCOME_TEXT documents each one and
+# _MENU_COMMANDS picks the menu subset; a test holds the three lists together.
+_COMMANDS: list[tuple[str, _CommandCallback]] = [
+    ("start", start_command),
+    ("help", help_command),
+    ("add", add_command),
+    ("remove", remove_command),
+    ("pause", pause_command),
+    ("resume", resume_command),
+    ("list", list_command),
+    ("info", info_command),
+    ("test", test_command),
+    ("language", language_command),
+    ("translate", translate_command),
+    ("setlang", setlang_command),
+    ("settrans", settrans_command),
+    ("silent", silent_command),
+    ("setsilent", setsilent_command),
+    ("setdisplay", setdisplay_command),
+    ("template", template_command),
+    ("settopic", settopic_command),
+    ("filter", filter_command),
+    ("digest", digest_command),
+    ("import", import_command),
+    ("export", export_command),
+    ("status", status_command),
+    ("manage", manage_command),
+]
+
+
 class TelegramAdapter(BaseAdapter):
     """Telegram adapter implementation."""
 
@@ -2336,32 +2370,9 @@ class TelegramAdapter(BaseAdapter):
             .build()
         )
 
-        # Register handlers
-        self.app.add_handler(CommandHandler("start", start_command))
-        self.app.add_handler(CommandHandler("help", help_command))
-        self.app.add_handler(CommandHandler("add", add_command))
-        self.app.add_handler(CommandHandler("remove", remove_command))
-        self.app.add_handler(CommandHandler("pause", pause_command))
-        self.app.add_handler(CommandHandler("resume", resume_command))
-        self.app.add_handler(CommandHandler("list", list_command))
-        self.app.add_handler(CommandHandler("info", info_command))
-        self.app.add_handler(CommandHandler("test", test_command))
-        self.app.add_handler(CommandHandler("language", language_command))
-        self.app.add_handler(CommandHandler("translate", translate_command))
-        self.app.add_handler(CommandHandler("setlang", setlang_command))
-        self.app.add_handler(CommandHandler("settrans", settrans_command))
-        self.app.add_handler(CommandHandler("silent", silent_command))
-        self.app.add_handler(CommandHandler("setsilent", setsilent_command))
-        self.app.add_handler(CommandHandler("setdisplay", setdisplay_command))
-        self.app.add_handler(CommandHandler("template", template_command))
-        self.app.add_handler(CommandHandler("settopic", settopic_command))
-        self.app.add_handler(CommandHandler("filter", filter_command))
-        self.app.add_handler(CommandHandler("digest", digest_command))
-        self.app.add_handler(CommandHandler("import", import_command))
-        self.app.add_handler(CommandHandler("export", export_command))
-        self.app.add_handler(CommandHandler("status", status_command))
-        # Inline-keyboard callbacks: /list pagination + /start quick-menu.
-        self.app.add_handler(CommandHandler("manage", manage_command))
+        for name, callback in _COMMANDS:
+            self.app.add_handler(CommandHandler(name, callback))
+        # Inline-keyboard callbacks: /list pagination, /start quick-menu, /manage.
         self.app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^(list|menu|mg):"))
         # Auto-import when user uploads an .opml/.xml file (no caption needed).
         self.app.add_handler(

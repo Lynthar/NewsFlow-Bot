@@ -31,6 +31,7 @@ from newsflow.models.base import get_session_factory
 from newsflow.models.subscription import Subscription
 from newsflow.models.webhook import WebhookDestination
 from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services._yamlcfg import reject_unknown_keys, require_bool, yaml_keys
 from newsflow.services.feed_service import FeedService
 
 logger = logging.getLogger(__name__)
@@ -50,36 +51,6 @@ _OWNER = "yaml"
 class WebhookConfigError(ValueError):
     """Raised when webhooks.yaml is malformed or semantically invalid.
     Startup fails fast on this rather than limping with a half-synced state."""
-
-
-# Unknown keys are rejected, not ignored: a typo'd `secert:` used to make the
-# HMAC signature silently vanish. `python -m newsflow.checkconfig` validates
-# the file offline before a deploy.
-_TOP_LEVEL_KEYS = frozenset({"destinations", "subscriptions"})
-_DESTINATION_KEYS = frozenset(
-    {"url", "format", "secret", "headers", "timeout_s", "translate", "language"}
-)
-
-
-def _reject_unknown_keys(context: str, cfg: dict[Any, Any], allowed: frozenset[str]) -> None:
-    unknown = sorted(str(k) for k in cfg.keys() if k not in allowed)
-    if unknown:
-        raise WebhookConfigError(f"{context}: unknown key(s) {unknown}. Allowed: {sorted(allowed)}")
-
-
-def _require_bool(context: str, key: str, value: Any, default: bool) -> bool:
-    """YAML booleans must actually BE booleans. `bool(value)` coercion would
-    turn the quoted string `"false"` (truthy — it's a non-empty str) into
-    True, silently inverting the operator's intent. Unquoted false/no/off
-    parse to real bools under YAML 1.1 and pass through untouched."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    raise WebhookConfigError(
-        f"{context}: `{key}` must be a YAML boolean (true/false), got {value!r} "
-        f'— remove the quotes if you wrote "false"'
-    )
 
 
 @dataclass
@@ -103,6 +74,13 @@ class WebhookConfig:
     subscriptions: dict[str, list[str]] = field(default_factory=dict)
 
 
+# Unknown keys are rejected, not ignored: a typo'd `secert:` used to make the
+# HMAC signature silently vanish. `python -m newsflow.checkconfig` validates
+# the file offline before a deploy.
+_TOP_LEVEL_KEYS = yaml_keys(WebhookConfig)
+_DESTINATION_KEYS = yaml_keys(WebhookConfigDestination) - {"name"}  # `name` is the mapping key
+
+
 # ─── parsing ─────────────────────────────────────────────────────────────────
 
 
@@ -124,7 +102,7 @@ def parse_webhooks_yaml(path: Path) -> WebhookConfig:
             f"{path}: top-level must be a mapping with `destinations:` "
             f"and optional `subscriptions:` keys"
         )
-    _reject_unknown_keys(f"{path}", raw, _TOP_LEVEL_KEYS)
+    reject_unknown_keys(WebhookConfigError, f"{path}", raw, _TOP_LEVEL_KEYS)
 
     destinations = _parse_destinations(raw.get("destinations") or {})
     subscriptions = _parse_subscriptions(raw.get("subscriptions") or {}, destinations)
@@ -145,7 +123,7 @@ def _parse_destinations(
             raise WebhookConfigError(
                 f"destination {name!r}: must be a mapping, got {type(cfg).__name__}"
             )
-        _reject_unknown_keys(f"destination {name!r}", cfg, _DESTINATION_KEYS)
+        reject_unknown_keys(WebhookConfigError, f"destination {name!r}", cfg, _DESTINATION_KEYS)
 
         url = cfg.get("url")
         if not url or not isinstance(url, str):
@@ -195,8 +173,8 @@ def _parse_destinations(
             secret=secret,
             headers=headers,
             timeout_s=timeout_s,
-            translate=_require_bool(
-                f"destination {name!r}", "translate", cfg.get("translate"), True
+            translate=require_bool(
+                WebhookConfigError, f"destination {name!r}", "translate", cfg.get("translate"), True
             ),
             language=str(cfg.get("language", "zh-CN")),
         )

@@ -12,6 +12,7 @@ from telegram.error import BadRequest
 
 from newsflow.adapters.base import Message
 from newsflow.adapters.telegram.bot import (
+    _COMMANDS,
     _MENU_COMMANDS,
     WELCOME_TEXT,
     TelegramAdapter,
@@ -58,6 +59,16 @@ def test_menu_commands_are_telegram_valid():
     for cmd, desc in _MENU_COMMANDS:
         assert 1 <= len(cmd) <= 32 and cmd.islower() and cmd.isascii()
         assert 1 <= len(desc) <= 256
+
+
+def test_help_text_and_menu_name_exactly_the_registered_commands():
+    """A /command line in the help text with no handler behind it, or a handler
+    the help text never mentions, both fail here. /start is the one exception:
+    it is the message itself. The menu is a curated subset, never a superset."""
+    registered = {name for name, _ in _COMMANDS}
+    documented = set(re.findall(r"^/([a-z]+)", WELCOME_TEXT, re.M))
+    assert documented == registered - {"start"}
+    assert {cmd for cmd, _ in _MENU_COMMANDS} <= registered
 
 
 def test_list_keyboard_single_page_is_none():

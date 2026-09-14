@@ -173,7 +173,7 @@ it: both carry the article-truncation bug fixed below. Pin `0.9.4`.
 
 ### Changed
 
-- `mypy --strict` and ruff became blocking CI gates.
+- mypy (`disallow_untyped_defs`) and ruff became blocking CI gates.
 - `asyncpg` raised to 0.30 so installs succeed on Python 3.13.
 
 ## [0.9.0] - 2026-06-01

@@ -233,7 +233,10 @@ class FeedService:
         if not result.success:
             was_active = feed.is_active
             await self.repo.mark_feed_error(
-                feed.id, result.error, base_delay_seconds=self._backoff_base_seconds
+                feed.id,
+                result.error,
+                base_delay_seconds=self._backoff_base_seconds,
+                status=result.status,
             )
             # Feed.mark_error mutates the same ORM instance via the identity
             # map, so feed.is_active now reflects the post-update state.

@@ -149,12 +149,16 @@ class FeedRepository:
         await self.session.execute(update(Feed).where(Feed.id == feed_id).values(**update_data))
 
     async def mark_feed_error(
-        self, feed_id: int, error: str | None, base_delay_seconds: int = 3600
+        self,
+        feed_id: int,
+        error: str | None,
+        base_delay_seconds: int = 3600,
+        status: int | None = None,
     ) -> None:
-        """Mark a feed fetch error, scheduling exponential backoff."""
+        """Mark a feed fetch error and schedule the retry (see Feed.mark_error)."""
         feed = await self.get_feed_by_id(feed_id)
         if feed:
-            feed.mark_error(error, base_delay_seconds=base_delay_seconds)
+            feed.mark_error(error, base_delay_seconds=base_delay_seconds, status=status)
 
     async def delete_feed(self, feed_id: int) -> bool:
         """Delete a feed and all its entries."""

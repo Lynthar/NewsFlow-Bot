@@ -122,6 +122,9 @@ class FetchResult:
     feed_description: str | None = None
     feed_link: str | None = None
     error: str | None = None
+    # HTTP status of a failed response; None when the failure was not an HTTP
+    # status (timeout, network, parse, size cap). Feed.mark_error keys on it.
+    status: int | None = None
     not_modified: bool = False
     # Feed URLs advertised by an HTML page via <link rel="alternate"> when
     # `url` turned out not to be a feed. add_feed resolves and retries against
@@ -229,6 +232,7 @@ class FeedFetcher:
                         success=False,
                         entries=[],
                         error=error_msg,
+                        status=response.status,
                     )
 
                 # Refuse the response up-front if Content-Length is too large.

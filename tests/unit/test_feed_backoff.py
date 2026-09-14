@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 from newsflow.models.feed import Feed
 from newsflow.repositories.feed_repository import FeedRepository
+from newsflow.services.feed_service import FeedService
+from tests.unit.test_feed_fetcher_redirect import _FakeResp, _fetcher
 
 
 def test_mark_error_sets_next_retry_with_doubling():
@@ -115,3 +117,66 @@ def test_reactivate_revives_auto_disabled_feed():
     assert feed.next_retry_at is None
     # Error history stays visible until the next fetch outcome replaces it.
     assert feed.last_error == "HTTP 500"
+
+
+# ─── refused (401/403) versus broken (429/5xx) ──────────────────────────────
+
+
+async def _fetch_with_status(session, status: int, reason: str) -> tuple:
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    svc = FeedService(session)
+    svc.fetcher = _fetcher({feed.url: _FakeResp(status, reason=reason)})
+    before = datetime.now(UTC)
+    result = await svc.fetch_and_store(feed)
+    delay = (feed.next_retry_at - before).total_seconds()
+    return result, feed, delay, svc._backoff_base_seconds
+
+
+async def test_401_retries_at_the_plain_interval(session):
+    """A refused fetch needs a person, not time: no doubling, so the
+    ten-strike deactivation (and its notice) arrives within hours, not days."""
+    result, feed, delay, base = await _fetch_with_status(session, 401, "Unauthorized")
+
+    assert result.success is False
+    assert feed.error_count == 1
+    assert feed.last_error == "HTTP 401: Unauthorized"
+    assert base - 5 < delay < base + 5
+
+
+async def test_503_backs_off(session):
+    """A broken server gets the doubling curve: first strike waits 2x base."""
+    result, feed, delay, base = await _fetch_with_status(session, 503, "Service Unavailable")
+
+    assert result.success is False
+    assert feed.error_count == 1
+    assert 2 * base - 5 < delay < 2 * base + 5
+
+
+def test_mark_error_auth_failure_stays_flat_across_strikes():
+    feed = Feed(url="https://example.com/feed", error_count=6)
+    before = datetime.now(UTC)
+
+    feed.mark_error("HTTP 403: Forbidden", base_delay_seconds=100, status=403)
+
+    delay = (feed.next_retry_at - before).total_seconds()
+    assert 95 < delay < 105  # not 2^5 * 100
+
+
+def test_mark_error_auth_failure_still_deactivates_at_ten():
+    feed = Feed(url="https://example.com/feed", is_active=True, error_count=9)
+
+    feed.mark_error("HTTP 401: Unauthorized", status=401)
+
+    assert feed.is_active is False
+    assert feed.error_count == 10
+
+
+def test_mark_error_429_backs_off_like_5xx():
+    feed = Feed(url="https://example.com/feed", error_count=0)
+    before = datetime.now(UTC)
+
+    feed.mark_error("HTTP 429: Too Many Requests", base_delay_seconds=100, status=429)
+
+    delay = (feed.next_retry_at - before).total_seconds()
+    assert 195 < delay < 205

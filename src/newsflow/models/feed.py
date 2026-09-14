@@ -13,6 +13,10 @@ from newsflow.models.base import Base
 if TYPE_CHECKING:
     from newsflow.models.subscription import Subscription
 
+# The server refused us (credentials, blocking): waiting longer fixes nothing,
+# so these skip the backoff curve and reach a person via the deactivate path.
+AUTH_FAILURE_STATUSES = frozenset({401, 403})
+
 
 class Feed(Base):
     """
@@ -85,17 +89,21 @@ class Feed(Base):
         if last_modified:
             self.last_modified = last_modified
 
-    def mark_error(self, error: str | None, base_delay_seconds: int = 3600) -> None:
-        """Record a failed fetch and schedule the next retry with exponential
-        backoff: delay = base_delay * 2^min(error_count, 5), capped so we
-        don't overshoot before the error_count=10 auto-deactivate kicks in.
+    def mark_error(
+        self, error: str | None, base_delay_seconds: int = 3600, status: int | None = None
+    ) -> None:
+        """Record a failed fetch and schedule the next retry.
+
+        401/403 means the server refused us — waiting longer fixes nothing, so
+        retry at the plain interval and let the ten-strike deactivation reach a
+        person within hours. Anything else backs off: base * 2^min(error_count, 5).
         """
         now = datetime.now(UTC)
         self.last_fetched_at = now
         self.error_count += 1
         self.last_error = error
 
-        factor = 2 ** min(self.error_count, 5)
+        factor = 1 if status in AUTH_FAILURE_STATUSES else 2 ** min(self.error_count, 5)
         self.next_retry_at = now + timedelta(seconds=base_delay_seconds * factor)
 
         if self.error_count >= 10:

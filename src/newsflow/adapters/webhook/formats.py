@@ -283,7 +283,7 @@ def _to_matrix_text(text: str) -> WireRequest:
 # ─── shared helpers ──────────────────────────────────────────────────────────
 
 
-def _json(payload: dict) -> WireRequest:
+def _json(payload: dict[str, Any]) -> WireRequest:
     return WireRequest(
         body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},

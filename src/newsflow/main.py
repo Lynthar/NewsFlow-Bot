@@ -8,6 +8,7 @@ import asyncio
 import logging
 import signal
 import sys
+from typing import Any
 
 import structlog
 from structlog.typing import Processor
@@ -321,7 +322,7 @@ async def main() -> None:
     # still surfaces as KeyboardInterrupt and is caught in cli(). `_shutdown_tasks`
     # holds strong refs — the loop only weak-refs bare create_task results.
     loop = asyncio.get_running_loop()
-    _shutdown_tasks: set[asyncio.Task] = set()
+    _shutdown_tasks: set[asyncio.Task[Any]] = set()
 
     def _trigger_shutdown() -> None:
         task = asyncio.create_task(shutdown(loop), name="shutdown")

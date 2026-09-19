@@ -46,9 +46,9 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
-  # ruff (check + format) and mypy are hard gates — mypy runs with pyproject's
-  # [tool.mypy] flags (disallow_untyped_defs and friends), not --strict.
-  # The tree is clean and stays that way: keep new code lint- and type-clean.
+  # ruff (check + format) and mypy are hard gates — mypy runs --strict via
+  # pyproject's [tool.mypy]. The tree is clean and stays that way: keep new
+  # code lint- and type-clean.
   lint:
     name: ruff + mypy (blocking)
     runs-on: ubuntu-latest

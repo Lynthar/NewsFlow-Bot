@@ -57,8 +57,17 @@ _FIELDS = (
 )
 
 
-def _fail(url: str, error: str) -> FetchResult:
-    return FetchResult(url=url, success=False, entries=[], error=error)
+class HTTPStatusError(ValueError):
+    """A response with status >= 400. Carries the code so the retry policy can
+    tell a refusal (401/403/410, plain interval) from a broken server (curve)."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+def _fail(url: str, error: str, status: int | None = None) -> FetchResult:
+    return FetchResult(url=url, success=False, entries=[], error=error, status=status)
 
 
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -153,6 +162,8 @@ class JsonApiSourceFetcher:
             raw = await self._safe_get(req.url, extra_headers)
         except FeedFetchError as e:
             return _fail(req.url, str(e))
+        except HTTPStatusError as e:
+            return _fail(req.url, str(e), status=e.status)
         except Exception as e:
             return _fail(req.url, f"{type(e).__name__}: {e}")
 
@@ -170,12 +181,13 @@ class JsonApiSourceFetcher:
 
     async def _safe_get(self, url: str, extra_headers: dict[str, str] | None = None) -> bytes:
         """GET with the same SSRF (per-hop revalidation) and size guards as the
-        RSS fetcher. Raises on unsafe redirect, HTTP >= 400, or oversize body."""
+        RSS fetcher. Raises on unsafe redirect, oversize body, or HTTP >= 400
+        (HTTPStatusError, so the status reaches the feed's retry policy)."""
         headers = {**DEFAULT_HEADERS, **(extra_headers or {})}
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
             async with follow_redirects(session, url, headers) as resp:
                 if resp.status >= 400:
-                    raise ValueError(f"HTTP {resp.status}")
+                    raise HTTPStatusError(resp.status)
                 raw = await read_body_capped(resp.content)
         if raw is None:
             raise ValueError("response exceeds size limit")

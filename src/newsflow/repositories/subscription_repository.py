@@ -5,7 +5,7 @@ Subscription repository for database operations.
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,9 @@ from sqlalchemy.orm import selectinload
 from newsflow.config import get_settings
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories._result import rowcount
+
+if TYPE_CHECKING:
+    from newsflow.models.feed import FeedEntry
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +241,7 @@ class SubscriptionRepository:
     async def set_subscription_filter(
         self,
         subscription_id: int,
-        filter_rule: dict | None,
+        filter_rule: dict[str, Any] | None,
     ) -> None:
         """Set or clear the filter_rule column. `None` clears the filter."""
         await self.session.execute(
@@ -575,7 +578,7 @@ class SubscriptionRepository:
         self,
         subscription_id: int,
         limit: int = 10,
-    ) -> Sequence:
+    ) -> Sequence["FeedEntry"]:
         """
         Get entries that haven't been sent to this subscription.
 

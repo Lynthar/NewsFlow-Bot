@@ -118,7 +118,7 @@ class ChannelDigestRepository:
         successfully pass the new message id; callers that never
         attempt pinning (or whose pin failed) leave the arg at None.
         """
-        values: dict = {"last_delivered_at": at}
+        values: dict[str, Any] = {"last_delivered_at": at}
         if pinned_message_id is not None:
             values["last_pinned_message_id"] = pinned_message_id
         await self.session.execute(

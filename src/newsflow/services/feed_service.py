@@ -5,6 +5,7 @@ Feed service - Business logic for feed management.
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -197,7 +198,9 @@ class FeedService:
             entry_count=len(entries),
         )
 
-    async def upsert_source_feed(self, url: str, source_type: str, config: dict | None) -> Feed:
+    async def upsert_source_feed(
+        self, url: str, source_type: str, config: dict[str, Any] | None
+    ) -> Feed:
         """Create or update a non-RSS source feed (json_api, email_imap, …).
 
         Unlike add_feed, this does NOT fetch over HTTP — the registered

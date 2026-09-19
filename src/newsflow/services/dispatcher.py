@@ -122,13 +122,13 @@ class Dispatcher:
         # Strong refs for fire-and-forget background tasks. Without this the
         # event loop only holds weak refs and a task can be GC'd mid-run. See
         # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
-        self._background_tasks: set[asyncio.Task] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         # Serialises dispatch rounds: the loop and ingest-triggered rounds share this
         # path, and two interleaved rounds double-send.
         self._dispatch_mutex = asyncio.Lock()
         self.totals = DispatcherTotals()
 
-    def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task:
+    def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task[Any]:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
         until it completes. Use this instead of bare asyncio.create_task()
         anywhere the return value would otherwise be discarded."""

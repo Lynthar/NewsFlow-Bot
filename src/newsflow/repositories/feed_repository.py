@@ -5,6 +5,7 @@ Feed repository for database operations.
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,7 +83,7 @@ class FeedRepository:
         description: str | None = None,
         site_url: str | None = None,
         source_type: str = "rss",
-        config: dict | None = None,
+        config: dict[str, Any] | None = None,
     ) -> Feed:
         """Create a new feed. Feed-derived metadata is capped to its column
         width here just like the update path (update_feed_metadata) — an
@@ -194,7 +195,7 @@ class FeedRepository:
     async def create_entries_bulk(
         self,
         feed_id: int,
-        entries_data: list[dict],
+        entries_data: list[dict[str, Any]],
     ) -> list[FeedEntry]:
         """
         Bulk create entries, skipping existing ones.

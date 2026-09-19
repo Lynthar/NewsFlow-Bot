@@ -244,6 +244,9 @@ async def test_http_error_status_fails_the_fetch(monkeypatch):
 
     assert res.success is False
     assert "HTTP 404" in (res.error or "")
+    # The code rides along, so a 401/403/410 on a declarative source reaches the
+    # refused-vs-broken retry policy instead of always walking the backoff curve.
+    assert res.status == 404
 
 
 async def test_oversize_body_fails_the_fetch(monkeypatch):

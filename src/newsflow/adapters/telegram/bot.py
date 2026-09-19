@@ -2339,7 +2339,7 @@ class TelegramAdapter(BaseAdapter):
 
     def __init__(self, token: str) -> None:
         self.token = token
-        self.app: Application | None = None
+        self.app: Application[Any, Any, Any, Any, Any, Any] | None = None
 
     @property
     def platform_name(self) -> str:
@@ -2819,7 +2819,7 @@ class TelegramAdapter(BaseAdapter):
 
 
 # Global app instance
-_app: Application | None = None
+_app: Application[Any, Any, Any, Any, Any, Any] | None = None
 
 
 async def start_telegram(token: str) -> None:

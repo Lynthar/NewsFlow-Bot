@@ -153,6 +153,23 @@ async def test_503_backs_off(session):
     assert 2 * base - 5 < delay < 2 * base + 5
 
 
+async def test_410_gone_retries_at_the_plain_interval(session):
+    """Gone is final, like a refusal: no doubling, a person hears within hours."""
+    result, feed, delay, base = await _fetch_with_status(session, 410, "Gone")
+
+    assert result.success is False
+    assert feed.error_count == 1
+    assert base - 5 < delay < base + 5
+
+
+async def test_404_backs_off(session):
+    """A 404 is usually a deploy in progress, so it stays on the curve."""
+    result, feed, delay, base = await _fetch_with_status(session, 404, "Not Found")
+
+    assert result.success is False
+    assert 2 * base - 5 < delay < 2 * base + 5
+
+
 def test_mark_error_auth_failure_stays_flat_across_strikes():
     feed = Feed(url="https://example.com/feed", error_count=6)
     before = datetime.now(UTC)

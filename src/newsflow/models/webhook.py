@@ -10,6 +10,8 @@ so the URL can be rotated without touching the subscription rows.
 payload when present — recipients with the same key can verify integrity.
 """
 
+from typing import Any
+
 from sqlalchemy import JSON, Boolean, Index, Integer, String, true
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,7 +41,7 @@ class WebhookDestination(Base):
     # Extra headers merged into every request (e.g. Bearer tokens for Zapier
     # or X-* routing hints for n8n). JSON-serialised dict; SQLite stores
     # TEXT, Postgres stores JSONB.
-    headers: Mapped[dict | None] = mapped_column(JSON)
+    headers: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     # Per-destination request timeout. Kept small so a hung webhook can't
     # stall the dispatch loop for all other platforms.

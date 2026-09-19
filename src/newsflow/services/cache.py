@@ -141,7 +141,7 @@ class RedisCache(CacheBackend):
             try:
                 import redis.asyncio as redis
 
-                self._client = redis.from_url(
+                self._client = redis.Redis.from_url(
                     self.redis_url,
                     encoding="utf-8",
                     decode_responses=True,

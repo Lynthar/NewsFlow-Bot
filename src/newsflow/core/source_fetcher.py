@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from newsflow.core.feed_fetcher import FetchResult
 
@@ -37,7 +37,7 @@ class SourceRequest:
     url: str
     etag: str | None = None
     last_modified: str | None = None
-    config: dict | None = None
+    config: dict[str, Any] | None = None
 
 
 @runtime_checkable

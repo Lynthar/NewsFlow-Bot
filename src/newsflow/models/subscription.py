@@ -3,7 +3,7 @@ Subscription model for user feed subscriptions.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -61,7 +61,7 @@ class Subscription(Base):
     # Filter rule: narrows which entries from this feed actually reach the
     # channel. Stored as serialized FilterRule (see core/filter.py); None
     # means no filter, all entries pass.
-    filter_rule: Mapped[dict | None] = mapped_column(JSON)
+    filter_rule: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     # Relationship
     feed: Mapped["Feed"] = relationship(back_populates="subscriptions")

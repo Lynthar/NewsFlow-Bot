@@ -7,126 +7,84 @@ reported instead of raised, and one broken file doesn't block the other.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
-from newsflow.config import get_settings
-from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services.config_reload import reload_declarative_configs
 
+VALID = "destinations:\n  a:\n    url: https://example.com/h\n"
+BROKEN = "destinations:\n  b:\n    url: https://example.com/h2\n    secert: oops\n"
 
-def _patch_session_factory(monkeypatch, session):
-    class _Ctx:
-        async def __aenter__(self):
-            return session
 
-        async def __aexit__(self, *a):
-            return False
+@pytest_asyncio.fixture
+async def session(db):
+    """A session on the shared test database; the sync opens its own alongside."""
+    async with db() as s:
+        yield s
 
-    factory = lambda: _Ctx()  # noqa: E731
-    monkeypatch.setattr(
-        "newsflow.services.webhook_sync.get_session_factory",
-        lambda: factory,
+
+@pytest.fixture
+def yaml_dir(configure, tmp_path):
+    """Both declarative files live under tmp_path; a file exists iff the test wrote it."""
+    configure(
+        webhooks_config_path=tmp_path / "webhooks.yaml",
+        sources_config_path=tmp_path / "sources.yaml",
     )
+    return tmp_path
 
 
-def _patch_feed_fetcher(monkeypatch):
-    mock_fetcher = AsyncMock()
-    mock_fetcher.fetch_feed = AsyncMock(
-        return_value=FetchResult(
-            url="",
-            success=True,
-            entries=[{"guid": "e1", "title": "E1", "link": "https://feed.example.com/e1"}],
-            etag=None,
-            last_modified=None,
-            feed_title="Test Feed",
-            feed_description=None,
-        )
-    )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher",
-        lambda: mock_fetcher,
-    )
+async def _destination_names(session) -> list[str]:
+    return [d.name for d in await session.scalars(select(WebhookDestination))]
 
 
-def _point_settings_at(monkeypatch, tmp_path):
-    settings = get_settings()
-    monkeypatch.setattr(settings, "webhooks_config_path", tmp_path / "webhooks.yaml")
-    monkeypatch.setattr(settings, "sources_config_path", tmp_path / "sources.yaml")
-
-
-async def test_reload_applies_a_valid_file(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
-    _patch_feed_fetcher(monkeypatch)
-    _point_settings_at(monkeypatch, tmp_path)
-    (tmp_path / "webhooks.yaml").write_text(
-        "destinations:\n  a:\n    url: https://example.com/h\n",
-        encoding="utf-8",
-    )
+async def test_reload_applies_a_valid_file(session, yaml_dir):
+    (yaml_dir / "webhooks.yaml").write_text(VALID, encoding="utf-8")
 
     result = await reload_declarative_configs()
 
     assert result.ok is True
-    dests = (await session.execute(select(WebhookDestination))).scalars().all()
-    assert [d.name for d in dests] == ["a"]
+    assert await _destination_names(session) == ["a"]
 
 
-async def test_reload_with_broken_file_keeps_previous_state(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
-    _patch_feed_fetcher(monkeypatch)
-    _point_settings_at(monkeypatch, tmp_path)
-    path = tmp_path / "webhooks.yaml"
-    path.write_text("destinations:\n  a:\n    url: https://example.com/h\n", encoding="utf-8")
+async def test_reload_with_broken_file_keeps_previous_state(session, yaml_dir):
+    path = yaml_dir / "webhooks.yaml"
+    path.write_text(VALID, encoding="utf-8")
     assert (await reload_declarative_configs()).ok is True
 
     # Now break the file: reload must report the error and leave the
     # destination from the previous sync untouched.
-    path.write_text(
-        "destinations:\n  b:\n    url: https://example.com/h2\n    secert: oops\n",
-        encoding="utf-8",
-    )
+    path.write_text(BROKEN, encoding="utf-8")
     result = await reload_declarative_configs()
 
     assert result.ok is False
     assert "secert" in result.detail
-    dests = (await session.execute(select(WebhookDestination))).scalars().all()
-    assert [d.name for d in dests] == ["a"]
+    assert await _destination_names(session) == ["a"]
 
 
-async def test_reload_with_no_files_is_a_clean_noop(monkeypatch, tmp_path):
-    _point_settings_at(monkeypatch, tmp_path)
+async def test_reload_with_no_files_is_a_clean_noop(yaml_dir):
     result = await reload_declarative_configs()
     assert result.ok is True
     assert "skipped" in result.detail
 
 
-async def test_admin_reload_route_maps_failure_to_400(monkeypatch):
+async def test_admin_reload_route_maps_failure_to_400(db, yaml_dir):
     from fastapi import HTTPException
 
     from newsflow.api.routes.admin import reload_configs
-    from newsflow.services.config_reload import ReloadResult
 
-    monkeypatch.setattr(
-        "newsflow.services.config_reload.reload_declarative_configs",
-        AsyncMock(return_value=ReloadResult(ok=False, detail="webhooks.yaml: boom")),
-    )
+    (yaml_dir / "webhooks.yaml").write_text(BROKEN, encoding="utf-8")
     with pytest.raises(HTTPException) as exc:
         await reload_configs(_=None)
     assert exc.value.status_code == 400
-    assert "boom" in exc.value.detail
+    assert "secert" in exc.value.detail
 
 
-async def test_admin_reload_route_returns_detail_on_success(monkeypatch):
+async def test_admin_reload_route_returns_detail_on_success(db, yaml_dir):
     from newsflow.api.routes.admin import reload_configs
-    from newsflow.services.config_reload import ReloadResult
 
-    monkeypatch.setattr(
-        "newsflow.services.config_reload.reload_declarative_configs",
-        AsyncMock(return_value=ReloadResult(ok=True, detail="webhooks.yaml synced")),
-    )
+    (yaml_dir / "webhooks.yaml").write_text(VALID, encoding="utf-8")
     response = await reload_configs(_=None)
     assert response.ok is True
     assert "synced" in response.detail

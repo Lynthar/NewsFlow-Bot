@@ -20,14 +20,7 @@ from newsflow.services.translation.base import TranslationResult
 
 
 def _dispatcher() -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    fake.data_dir = MagicMock()
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+    return Dispatcher()
 
 
 async def _make_entry(session) -> FeedEntry:

@@ -14,7 +14,7 @@ just burns one failed API call per dispatch cycle per sub.
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from sqlalchemy import select
 
@@ -176,13 +176,7 @@ async def test_disable_for_channel_missing_row_is_safe_noop(session):
 
 
 def _dispatcher() -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+    return Dispatcher()
 
 
 async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:

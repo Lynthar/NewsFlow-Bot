@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest_asyncio
 from sqlalchemy import select
 
 from newsflow.core.feed_fetcher import FetchResult
@@ -21,6 +22,14 @@ from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services.source_sync import SourceCfg, SubscriberCfg, _reconcile
 from newsflow.services.webhook_sync import sync_webhooks
+
+
+@pytest_asyncio.fixture
+async def session(db):
+    """A session on the shared test database; the code under test opens its own."""
+    async with db() as s:
+        yield s
+
 
 WEBHOOKS_YAML = """
 destinations:
@@ -48,20 +57,6 @@ def _source_cfg(channel: str = "slack") -> SourceCfg:
         type="json_api",
         config={"items": "$.data[*]", "guid": "id"},
         subscribers=[SubscriberCfg(platform="webhook", channel=channel)],
-    )
-
-
-def _patch_session_factory(monkeypatch, session):
-    class _Ctx:
-        async def __aenter__(self):
-            return session
-
-        async def __aexit__(self, *a):
-            return False
-
-    monkeypatch.setattr(
-        "newsflow.services.webhook_sync.get_session_factory",
-        lambda: lambda: _Ctx(),
     )
 
 
@@ -113,7 +108,6 @@ async def _boot(session, tmp_path, sources) -> None:
 async def test_restart_preserves_source_yaml_subscription_and_history(
     session, monkeypatch, tmp_path
 ):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
     sources = [_source_cfg()]
 
@@ -142,7 +136,6 @@ async def test_restart_preserves_source_yaml_subscription_and_history(
 
 
 async def test_destination_removal_spares_source_yaml_subscription(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
     sources = [_source_cfg(channel="slack")]
 
@@ -170,7 +163,6 @@ async def test_webhook_sync_does_not_rewrite_source_yaml_settings(session, monke
     """If webhooks.yaml lists a (destination, feed) pair that sources.yaml
     already owns, webhook_sync must neither rewrite its settings nor create a
     duplicate row (which would double-deliver every entry)."""
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
     # Source subscriber with non-default settings, delivering to "slack".
     sources = [

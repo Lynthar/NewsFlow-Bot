@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 
 from newsflow.core.feed_fetcher import FetchResult
@@ -17,6 +18,14 @@ from newsflow.services.webhook_sync import (
     parse_webhooks_yaml,
     sync_webhooks,
 )
+
+
+@pytest_asyncio.fixture
+async def session(db):
+    """A session on the shared test database; the code under test opens its own."""
+    async with db() as s:
+        yield s
+
 
 # ─── parse_webhooks_yaml ─────────────────────────────────────────────────────
 
@@ -195,24 +204,6 @@ destinations:
 # ─── sync_webhooks (DB reconciliation) ───────────────────────────────────────
 
 
-def _patch_session_factory(monkeypatch, session):
-    """Make sync_webhooks use the test fixture session instead of opening
-    a fresh one. Also patches the factory that FeedService walks through."""
-
-    class _Ctx:
-        async def __aenter__(self):
-            return session
-
-        async def __aexit__(self, *a):
-            return False
-
-    factory = lambda: _Ctx()  # noqa: E731
-    monkeypatch.setattr(
-        "newsflow.services.webhook_sync.get_session_factory",
-        lambda: factory,
-    )
-
-
 def _patch_feed_fetcher(monkeypatch, entries: list[dict] | None = None):
     """Stub the fetcher so add_feed succeeds without network I/O."""
     mock_fetcher = AsyncMock()
@@ -242,7 +233,6 @@ def _patch_feed_fetcher(monkeypatch, entries: list[dict] | None = None):
 
 
 async def test_sync_creates_destination_and_subscription(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
     path = _write(
@@ -278,7 +268,6 @@ subscriptions:
 
 
 async def test_sync_is_idempotent(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
     path = _write(
@@ -308,7 +297,6 @@ subscriptions:
 async def test_sync_reenables_a_breaker_tripped_destination(session, monkeypatch, tmp_path):
     """A destination still declared in the file is one the operator wants
     working — sync (startup or hot reload) closes the circuit breaker."""
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
     session.add(
         WebhookDestination(
@@ -331,7 +319,6 @@ async def test_sync_reenables_a_breaker_tripped_destination(session, monkeypatch
 
 
 async def test_sync_removes_destination_and_its_subscriptions(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
     # Initial state: one destination + sub
@@ -366,7 +353,6 @@ subscriptions: {}
 
 
 async def test_sync_updates_destination_url(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
     p1 = _write(
@@ -396,7 +382,6 @@ destinations:
 
 
 async def test_sync_drops_subscription_when_feed_removed_from_yaml(session, monkeypatch, tmp_path):
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
 
     p1 = _write(
@@ -445,7 +430,6 @@ subscriptions:
 
 async def test_sync_skips_feed_that_fails_to_add(session, monkeypatch, tmp_path):
     """A feed URL that 404s shouldn't fail the whole sync — just skip it."""
-    _patch_session_factory(monkeypatch, session)
 
     failing_fetcher = AsyncMock()
     failing_fetcher.fetch_feed = AsyncMock(
@@ -492,7 +476,6 @@ async def test_sync_reactivates_auto_disabled_feed(session, monkeypatch, tmp_pat
     """A feed still declared in webhooks.yaml is revived on restart after an
     auto-disable — the deactivation notice promises exactly this for
     YAML-declared feeds."""
-    _patch_session_factory(monkeypatch, session)
     _patch_feed_fetcher(monkeypatch)
     path = _write(
         tmp_path,
@@ -514,6 +497,7 @@ subscriptions:
 
     await sync_webhooks(path)
 
+    await session.refresh(feed)
     assert feed.is_active is True
     assert feed.error_count == 0
 

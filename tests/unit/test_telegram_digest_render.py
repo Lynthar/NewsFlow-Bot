@@ -6,7 +6,7 @@ disabled, degrades to plain text when Telegram rejects the entities, and
 keeps the ChannelGone contract of the plain send path.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from telegram.error import BadRequest
@@ -77,12 +77,11 @@ async def test_digest_gone_chat_still_raises_channel_gone():
         await adapter.send_digest_text("123", "body")
 
 
-async def test_digest_pinned_renders_html_and_pins():
+async def test_digest_pinned_renders_html_and_pins(configure):
+    configure(digest_auto_pin=True)
     adapter = _adapter()
 
-    with patch("newsflow.adapters.telegram.bot.get_settings") as gs:
-        gs.return_value.digest_auto_pin = True
-        sent, pin_id = await adapter.send_digest_text_pinned("123", "**D**")
+    sent, pin_id = await adapter.send_digest_text_pinned("123", "**D**")
 
     assert (sent, pin_id) == (True, "42")
     kwargs = adapter.app.bot.send_message.await_args.kwargs
@@ -91,12 +90,11 @@ async def test_digest_pinned_renders_html_and_pins():
     adapter.app.bot.pin_chat_message.assert_awaited_once()
 
 
-async def test_digest_pinned_respects_auto_pin_off():
+async def test_digest_pinned_respects_auto_pin_off(configure):
+    configure(digest_auto_pin=False)
     adapter = _adapter()
 
-    with patch("newsflow.adapters.telegram.bot.get_settings") as gs:
-        gs.return_value.digest_auto_pin = False
-        sent, pin_id = await adapter.send_digest_text_pinned("123", "**D**")
+    sent, pin_id = await adapter.send_digest_text_pinned("123", "**D**")
 
     assert (sent, pin_id) == (True, None)
     adapter.app.bot.pin_chat_message.assert_not_awaited()

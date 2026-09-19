@@ -7,7 +7,7 @@ so the user gets one confirmation article on /add.
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from sqlalchemy import select
 
@@ -18,14 +18,7 @@ from newsflow.services.dispatcher import Dispatcher
 
 
 def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = platform == "discord"
-    fake.telegram_enabled = platform == "telegram"
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    fake.data_dir = MagicMock()
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        d = Dispatcher()
+    d = Dispatcher()
     d.register_adapter(platform, adapter)
     return d
 

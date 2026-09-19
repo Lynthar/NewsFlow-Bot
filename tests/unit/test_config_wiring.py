@@ -9,7 +9,6 @@ import io
 import json
 import logging
 import sys
-from types import SimpleNamespace
 
 import pytest
 import structlog
@@ -113,10 +112,8 @@ def test_feed_max_concurrent_rejects_zero() -> None:
         Settings(_env_file=None, feed_max_concurrent=0)
 
 
-def test_get_fetcher_reads_max_concurrent_from_settings(monkeypatch) -> None:
-    monkeypatch.setattr(
-        feed_fetcher, "get_settings", lambda: SimpleNamespace(feed_max_concurrent=25)
-    )
+def test_get_fetcher_reads_max_concurrent_from_settings(configure) -> None:
+    configure(feed_max_concurrent=25)
     feed_fetcher._fetcher = None
     try:
         fetcher = feed_fetcher.get_fetcher()

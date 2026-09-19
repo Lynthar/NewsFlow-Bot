@@ -12,10 +12,19 @@ import hashlib
 import hmac
 
 import aiohttp
+import pytest_asyncio
 
 from newsflow.adapters.base import Message
 from newsflow.adapters.webhook.bot import WebhookAdapter
 from newsflow.models.webhook import WebhookDestination
+
+
+@pytest_asyncio.fixture
+async def session(db):
+    """A session on the shared test database; the adapter opens its own for accounting."""
+    async with db() as s:
+        yield s
+
 
 # ─── fake aiohttp session ────────────────────────────────────────────────────
 
@@ -243,20 +252,6 @@ async def test_timeout_value_from_destination_is_used():
 # ─── circuit breaker ─────────────────────────────────────────────────────────
 
 
-def _patch_factory(monkeypatch, session):
-    class _Ctx:
-        async def __aenter__(self):
-            return session
-
-        async def __aexit__(self, *a):
-            return False
-
-    monkeypatch.setattr(
-        "newsflow.adapters.webhook.bot.get_session_factory",
-        lambda: lambda: _Ctx(),
-    )
-
-
 async def _persisted_dest(session, **overrides) -> WebhookDestination:
     defaults = dict(name="brk", url="https://example.com/webhook", format="generic")
     defaults.update(overrides)
@@ -266,8 +261,7 @@ async def _persisted_dest(session, **overrides) -> WebhookDestination:
     return dest
 
 
-async def test_breaker_trips_after_ten_straight_failures(session, monkeypatch):
-    _patch_factory(monkeypatch, session)
+async def test_breaker_trips_after_ten_straight_failures(session):
     dest = await _persisted_dest(session)
     fake = _FakeSession(status=500, body=b"boom")
     adapter = _make_adapter(fake)
@@ -285,8 +279,7 @@ async def test_breaker_trips_after_ten_straight_failures(session, monkeypatch):
     assert len(fake.calls) == 10
 
 
-async def test_success_resets_the_failure_counter(session, monkeypatch):
-    _patch_factory(monkeypatch, session)
+async def test_success_resets_the_failure_counter(session):
     dest = await _persisted_dest(session, error_count=7, last_error="HTTP 500")
     adapter = _make_adapter(_FakeSession(status=200))
     adapter._destinations = {"brk": dest}
@@ -395,7 +388,6 @@ async def test_rate_limit_never_credits_the_breaker(session, monkeypatch):
     """A 429 is the receiver pacing us, not a broken endpoint. Counting them
     would disable a healthy destination after ten, stopping delivery outright."""
     _patch_sleep(monkeypatch)
-    _patch_factory(monkeypatch, session)
     dest = await _persisted_dest(session)
     fake = _FakeSession(status=429, headers={"Retry-After": "1"})
     adapter = _make_adapter(fake)
@@ -412,7 +404,6 @@ async def test_rate_limit_does_not_clear_earlier_failures(session, monkeypatch):
     """The mirror of the rule above: a 429 must not reset a real failure streak
     either, or an endpoint that alternates 500s and 429s never trips."""
     _patch_sleep(monkeypatch)
-    _patch_factory(monkeypatch, session)
     dest = await _persisted_dest(session, error_count=7, last_error="HTTP 500")
     adapter = _make_adapter(_FakeSession(status=429, headers={"Retry-After": "1"}))
     adapter._destinations = {"brk": dest}

@@ -5,21 +5,30 @@ auto-disabled feed (the F9 recovery-contract family; the dispatch loop skips
 inactive feeds, so nothing else could clear the state).
 
 Route functions are called directly with Depends defaults overridden, like
-test_ingest_api.py — no server, no HTTP.
+test_ingest_api.py — no server, no HTTP: the fetch is stubbed at the boundary.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 pytest.importorskip("fastapi")  # needs the api extra
 
 from newsflow.api.routes.feeds import refresh_feed  # noqa: E402
+from newsflow.core.feed_fetcher import FetchResult  # noqa: E402
 from newsflow.models.feed import Feed  # noqa: E402
-from newsflow.services.feed_service import FetchFeedResult  # noqa: E402
 
 
-async def test_refresh_success_reactivates_auto_disabled_feed(session):
+def _source_is_fine(monkeypatch, url: str) -> None:
+    """The feed answers 304: reachable, nothing new."""
+    fetcher = MagicMock()
+    fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(url=url, success=True, entries=[], not_modified=True)
+    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
+
+
+async def test_refresh_success_reactivates_auto_disabled_feed(session, monkeypatch):
     feed = Feed(
         url="https://example.com/rss",
         title="t",
@@ -28,13 +37,9 @@ async def test_refresh_success_reactivates_auto_disabled_feed(session):
     )
     session.add(feed)
     await session.commit()
+    _source_is_fine(monkeypatch, feed.url)
 
-    ok = FetchFeedResult(success=True, feed=feed, message="ok")
-    with patch(
-        "newsflow.api.routes.feeds.FeedService.fetch_and_store",
-        new=AsyncMock(return_value=ok),
-    ):
-        await refresh_feed(feed.id, db=session, _=None)
+    await refresh_feed(feed.id, db=session, _=None)
 
     # The route mutates in memory; get_db commits when the request completes.
     assert feed.is_active is True
@@ -44,16 +49,12 @@ async def test_refresh_success_reactivates_auto_disabled_feed(session):
     assert refreshed is not None and refreshed.is_active is True
 
 
-async def test_refresh_success_leaves_active_feed_alone(session):
+async def test_refresh_success_leaves_active_feed_alone(session, monkeypatch):
     feed = Feed(url="https://example.com/rss", title="t", is_active=True)
     session.add(feed)
     await session.commit()
+    _source_is_fine(monkeypatch, feed.url)
 
-    ok = FetchFeedResult(success=True, feed=feed, message="ok")
-    with patch(
-        "newsflow.api.routes.feeds.FeedService.fetch_and_store",
-        new=AsyncMock(return_value=ok),
-    ):
-        await refresh_feed(feed.id, db=session, _=None)
+    await refresh_feed(feed.id, db=session, _=None)
 
     assert feed.is_active is True

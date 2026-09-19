@@ -1,20 +1,15 @@
 """Tests for Dispatcher.run_platform_monitor — per-platform heartbeats."""
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from newsflow.services.dispatcher import Dispatcher
 
 
-def _dispatcher(tmp_path, *, discord=False, telegram=False, webhooks=False) -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = discord
-    fake.telegram_enabled = telegram
-    fake.webhooks_enabled = webhooks
-    fake.data_dir = tmp_path
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+def _dispatcher(configure, *, discord=False, telegram=False) -> Dispatcher:
+    # A platform is expected iff its token is configured; data_dir is the autouse tmp_path.
+    configure(discord_token="d" if discord else None, telegram_token="t" if telegram else None)
+    return Dispatcher()
 
 
 class _FakeAdapter:
@@ -28,8 +23,8 @@ class _FakeAdapter:
         return True
 
 
-async def test_platform_monitor_writes_heartbeat_for_connected_adapter(tmp_path):
-    d = _dispatcher(tmp_path, discord=True)
+async def test_platform_monitor_writes_heartbeat_for_connected_adapter(configure):
+    d = _dispatcher(configure, discord=True)
     adapter = _FakeAdapter(connected=True)
     d.register_adapter("discord", adapter)
 
@@ -45,8 +40,8 @@ async def test_platform_monitor_writes_heartbeat_for_connected_adapter(tmp_path)
     assert d.heartbeat_path("discord").exists()
 
 
-async def test_platform_monitor_skips_disconnected_adapter(tmp_path):
-    d = _dispatcher(tmp_path, discord=True)
+async def test_platform_monitor_skips_disconnected_adapter(configure):
+    d = _dispatcher(configure, discord=True)
     adapter = _FakeAdapter(connected=False)
     d.register_adapter("discord", adapter)
 
@@ -61,8 +56,8 @@ async def test_platform_monitor_skips_disconnected_adapter(tmp_path):
     assert not d.heartbeat_path("discord").exists()
 
 
-async def test_platform_monitor_survives_is_connected_exceptions(tmp_path):
-    d = _dispatcher(tmp_path, discord=True)
+async def test_platform_monitor_survives_is_connected_exceptions(configure):
+    d = _dispatcher(configure, discord=True)
     adapter = MagicMock()
     adapter.is_connected = MagicMock(side_effect=RuntimeError("boom"))
     d.register_adapter("discord", adapter)

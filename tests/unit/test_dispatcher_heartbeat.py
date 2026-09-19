@@ -1,48 +1,40 @@
-"""Tests for Dispatcher heartbeat — the liveness signal for HEALTHCHECK."""
+"""Tests for Dispatcher heartbeat — the liveness signal for HEALTHCHECK.
 
+``data_dir`` is the autouse ``tmp_path``: it derives from the database URL."""
+
+import asyncio
 import os
 import time
-from unittest.mock import MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
+from sqlalchemy import select
+
+from newsflow.models.feed import Feed, FeedEntry
+from newsflow.models.subscription import SentEntry
 from newsflow.services.dispatcher import Dispatcher
-
-
-def _dispatcher_with_data_dir(tmp_path) -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.data_dir = tmp_path
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+from tests import seed
 
 
 def test_heartbeat_path_resolves_under_data_dir_heartbeat_subfolder(tmp_path):
-    d = _dispatcher_with_data_dir(tmp_path)
+    d = Dispatcher()
 
     assert d.heartbeat_path("dispatch") == tmp_path / "heartbeat" / "dispatch"
     assert d.heartbeat_path("cleanup") == tmp_path / "heartbeat" / "cleanup"
 
 
-def test_write_heartbeat_creates_named_file(tmp_path):
-    d = _dispatcher_with_data_dir(tmp_path)
+def test_write_heartbeat_creates_named_file():
+    d = Dispatcher()
 
     d._write_heartbeat("dispatch")
 
     assert d.heartbeat_path("dispatch").exists()
 
 
-def test_write_heartbeat_creates_missing_parent_dir(tmp_path):
+def test_write_heartbeat_creates_missing_parent_dir(configure, tmp_path):
     nested = tmp_path / "nested" / "data"
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.data_dir = nested
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        d = Dispatcher()
+    configure(database_url=f"sqlite+aiosqlite:///{nested / 'newsflow.db'}")
+    d = Dispatcher()
 
     d._write_heartbeat("dispatch")
 
@@ -50,8 +42,8 @@ def test_write_heartbeat_creates_missing_parent_dir(tmp_path):
     assert (nested / "heartbeat").is_dir()
 
 
-def test_write_heartbeat_updates_mtime_on_existing_file(tmp_path):
-    d = _dispatcher_with_data_dir(tmp_path)
+def test_write_heartbeat_updates_mtime_on_existing_file():
+    d = Dispatcher()
     path = d.heartbeat_path("dispatch")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
@@ -63,8 +55,8 @@ def test_write_heartbeat_updates_mtime_on_existing_file(tmp_path):
     assert path.stat().st_mtime > stale + 100
 
 
-def test_write_heartbeat_multiple_names_create_separate_files(tmp_path):
-    d = _dispatcher_with_data_dir(tmp_path)
+def test_write_heartbeat_multiple_names_create_separate_files():
+    d = Dispatcher()
 
     d._write_heartbeat("dispatch")
     d._write_heartbeat("cleanup")
@@ -79,110 +71,100 @@ def test_write_heartbeat_multiple_names_create_separate_files(tmp_path):
 
 def test_write_heartbeat_swallows_filesystem_errors(tmp_path):
     """A failed heartbeat must never break dispatch."""
-    d = _dispatcher_with_data_dir(tmp_path)
-    with patch("pathlib.Path.mkdir", side_effect=OSError("readonly fs")):
-        d._write_heartbeat("dispatch")  # must not raise
+    d = Dispatcher()
+    (tmp_path / "heartbeat").write_text("")  # a file sits where the directory must go
+
+    d._write_heartbeat("dispatch")  # must not raise
+
+    assert not d.heartbeat_path("dispatch").exists()
 
 
-async def test_cleanup_loop_heartbeat_ticks_independently_of_cleanup_runs(tmp_path):
+async def test_cleanup_loop_heartbeat_ticks_independently_of_cleanup_runs(db, configure):
     """Heartbeat must update every `heartbeat_tick_seconds` even though
     the actual cleanup work only runs every `cleanup_interval_hours`.
     Without this, the 24h gap between cleanup runs would let the
     heartbeat go stale (>120 min), failing the Dockerfile HEALTHCHECK.
 
-    Strategy: tick = 0.02s (~50/s), cleanup_interval = 1h (way longer
-    than test runtime). Run the loop briefly under faked sleep, count
-    cleanup calls vs heartbeat calls.
+    Strategy: tick = 0, cleanup_interval = 1h (way longer than the test).
+    The first tick runs cleanup and deletes an over-age entry and an over-age
+    sent record; ones inserted after that survive every later tick, which
+    only touch the heartbeat.
     """
-    import asyncio
+    configure(cleanup_interval_hours=1)
+    d = Dispatcher()
+    ancient = datetime.now(UTC) - timedelta(days=400)
+    sub = await seed.subscription(db, url="https://ex.com/feed")
 
-    fake_settings = MagicMock()
-    fake_settings.discord_enabled = False
-    fake_settings.telegram_enabled = False
-    fake_settings.webhooks_enabled = False
-    fake_settings.data_dir = tmp_path
-    fake_settings.fetch_interval_minutes = 60
-    fake_settings.cleanup_interval_hours = 1  # 3600s — cleanup won't re-fire
-    fake_settings.entry_retention_days = 7
-    fake_settings.sent_entry_retention_days = 90
+    async def add_old_entry(guid: str) -> None:
+        async with db() as session:
+            feed = await session.scalar(select(Feed)) or Feed(url="https://ex.com/feed")
+            session.add(feed)
+            await session.flush()
+            session.add(
+                FeedEntry(
+                    feed_id=feed.id,
+                    guid=guid,
+                    title=guid,
+                    link=f"https://ex.com/{guid}",
+                    created_at=ancient,
+                )
+            )
+            await session.commit()
 
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake_settings):
-        d = Dispatcher()
+    async def add_old_sent(guid: str) -> None:
+        async with db() as session:
+            session.add(
+                SentEntry(subscription_id=sub.id, feed_id=sub.feed_id, guid=guid, sent_at=ancient)
+            )
+            await session.commit()
 
-    # Skip the 60s startup delay — return immediately on the first sleep.
+    async def remaining() -> list[str]:
+        async with db() as session:
+            return list(await session.scalars(select(FeedEntry.guid)))
+
+    async def remaining_sent() -> list[str]:
+        async with db() as session:
+            return list(await session.scalars(select(SentEntry.guid)))
+
+    await add_old_entry("first")
+    await add_old_sent("first")
+
+    # Skip the hard-coded 60s startup delay; every later sleep just yields.
     real_sleep = asyncio.sleep
-    sleep_calls = {"count": 0}
+    ticks = 0
 
     async def fast_sleep(secs):
-        sleep_calls["count"] += 1
-        if sleep_calls["count"] == 1:
-            return  # initial 60s startup delay → instant
-        await real_sleep(0)  # heartbeat ticks → yield control only
+        nonlocal ticks
+        ticks += 1
+        if ticks > 1:
+            await real_sleep(0)
 
-    # Mock the cleanup repo methods so we don't hit the DB.
-    cleanup_calls = {"feed": 0, "sent": 0}
-
-    class FakeFeedRepo:
-        def __init__(self, session):
-            pass
-
-        async def cleanup_old_entries(self, days):
-            cleanup_calls["feed"] += 1
-            return 0
-
-    class FakeSubRepo:
-        def __init__(self, session):
-            pass
-
-        async def cleanup_old_sent_entries(self, days):
-            cleanup_calls["sent"] += 1
-            return 0
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def commit(self):
-            pass
-
-    def fake_session_factory():
-        return FakeSession()
-
-    heartbeat_path = d.heartbeat_path("cleanup")
-
-    with (
-        patch("newsflow.services.dispatcher.asyncio.sleep", side_effect=fast_sleep),
-        patch(
-            "newsflow.services.dispatcher.get_session_factory", return_value=fake_session_factory
-        ),
-        patch("newsflow.services.dispatcher.FeedRepository", FakeFeedRepo),
-        patch("newsflow.services.dispatcher.SubscriptionRepository", FakeSubRepo),
-    ):
+    with patch("newsflow.services.dispatcher.asyncio.sleep", side_effect=fast_sleep):
         task = asyncio.create_task(d.run_cleanup_loop(heartbeat_tick_seconds=0))
-        # Yield control enough times for the loop to iterate several times.
-        for _ in range(20):
-            await asyncio.sleep(0)
+        for _ in range(200):  # the cleanup's database round-trips take real time
+            if await remaining() == [] and await remaining_sent() == []:
+                break
+            await real_sleep(0.01)
+        assert await remaining() == []  # the first tick ran cleanup
+        assert await remaining_sent() == []
+
+        await add_old_entry("second")
+        await add_old_sent("second")
+        ticks_then = ticks
+        for _ in range(200):  # let several heartbeat ticks go by
+            if ticks >= ticks_then + 5:
+                break
+            await real_sleep(0.01)
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
 
-    # Cleanup ran exactly once: the first tick after startup. Subsequent
-    # ticks see loop.time() < next_cleanup_at (interval_seconds=3600) and
-    # skip the cleanup branch, only writing heartbeat.
-    assert cleanup_calls["feed"] == 1
-    assert cleanup_calls["sent"] == 1
-
-    # Heartbeat file was created — written at least once.
-    assert heartbeat_path.exists()
-
-    # And several sleep ticks happened (proves the loop iterated past
-    # the first cleanup run without re-firing it).
-    assert sleep_calls["count"] >= 5
+    assert ticks >= ticks_then + 5
+    assert await remaining() == ["second"]  # no second cleanup within the interval
+    assert await remaining_sent() == ["second"]
+    assert d.heartbeat_path("cleanup").exists()
 
 
 def test_clear_stale_heartbeats_removes_previous_runs_files(tmp_path):
@@ -190,6 +172,7 @@ def test_clear_stale_heartbeats_removes_previous_runs_files(tmp_path):
     between runs leaves its old file behind, and HEALTHCHECK flags ANY
     stale file — the container would go permanently unhealthy. Startup
     must sweep the directory."""
+    from newsflow.config import get_settings
     from newsflow.main import clear_stale_heartbeats
 
     hb = tmp_path / "heartbeat"
@@ -197,16 +180,13 @@ def test_clear_stale_heartbeats_removes_previous_runs_files(tmp_path):
     (hb / "discord").touch()
     (hb / "dispatch").touch()
 
-    fake = MagicMock()
-    fake.data_dir = tmp_path
-    clear_stale_heartbeats(fake)
+    clear_stale_heartbeats(get_settings())
 
     assert list(hb.iterdir()) == []
 
 
-def test_clear_stale_heartbeats_tolerates_missing_dir(tmp_path):
+def test_clear_stale_heartbeats_tolerates_missing_dir(configure, tmp_path):
     from newsflow.main import clear_stale_heartbeats
 
-    fake = MagicMock()
-    fake.data_dir = tmp_path / "nonexistent"
-    clear_stale_heartbeats(fake)  # must not raise
+    settings = configure(database_url=f"sqlite+aiosqlite:///{tmp_path / 'nonexistent' / 'x.db'}")
+    clear_stale_heartbeats(settings)  # must not raise

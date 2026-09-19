@@ -5,27 +5,15 @@ parse_mode="HTML" message. Feed titles routinely contain "&" (AT&T,
 feedparser-decoded entities) and URLs carry query strings — unescaped,
 Telegram rejects the edit and the user is stuck on "Adding feed..."
 forever even though the subscription actually succeeded. These tests
-drive the real handlers with mocked I/O to pin the escaping, plus the
-_on_error contract (user always gets an acknowledgement, handler never
-raises).
+drive the real handler against the real database with the feed fetch
+stubbed at the HTTP boundary, plus the _on_error contract (user always
+gets an acknowledgement, handler never raises).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from newsflow.adapters.telegram.bot import _on_error, add_command
-from newsflow.services.subscription_service import SubscribeResult
-
-
-class _SessionCtx:
-    def __init__(self):
-        self.session = MagicMock()
-        self.session.commit = AsyncMock()
-
-    async def __aenter__(self):
-        return self.session
-
-    async def __aexit__(self, *a):
-        return False
+from newsflow.core.feed_fetcher import FetchResult
 
 
 def _update_with_processing_msg():
@@ -38,34 +26,22 @@ def _update_with_processing_msg():
     # pinned separately in test_permissions.py; these tests pin escaping).
     update.effective_chat.type = "private"
     update.effective_user.id = 42
+    update.message.is_topic_message = False  # a MagicMock here would be stored as the topic
     return update, processing_msg
 
 
-async def _run_add(subscribe_result: SubscribeResult, url: str):
+async def _run_add(monkeypatch, fetched: FetchResult, url: str) -> str:
+    fetcher = MagicMock()
+    fetcher.fetch_feed = AsyncMock(return_value=fetched)
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
     update, processing_msg = _update_with_processing_msg()
     context = MagicMock()
     context.args = [url]
-
-    service = MagicMock()
-    service.subscribe = AsyncMock(return_value=subscribe_result)
     dispatcher = MagicMock()
     dispatcher.spawn = MagicMock()
     dispatcher.schedule_preview = MagicMock(return_value=MagicMock())
 
-    with (
-        patch(
-            "newsflow.adapters.telegram.bot.get_session_factory",
-            return_value=lambda: _SessionCtx(),
-        ),
-        patch(
-            "newsflow.adapters.telegram.bot.SubscriptionService",
-            return_value=service,
-        ),
-        patch(
-            "newsflow.adapters.telegram.bot.get_dispatcher",
-            return_value=dispatcher,
-        ),
-    ):
+    with patch("newsflow.adapters.telegram.bot.get_dispatcher", return_value=dispatcher):
         await add_command(update, context)
 
     processing_msg.edit_text.assert_awaited_once()
@@ -74,17 +50,16 @@ async def _run_add(subscribe_result: SubscribeResult, url: str):
     return call.args[0]
 
 
-async def test_add_confirmation_escapes_title_and_url():
+async def test_add_confirmation_escapes_title_and_url(db, monkeypatch):
     url = "https://ex.com/feed?a=1&b=2"
-    result = SubscribeResult(
+    fetched = FetchResult(
+        url=url,
         success=True,
-        subscription=MagicMock(id=1),
-        feed=MagicMock(title="AT&T <Live> News"),
-        message="Subscribed",
-        is_new=True,
+        entries=[{"guid": "e1", "title": "First", "link": "https://ex.com/1"}],
+        feed_title="AT&T <Live> News",
     )
 
-    text = await _run_add(result, url)
+    text = await _run_add(monkeypatch, fetched, url)
 
     assert "AT&amp;T &lt;Live&gt; News" in text
     assert "a=1&amp;b=2" in text
@@ -93,14 +68,11 @@ async def test_add_confirmation_escapes_title_and_url():
     assert "a=1&b=2" not in text
 
 
-async def test_add_failure_message_is_escaped():
+async def test_add_failure_message_is_escaped(db, monkeypatch):
     url = "https://ex.com/feed?x=1&y=2"
-    result = SubscribeResult(
-        success=False,
-        message="Failed to fetch feed: 404 <not found>",
-    )
+    fetched = FetchResult(url=url, success=False, entries=[], error="404 <not found>")
 
-    text = await _run_add(result, url)
+    text = await _run_add(monkeypatch, fetched, url)
 
     assert "&lt;not found&gt;" in text
     assert "x=1&amp;y=2" in text

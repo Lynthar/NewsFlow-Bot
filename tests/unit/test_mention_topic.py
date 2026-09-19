@@ -10,6 +10,7 @@ thread; /add records the topic it ran in; /settopic retargets.
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -22,16 +23,20 @@ from newsflow.adapters.discord.bot import (
     NewsFlowBot,
     _mention_allowance,
 )
-from newsflow.adapters.telegram.bot import TelegramAdapter, add_command, settopic_command
+from newsflow.adapters.telegram.bot import (
+    TelegramAdapter,
+    _admin_cache,
+    add_command,
+    settopic_command,
+)
+from newsflow.core.feed_fetcher import FetchResult
 from newsflow.core.message_template import render_template
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.dispatcher import Dispatcher
-from newsflow.services.subscription_service import (
-    SubscriptionActionResult,
-    SubscriptionService,
-)
+from newsflow.services.subscription_service import SubscriptionService
+from tests import seed
 
 URL = "https://ex.com/feed"
 
@@ -91,13 +96,7 @@ def _sub(feed: Feed, **overrides) -> Subscription:
 
 
 def _dispatcher() -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+    return Dispatcher()
 
 
 async def test_dispatcher_fills_mention_and_thread(session):
@@ -364,25 +363,23 @@ async def test_mention_and_thread_service_roundtrip(session):
 
 # ------------------------------------------------------ telegram commands
 
-
-class _SessionCtx:
-    def __init__(self):
-        self.session = MagicMock()
-        self.session.commit = AsyncMock()
-
-    async def __aenter__(self):
-        return self.session
-
-    async def __aexit__(self, *a):
-        return False
+CHAT = "777"
 
 
-def _tg_service(result=None, count=0, subscribe_result=None):
-    service = MagicMock()
-    service.set_feed_thread = AsyncMock(return_value=result)
-    service.set_channel_thread = AsyncMock(return_value=count)
-    service.subscribe = AsyncMock(return_value=subscribe_result)
-    return service
+async def _tg_subs(db, count: int = 1, **fields):
+    """`count` subscriptions in the group; the first one is on URL."""
+    return [
+        await seed.subscription(
+            db, channel_id=CHAT, url=URL if i == 0 else f"https://ex.com/{i}", **fields
+        )
+        for i in range(count)
+    ]
+
+
+async def _thread_of(db, sub_id: int) -> int | None:
+    row = await seed.subscription_row(db, sub_id)
+    assert row is not None
+    return row.message_thread_id
 
 
 def _tg_update(text: str, *, topic: int | None):
@@ -391,164 +388,153 @@ def _tg_update(text: str, *, topic: int | None):
     update.message.reply_text = AsyncMock()
     update.message.is_topic_message = topic is not None
     update.message.message_thread_id = topic
-    update.effective_chat.id = 777
+    update.message.sender_chat = None
+    update.effective_chat.id = int(CHAT)
     update.effective_chat.type = "supergroup"
     update.effective_user.id = 42
     return update
 
 
-async def _run_settopic(text: str, service, *, topic: int | None, admin: bool = True):
-    update = _tg_update(text, topic=topic)
+def _tg_context(args: list[str], *, admin: bool) -> MagicMock:
+    _admin_cache.clear()
     context = MagicMock()
-    context.args = text.split()[1:]
-    with (
-        patch(
-            "newsflow.adapters.telegram.bot.get_session_factory",
-            return_value=lambda: _SessionCtx(),
-        ),
-        patch(
-            "newsflow.adapters.telegram.bot.SubscriptionService",
-            MagicMock(return_value=service),
-        ),
-        patch(
-            "newsflow.adapters.telegram.bot._require_group_admin",
-            AsyncMock(return_value=admin),
-        ),
-    ):
-        await settopic_command(update, context)
+    context.args = args
+    status = "administrator" if admin else "member"
+    context.bot.get_chat_member = AsyncMock(return_value=SimpleNamespace(status=status))
+    return context
+
+
+async def _run_settopic(text: str, *, topic: int | None, admin: bool = True):
+    update = _tg_update(text, topic=topic)
+    await settopic_command(update, _tg_context(text.split()[1:], admin=admin))
     return update
 
 
-async def test_settopic_points_at_current_topic():
-    service = _tg_service(result=SubscriptionActionResult(success=True, message="ok"))
-    await _run_settopic(f"/settopic {URL}", service, topic=77)
-
-    assert service.set_feed_thread.await_args.args == ("telegram", "777", URL, 77)
+def _replies(update) -> list[str]:
+    return [c.args[0] for c in update.message.reply_text.await_args_list]
 
 
-async def test_settopic_all_and_clear():
-    service = _tg_service(count=3)
-    update = await _run_settopic("/settopic all", service, topic=77)
-    assert service.set_channel_thread.await_args.args == ("telegram", "777", 77)
-    assert any("3 subscription(s)" in c.args[0] for c in update.message.reply_text.await_args_list)
-
-    service = _tg_service(result=SubscriptionActionResult(success=True, message="ok"))
-    await _run_settopic(f"/settopic {URL} clear", service, topic=77)
-    assert service.set_feed_thread.await_args.args == ("telegram", "777", URL, None)
+async def test_settopic_points_at_current_topic(db):
+    (sub,) = await _tg_subs(db)
+    await _run_settopic(f"/settopic {URL}", topic=77)
+    assert await _thread_of(db, sub.id) == 77
 
 
-async def test_settopic_outside_topic_means_general():
-    service = _tg_service(result=SubscriptionActionResult(success=True, message="ok"))
-    await _run_settopic(f"/settopic {URL}", service, topic=None)
+async def test_settopic_all_and_clear(db):
+    subs = await _tg_subs(db, 3)
+    update = await _run_settopic("/settopic all", topic=77)
+    assert [await _thread_of(db, s.id) for s in subs] == [77, 77, 77]
+    assert any("3 subscription(s)" in t for t in _replies(update))
 
-    assert service.set_feed_thread.await_args.args == ("telegram", "777", URL, None)
-
-
-async def test_settopic_denied_without_admin():
-    service = _tg_service()
-    await _run_settopic(f"/settopic {URL}", service, topic=77, admin=False)
-
-    service.set_feed_thread.assert_not_awaited()
-    service.set_channel_thread.assert_not_awaited()
+    await _run_settopic(f"/settopic {URL} clear", topic=77)
+    assert await _thread_of(db, subs[0].id) is None
+    assert await _thread_of(db, subs[1].id) == 77  # only the named feed was cleared
 
 
-async def test_add_records_topic_it_ran_in():
-    from newsflow.services.subscription_service import SubscribeResult
+async def test_settopic_outside_topic_means_general(db):
+    (sub,) = await _tg_subs(db, message_thread_id=77)
+    await _run_settopic(f"/settopic {URL}", topic=None)
 
-    subscribe_result = SubscribeResult(success=False, message="nope")
-    service = _tg_service(subscribe_result=subscribe_result)
+    assert await _thread_of(db, sub.id) is None
+
+
+async def test_settopic_denied_without_admin(db):
+    (sub,) = await _tg_subs(db)
+    update = await _run_settopic(f"/settopic {URL}", topic=77, admin=False)
+
+    assert await _thread_of(db, sub.id) is None
+    assert any("group admins" in t for t in _replies(update))
+
+
+async def test_add_records_topic_it_ran_in(db, monkeypatch):
+    fetcher = MagicMock()
+    fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(
+            url=URL,
+            success=True,
+            entries=[{"guid": "e1", "title": "E", "link": "https://ex.com/e1"}],
+            feed_title="Example",
+        )
+    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
     update = _tg_update(f"/add {URL}", topic=55)
-    update.effective_chat.type = "supergroup"
     processing = MagicMock()
     processing.edit_text = AsyncMock()
     update.message.reply_text = AsyncMock(return_value=processing)
-    context = MagicMock()
-    context.args = [URL]
 
-    with (
-        patch(
-            "newsflow.adapters.telegram.bot.get_session_factory",
-            return_value=lambda: _SessionCtx(),
-        ),
-        patch(
-            "newsflow.adapters.telegram.bot.SubscriptionService",
-            MagicMock(return_value=service),
-        ),
-        patch(
-            "newsflow.adapters.telegram.bot._require_group_admin",
-            AsyncMock(return_value=True),
-        ),
-    ):
-        await add_command(update, context)
+    with patch("newsflow.adapters.telegram.bot.get_dispatcher", return_value=MagicMock()):
+        await add_command(update, _tg_context([URL], admin=True))
 
-    assert service.subscribe.await_args.kwargs["message_thread_id"] == 55
+    async with db() as session:
+        sub = await session.scalar(
+            select(Subscription).where(Subscription.platform_channel_id == CHAT)
+        )
+    assert sub is not None and sub.message_thread_id == 55
 
 
 # ------------------------------------------------------- discord command
 
+DISCORD_CHANNEL = "555"
+
 
 def _interaction():
     interaction = MagicMock()
-    interaction.channel_id = 555
+    interaction.channel_id = int(DISCORD_CHANNEL)
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
     return interaction
 
 
-def _discord_service(detail=None, result=None, count=0):
-    service = MagicMock()
-    service.get_subscription_detail = AsyncMock(return_value=detail)
-    service.set_feed_mention = AsyncMock(return_value=result)
-    service.set_channel_mention = AsyncMock(return_value=count)
-    return service
+async def _discord_subs(db, count: int = 1, **fields):
+    return [
+        await seed.subscription(
+            db,
+            platform="discord",
+            channel_id=DISCORD_CHANNEL,
+            url=URL if i == 0 else f"https://ex.com/{i}",
+            **fields,
+        )
+        for i in range(count)
+    ]
 
 
-async def _run_feed_mention(service, *, url: str, target=None, clear: bool = False):
+async def _mention_of(db, sub_id: int) -> str | None:
+    row = await seed.subscription_row(db, sub_id)
+    assert row is not None
+    return row.mention
+
+
+async def _run_feed_mention(*, url: str, target=None, clear: bool = False):
     cog = FeedCommands(MagicMock())
     interaction = _interaction()
-    with (
-        patch(
-            "newsflow.adapters.discord.bot.get_session_factory",
-            return_value=lambda: _SessionCtx(),
-        ),
-        patch(
-            "newsflow.adapters.discord.bot.SubscriptionService",
-            MagicMock(return_value=service),
-        ),
-    ):
-        await FeedCommands.feed_mention.callback(
-            cog, interaction, url=url, target=target, clear=clear
-        )
+    await FeedCommands.feed_mention.callback(cog, interaction, url=url, target=target, clear=clear)
     return interaction
 
 
-async def test_feed_mention_set_from_native_pick():
+def _followups(interaction) -> list[str]:
+    return [c.args[0] for c in interaction.followup.send.await_args_list]
+
+
+async def test_feed_mention_set_from_native_pick(db):
+    (sub,) = await _discord_subs(db)
     target = MagicMock()
     target.mention = "<@&55>"
-    service = _discord_service(
-        result=SubscriptionActionResult(success=True, message="Mention set for Example")
-    )
-    interaction = await _run_feed_mention(service, url=URL, target=target)
+    interaction = await _run_feed_mention(url=URL, target=target)
 
-    assert service.set_feed_mention.await_args.args == ("discord", "555", URL, "<@&55>")
-    texts = [c.args[0] for c in interaction.followup.send.await_args_list]
-    assert any("<@&55>" in t for t in texts)
+    assert await _mention_of(db, sub.id) == "<@&55>"
+    assert any("<@&55>" in t for t in _followups(interaction))
 
 
-async def test_feed_mention_clear_all():
-    service = _discord_service(count=2)
-    interaction = await _run_feed_mention(service, url="all", clear=True)
+async def test_feed_mention_clear_all(db):
+    subs = await _discord_subs(db, 2, mention="<@&1>")
+    interaction = await _run_feed_mention(url="all", clear=True)
 
-    assert service.set_channel_mention.await_args.args == ("discord", "555", None)
-    texts = [c.args[0] for c in interaction.followup.send.await_args_list]
-    assert any("2 subscription(s)" in t for t in texts)
+    assert [await _mention_of(db, s.id) for s in subs] == [None, None]
+    assert any("2 subscription(s)" in t for t in _followups(interaction))
 
 
-async def test_feed_mention_show_current():
-    detail = MagicMock()
-    detail.subscription.mention = "<@7>"
-    service = _discord_service(detail=detail)
-    interaction = await _run_feed_mention(service, url=URL)
+async def test_feed_mention_show_current(db):
+    await _discord_subs(db, mention="<@7>")
+    interaction = await _run_feed_mention(url=URL)
 
-    texts = [c.args[0] for c in interaction.followup.send.await_args_list]
-    assert any("<@7>" in t for t in texts)
+    assert any("<@7>" in t for t in _followups(interaction))

@@ -1,27 +1,25 @@
 """Tests for the auto-deactivation notification path (C14)."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.feed import Feed
-from newsflow.models.subscription import Subscription
 from newsflow.services.dispatcher import Dispatcher
 from newsflow.services.feed_service import FeedService
+from tests import seed
+
+DEAD_FEED = {
+    "url": "https://example.com/feed",
+    "title": "Dead Feed",
+    "feed_fields": {"is_active": False},
+}
 
 
-def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = platform == "discord"
-    fake.telegram_enabled = platform == "telegram"
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    # data_dir only needed for heartbeat — not used in notification path.
-    fake.data_dir = MagicMock()
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        d = Dispatcher()
-    d.register_adapter(platform, adapter)
-    return d
+def _adapter(send_text=None) -> MagicMock:
+    adapter = MagicMock()
+    adapter.send_text = send_text or AsyncMock(return_value=True)
+    return adapter
 
 
 async def test_apply_fetch_result_schedules_notify_on_deactivation(session, monkeypatch):
@@ -30,7 +28,7 @@ async def test_apply_fetch_result_schedules_notify_on_deactivation(session, monk
         url="https://example.com/feed",
         title="Dying Feed",
         is_active=True,
-        error_count=9,
+        error_count=9,  # one more error → deactivation
     )
     session.add(feed)
     await session.flush()
@@ -91,105 +89,40 @@ async def test_apply_fetch_result_does_not_notify_on_regular_error(session, monk
     assert scheduled == []
 
 
-async def test_notify_feed_deactivated_sends_to_all_subscribers(session, monkeypatch):
+async def test_notify_feed_deactivated_sends_to_all_subscribers(db):
     """Notification reaches active AND paused subs across platforms."""
-    feed = Feed(url="https://example.com/feed", title="Dead Feed", is_active=False)
-    session.add(feed)
-    await session.flush()
     # Active Discord sub + paused Telegram sub — both should get notified.
-    session.add(
-        Subscription(
-            platform="discord",
-            platform_user_id="u1",
-            platform_channel_id="c-disc",
-            feed_id=feed.id,
-            is_active=True,
-        )
+    active = await seed.subscription(
+        db, platform="discord", channel_id="c-disc", user_id="u1", **DEAD_FEED
     )
-    session.add(
-        Subscription(
-            platform="telegram",
-            platform_user_id="u2",
-            platform_channel_id="c-tg",
-            feed_id=feed.id,
-            is_active=False,
-        )
+    await seed.subscription(
+        db, platform="telegram", channel_id="c-tg", user_id="u2", is_active=False, **DEAD_FEED
     )
-    await session.commit()
+    feed = active.feed
 
-    # Patch get_session_factory so notify_feed_deactivated uses our session.
-    factory_called = MagicMock()
-
-    class _Ctx:
-        async def __aenter__(self):
-            return session
-
-        async def __aexit__(self, *a):
-            return False
-
-    def _factory():
-        factory_called()
-        return _Ctx()
-
-    monkeypatch.setattr(
-        "newsflow.services.dispatcher.get_session_factory",
-        lambda: _factory,
-    )
-
-    discord_adapter = MagicMock()
-    discord_adapter.send_text = AsyncMock(return_value=True)
-    telegram_adapter = MagicMock()
-    telegram_adapter.send_text = AsyncMock(return_value=True)
-
-    d = _dispatcher_with_adapter("discord", discord_adapter)
+    discord_adapter, telegram_adapter = _adapter(), _adapter()
+    d = Dispatcher()
+    d.register_adapter("discord", discord_adapter)
     d.register_adapter("telegram", telegram_adapter)
 
     await d.notify_feed_deactivated(feed.id, feed.url, feed.title)
 
     discord_adapter.send_text.assert_awaited_once()
     telegram_adapter.send_text.assert_awaited_once()
-    # Verify channel IDs routed correctly.
-    assert discord_adapter.send_text.call_args[0][0] == "c-disc"
-    assert telegram_adapter.send_text.call_args[0][0] == "c-tg"
-    # Recovery hint must use each platform's own command syntax — Telegram
-    # has /resume, not Discord's /feed resume.
     discord_text = discord_adapter.send_text.call_args[0][1]
     telegram_text = telegram_adapter.send_text.call_args[0][1]
+    assert discord_adapter.send_text.call_args[0][0] == "c-disc"
+    assert telegram_adapter.send_text.call_args[0][0] == "c-tg"
     assert "/feed resume" in discord_text
     assert "/resume" in telegram_text
     assert "/feed resume" not in telegram_text
 
 
-async def test_notify_feed_deactivated_swallows_adapter_errors(session, monkeypatch):
-    feed = Feed(url="https://example.com/feed", title="Dead Feed", is_active=False)
-    session.add(feed)
-    await session.flush()
-    session.add(
-        Subscription(
-            platform="discord",
-            platform_user_id="u",
-            platform_channel_id="c",
-            feed_id=feed.id,
-            is_active=True,
-        )
-    )
-    await session.commit()
-
-    class _Ctx:
-        async def __aenter__(self):
-            return session
-
-        async def __aexit__(self, *a):
-            return False
-
-    monkeypatch.setattr(
-        "newsflow.services.dispatcher.get_session_factory",
-        lambda: _Ctx,
-    )
-
-    broken = MagicMock()
-    broken.send_text = AsyncMock(side_effect=RuntimeError("api down"))
-    d = _dispatcher_with_adapter("discord", broken)
+async def test_notify_feed_deactivated_swallows_adapter_errors(db):
+    sub = await seed.subscription(db, platform="discord", channel_id="c", user_id="u", **DEAD_FEED)
+    broken = _adapter(send_text=AsyncMock(side_effect=RuntimeError("api down")))
+    d = Dispatcher()
+    d.register_adapter("discord", broken)
 
     # Must not raise — a broken adapter shouldn't crash the notify path.
-    await d.notify_feed_deactivated(feed.id, feed.url, feed.title)
+    await d.notify_feed_deactivated(sub.feed.id, sub.feed.url, sub.feed.title)

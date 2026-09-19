@@ -10,7 +10,7 @@ Two user-facing guarantees ride on this ORDER BY:
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
@@ -89,13 +89,7 @@ async def test_dispatch_sends_oldest_first(session):
     order, so the newest article ends up at the bottom of the channel."""
     sub = await _seed(session, [("new", _t(1)), ("old", _t(3)), ("mid", _t(2))])
 
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        d = Dispatcher()
+    d = Dispatcher()
 
     sent_links: list[str] = []
 

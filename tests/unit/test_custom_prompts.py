@@ -1,7 +1,7 @@
 """Tests for env-var-configurable AI prompt templates."""
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from newsflow.services.summarization.base import DigestArticle
 from newsflow.services.summarization.openai import (
@@ -198,42 +198,38 @@ async def test_digest_truncates_summary_to_max_input_chars():
 # ===== Factory wiring =====
 
 
-def test_translation_factory_passes_custom_prompt_from_settings():
+def test_translation_factory_passes_custom_prompt_from_settings(configure):
     from newsflow.services.translation.factory import create_translation_provider
 
-    with patch("newsflow.services.translation.factory.get_settings") as mock_settings:
-        fake = MagicMock()
-        fake.can_translate.return_value = True
-        fake.translation_provider = "openai"
-        fake.openai_api_key = "test-key"
-        fake.openai_model = "test-model"
-        fake.openai_base_url = None
-        fake.translation_system_prompt = "My custom prompt {target_name}"
-        mock_settings.return_value = fake
+    configure(
+        translation_enabled=True,
+        translation_provider="openai",
+        openai_api_key="test-key",
+        openai_model="test-model",
+        translation_system_prompt="My custom prompt {target_name}",
+    )
 
-        provider = create_translation_provider()
+    provider = create_translation_provider()
 
     assert provider is not None
     assert provider.system_prompt_template == "My custom prompt {target_name}"
 
 
-def test_digest_factory_passes_custom_prompt_from_settings():
+def test_digest_factory_passes_custom_prompt_from_settings(configure):
     from newsflow.services.summarization.factory import (
         get_summarizer,
         reset_summarizer,
     )
 
     reset_summarizer()
-    with patch("newsflow.services.summarization.factory.get_settings") as mock_settings:
-        fake = MagicMock()
-        fake.digest_provider = "openai"
-        fake.openai_api_key = "test-key"
-        fake.digest_model = "test-model"
-        fake.openai_base_url = None
-        fake.digest_system_prompt = "Editor. {window} in {lang}."
-        mock_settings.return_value = fake
+    configure(
+        digest_provider="openai",
+        openai_api_key="test-key",
+        digest_model="test-model",
+        digest_system_prompt="Editor. {window} in {lang}.",
+    )
 
-        provider = get_summarizer()
+    provider = get_summarizer()
 
     assert provider is not None
     assert provider.system_prompt_template == "Editor. {window} in {lang}."

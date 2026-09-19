@@ -5,23 +5,10 @@ archive.
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
 
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
-
-
-def _settings_patch(max_age_days: int = 14):
-    """Context manager: pin max_entry_publish_age_days for a test. Other
-    settings attributes degrade to MagicMock — fine, repo only reads this
-    one field."""
-    fake = MagicMock()
-    fake.max_entry_publish_age_days = max_age_days
-    return patch(
-        "newsflow.repositories.subscription_repository.get_settings",
-        return_value=fake,
-    )
 
 
 async def _make_feed_with_entries(session, n: int) -> Feed:
@@ -156,7 +143,7 @@ async def test_entries_added_after_seed_are_unsent(session):
 # ===== published_at age filter =====
 
 
-async def test_unsent_filters_out_old_published_entries(session):
+async def test_unsent_filters_out_old_published_entries(session, configure):
     """An entry whose published_at is older than the configured cap
     must NOT appear in unsent — this is the user-visible bug we're
     fixing (feeds re-serving year-old articles after cleanup)."""
@@ -186,14 +173,14 @@ async def test_unsent_filters_out_old_published_entries(session):
     sub = await _make_subscription(session, feed.id)
     repo = SubscriptionRepository(session)
 
-    with _settings_patch(max_age_days=14):
-        unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    configure(max_entry_publish_age_days=14)
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
 
     guids = {e.guid for e in unsent}
     assert guids == {"recent"}
 
 
-async def test_unsent_includes_entries_with_null_published_at(session):
+async def test_unsent_includes_entries_with_null_published_at(session, configure):
     """published_at IS NULL must pass the age filter — some feeds don't
     carry a date and we'd rather deliver than silently drop them."""
     feed = Feed(url="https://example.com/feed")
@@ -212,14 +199,14 @@ async def test_unsent_includes_entries_with_null_published_at(session):
     sub = await _make_subscription(session, feed.id)
     repo = SubscriptionRepository(session)
 
-    with _settings_patch(max_age_days=14):
-        unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    configure(max_entry_publish_age_days=14)
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
 
     assert len(unsent) == 1
     assert unsent[0].guid == "no-date"
 
 
-async def test_unsent_zero_disables_age_filter(session):
+async def test_unsent_zero_disables_age_filter(session, configure):
     """max_entry_publish_age_days=0 turns the filter off — even ancient
     entries flow through (back to pre-fix behavior, escape hatch)."""
     feed = Feed(url="https://example.com/feed")
@@ -239,8 +226,8 @@ async def test_unsent_zero_disables_age_filter(session):
     sub = await _make_subscription(session, feed.id)
     repo = SubscriptionRepository(session)
 
-    with _settings_patch(max_age_days=0):
-        unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    configure(max_entry_publish_age_days=0)
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
 
     assert len(unsent) == 1
     assert unsent[0].guid == "ancient"
@@ -423,7 +410,7 @@ async def test_cleanup_rediscover_no_longer_redelivers(session):
     assert list(unsent) == []
 
 
-async def test_unsent_age_filter_boundary(session):
+async def test_unsent_age_filter_boundary(session, configure):
     """Entry just inside the cutoff passes; just outside is filtered.
     Uses a 14-day cap with ±0.1 day from the boundary so we're nowhere
     near float-precision issues."""
@@ -453,8 +440,8 @@ async def test_unsent_age_filter_boundary(session):
     sub = await _make_subscription(session, feed.id)
     repo = SubscriptionRepository(session)
 
-    with _settings_patch(max_age_days=14):
-        unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    configure(max_entry_publish_age_days=14)
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
 
     guids = {e.guid for e in unsent}
     assert guids == {"inside"}

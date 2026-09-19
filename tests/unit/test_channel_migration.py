@@ -15,7 +15,7 @@ The flow under test:
 """
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -181,13 +181,7 @@ async def test_migrate_channel_missing_rows_is_noop(session):
 
 
 def _dispatcher() -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+    return Dispatcher()
 
 
 async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
@@ -295,19 +289,15 @@ async def test_telegram_send_text_raises_migrated(session):
         await adapter.send_text("-100123", "hello")
 
 
-async def test_telegram_send_text_pinned_raises_migrated(monkeypatch):
+async def test_telegram_send_text_pinned_raises_migrated(configure):
     """The digest delivery path (send_text_pinned) must map ChatMigrated the
     same way as the ordinary send paths — otherwise a digest to a migrated
     chat falls to `return False` and retries the dead id forever."""
-    from types import SimpleNamespace
-
     from telegram.error import ChatMigrated
-
-    import newsflow.adapters.telegram.bot as tg_bot
 
     adapter = _tg_adapter()
     adapter.app.bot.send_message = AsyncMock(side_effect=ChatMigrated(-100999))
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: SimpleNamespace(digest_auto_pin=True))
+    configure(digest_auto_pin=True)
 
     with pytest.raises(ChannelMigratedError) as exc_info:
         await adapter.send_text_pinned("-100123", "digest")

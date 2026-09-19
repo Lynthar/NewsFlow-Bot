@@ -7,28 +7,29 @@ and read-only commands stay open to every member. Discord: the
 feed/settings/digest command groups carry native default_permissions
 (Manage Server) — pinned by introspection, since Discord enforces them
 server-side.
+
+The autouse settings baseline is TELEGRAM_ADMIN_ONLY=true with no ADMIN_USER_IDS.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import newsflow.adapters.telegram.bot as tg_bot
 from newsflow.adapters.telegram.bot import (
+    _admin_cache,
     _require_group_admin,
     digest_command,
     list_command,
     remove_command,
 )
 from newsflow.config import Settings
+from tests import seed
+
+GROUP_ID = -100123
 
 
-def _settings(admin_only: bool = True, admin_ids: tuple[str, ...] = ()) -> SimpleNamespace:
-    return SimpleNamespace(telegram_admin_only=admin_only, admin_user_ids=list(admin_ids))
-
-
-def _group_update(user_id: int = 42, chat_id: int = -100123, sender_chat=None):
+def _group_update(user_id: int = 42, chat_id: int = GROUP_ID, sender_chat=None):
     update = MagicMock()
     update.message.reply_text = AsyncMock()
     update.message.sender_chat = sender_chat
@@ -46,16 +47,15 @@ def _context(status: str = "member"):
 
 @pytest.fixture(autouse=True)
 def _fresh_admin_cache():
-    tg_bot._admin_cache.clear()
+    _admin_cache.clear()
     yield
-    tg_bot._admin_cache.clear()
+    _admin_cache.clear()
 
 
 # ── the gate itself ──────────────────────────────────────────────────────────
 
 
-async def test_private_chat_always_allowed(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_private_chat_always_allowed():
     update = _group_update()
     update.effective_chat.type = "private"
     context = _context()
@@ -64,8 +64,7 @@ async def test_private_chat_always_allowed(monkeypatch):
     context.bot.get_chat_member.assert_not_awaited()
 
 
-async def test_group_member_denied_with_notice(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_group_member_denied_with_notice():
     update, context = _group_update(), _context(status="member")
 
     assert await _require_group_admin(update, context) is False
@@ -74,44 +73,41 @@ async def test_group_member_denied_with_notice(monkeypatch):
 
 
 @pytest.mark.parametrize("status", ["administrator", "creator"])
-async def test_group_admin_and_owner_allowed(monkeypatch, status):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_group_admin_and_owner_allowed(status):
     update, context = _group_update(), _context(status=status)
 
     assert await _require_group_admin(update, context) is True
     update.message.reply_text.assert_not_awaited()
 
 
-async def test_flag_off_allows_everyone(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings(admin_only=False))
+async def test_flag_off_allows_everyone(configure):
+    configure(telegram_admin_only=False)
     update, context = _group_update(), _context(status="member")
 
     assert await _require_group_admin(update, context) is True
     context.bot.get_chat_member.assert_not_awaited()
 
 
-async def test_admin_user_ids_bypass(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings(admin_ids=("42",)))
+async def test_admin_user_ids_bypass(configure):
+    configure(admin_user_ids=["42"])
     update, context = _group_update(user_id=42), _context(status="member")
 
     assert await _require_group_admin(update, context) is True
     context.bot.get_chat_member.assert_not_awaited()
 
 
-async def test_anonymous_group_admin_allowed(monkeypatch):
+async def test_anonymous_group_admin_allowed():
     """Messages sent 'as the group' (sender_chat == the chat) come from
     anonymous admins; get_chat_member can't resolve them, but only admins
     can post that way."""
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
-    update = _group_update(sender_chat=SimpleNamespace(id=-100123))
+    update = _group_update(sender_chat=SimpleNamespace(id=GROUP_ID))
     context = _context(status="member")
 
     assert await _require_group_admin(update, context) is True
     context.bot.get_chat_member.assert_not_awaited()
 
 
-async def test_verdict_is_cached(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_verdict_is_cached():
     update, context = _group_update(), _context(status="administrator")
 
     assert await _require_group_admin(update, context) is True
@@ -119,8 +115,7 @@ async def test_verdict_is_cached(monkeypatch):
     context.bot.get_chat_member.assert_awaited_once()
 
 
-async def test_lookup_failure_fails_closed_and_is_not_cached(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_lookup_failure_fails_closed_and_is_not_cached():
     update = _group_update()
     context = MagicMock()
     context.bot.get_chat_member = AsyncMock(side_effect=RuntimeError("api down"))
@@ -135,33 +130,29 @@ async def test_lookup_failure_fails_closed_and_is_not_cached(monkeypatch):
 # ── handler wiring ───────────────────────────────────────────────────────────
 
 
-async def test_remove_denied_for_group_member_before_any_db_work(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_remove_denied_for_group_member_leaves_the_subscription(db):
+    sub = await seed.subscription(db, channel_id=str(GROUP_ID), url="https://example.com/feed")
     update, context = _group_update(), _context(status="member")
     context.args = ["https://example.com/feed"]
 
-    factory = MagicMock()
-    with patch.object(tg_bot, "get_session_factory", factory):
-        await remove_command(update, context)
+    await remove_command(update, context)
 
-    factory.assert_not_called()
     assert "group admins" in update.message.reply_text.call_args.args[0]
+    assert await seed.subscription_row(db, sub.id) is not None
 
 
-async def test_list_is_not_gated_in_groups(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_list_is_not_gated_in_groups(db):
+    await seed.subscription(db, channel_id=str(GROUP_ID), title="Example Feed")
     update, context = _group_update(), _context(status="member")
     context.args = []
 
-    with patch.object(tg_bot, "_render_list", AsyncMock(return_value=("LIST", None))):
-        await list_command(update, context)
+    await list_command(update, context)
 
     context.bot.get_chat_member.assert_not_awaited()
-    assert update.message.reply_text.call_args.args[0] == "LIST"
+    assert "Example Feed" in update.message.reply_text.call_args.args[0]
 
 
-async def test_digest_show_open_but_enable_gated(monkeypatch):
-    monkeypatch.setattr(tg_bot, "get_settings", lambda: _settings())
+async def test_digest_show_open_but_enable_gated(db):
     update, context = _group_update(), _context(status="member")
 
     # enable: denied before any repository work.
@@ -170,26 +161,9 @@ async def test_digest_show_open_but_enable_gated(monkeypatch):
     assert "group admins" in update.message.reply_text.call_args.args[0]
 
     # show: passes the gate (no membership lookup), reaches the repo layer.
-    update2, _ = _group_update(), None
+    update2 = _group_update()
     context.args = ["show"]
-    repo = MagicMock()
-    repo.get = AsyncMock(return_value=None)
-
-    class _Ctx:
-        async def __aenter__(self):
-            return MagicMock()
-
-        async def __aexit__(self, *a):
-            return False
-
-    with (
-        patch.object(tg_bot, "get_session_factory", return_value=lambda: _Ctx()),
-        patch(
-            "newsflow.repositories.digest_repository.ChannelDigestRepository",
-            return_value=repo,
-        ),
-    ):
-        await digest_command(update2, context)
+    await digest_command(update2, context)
 
     context.bot.get_chat_member.assert_awaited_once()  # only the enable call
     assert "No digest configured" in update2.message.reply_text.call_args.args[0]

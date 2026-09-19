@@ -11,20 +11,14 @@ Covered scenarios (matrix of chunk count × pin outcome × prior pin):
 - adapter lacks pin support (default impl) → (N, None)    via base fallback
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.services.dispatcher import Dispatcher
 
 
 def _make_dispatcher() -> Dispatcher:
-    fake = MagicMock()
-    fake.discord_enabled = False
-    fake.telegram_enabled = False
-    fake.webhooks_enabled = False
-    fake.fetch_interval_minutes = 60
-    with patch("newsflow.services.dispatcher.get_settings", return_value=fake):
-        return Dispatcher()
+    return Dispatcher()
 
 
 def _mock_adapter(

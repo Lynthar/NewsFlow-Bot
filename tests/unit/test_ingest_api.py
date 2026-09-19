@@ -20,46 +20,40 @@ from newsflow.api.routes.ingest import (  # noqa: E402
 )
 from newsflow.models.feed import Feed  # noqa: E402
 
-
-class _FakeSettings:
-    def __init__(self, api_key: str) -> None:
-        self.api_key = api_key
-
-
 # ── auth ─────────────────────────────────────────────────────────────────────
 
 
-async def test_auth_fails_closed_when_no_key(monkeypatch):
-    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings(""))
+async def test_auth_fails_closed_when_no_key(configure):
+    configure(api_key="")
     with pytest.raises(HTTPException) as exc:
         await require_api_key(authorization="Bearer anything")
     assert exc.value.status_code == 503  # no key configured → writes disabled
 
 
-async def test_auth_rejects_wrong_and_missing(monkeypatch):
-    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings("secret"))
+async def test_auth_rejects_wrong_and_missing(configure):
+    configure(api_key="secret")
     for header in ("Bearer wrong", None, "", "Bearer "):
         with pytest.raises(HTTPException) as exc:
             await require_api_key(authorization=header)
         assert exc.value.status_code == 401
 
 
-async def test_auth_accepts_bearer_and_raw(monkeypatch):
-    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings("secret"))
+async def test_auth_accepts_bearer_and_raw(configure):
+    configure(api_key="secret")
     # Neither call should raise.
     await require_api_key(authorization="Bearer secret")
     await require_api_key(authorization="secret")
 
 
-async def test_read_auth_open_without_key_locked_with_key(monkeypatch):
+async def test_read_auth_open_without_key_locked_with_key(configure):
     from newsflow.api.deps import require_read_api_key
 
     # No key configured → reads stay open (writes are fail-closed anyway).
-    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings(""))
+    configure(api_key="")
     await require_read_api_key(authorization=None)
 
     # Key configured → reads demand it too (feed URLs may embed tokens).
-    monkeypatch.setattr("newsflow.api.deps.get_settings", lambda: _FakeSettings("secret"))
+    configure(api_key="secret")
     await require_read_api_key(authorization="Bearer secret")
     for bad in (None, "", "Bearer wrong"):
         with pytest.raises(HTTPException) as exc:

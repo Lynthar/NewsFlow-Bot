@@ -8,7 +8,7 @@ channel, caller-must-be-channel-admin, and the arg-stripping contract.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from telegram.constants import ChatMemberStatus, ChatType
 
@@ -36,18 +36,11 @@ def _channel(chat_id=-1001234, username="mychannel"):
     return SimpleNamespace(id=chat_id, type=ChatType.CHANNEL, username=username)
 
 
-def _fresh_settings():
-    fake = MagicMock()
-    fake.admin_user_ids = []
-    return fake
-
-
 async def test_passthrough_without_channel_ref():
     _admin_cache.clear()
     update = _update()
     context = _context(["https://example.com/feed"])
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved == ("555", ["https://example.com/feed"])
     context.bot.get_chat.assert_not_awaited()
 
@@ -56,8 +49,7 @@ async def test_passthrough_in_group_even_with_ref_like_arg():
     _admin_cache.clear()
     update = _update(chat_type=ChatType.GROUP, chat_id=-987)
     context = _context(["@mychannel", "url"])
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved == ("-987", ["@mychannel", "url"])
 
 
@@ -65,8 +57,7 @@ async def test_channel_admin_gets_target_and_stripped_args():
     _admin_cache.clear()
     update = _update()
     context = _context(["@mychannel", "https://example.com/feed"], chat=_channel())
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved == ("-1001234", ["https://example.com/feed"])
     context.bot.get_chat.assert_awaited_once_with("@mychannel")
 
@@ -75,8 +66,7 @@ async def test_raw_channel_id_reference_works():
     _admin_cache.clear()
     update = _update()
     context = _context(["-1001234", "url"], chat=_channel())
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved == ("-1001234", ["url"])
     context.bot.get_chat.assert_awaited_once_with(-1001234)
 
@@ -87,8 +77,7 @@ async def test_non_admin_is_denied():
     context = _context(
         ["@mychannel", "url"], chat=_channel(), member_status=ChatMemberStatus.MEMBER
     )
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved is None
     update.message.reply_text.assert_awaited_once()
 
@@ -98,8 +87,7 @@ async def test_unreachable_channel_is_reported():
     update = _update()
     context = _context(["@mychannel", "url"])
     context.bot.get_chat = AsyncMock(side_effect=RuntimeError("chat not found"))
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved is None
     text = update.message.reply_text.await_args.args[0]
     assert "administrator" in text
@@ -110,18 +98,15 @@ async def test_group_reference_is_rejected_not_a_channel():
     update = _update()
     group = SimpleNamespace(id=-333, type=ChatType.SUPERGROUP, username="somegroup")
     context = _context(["@somegroup", "url"], chat=group)
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=_fresh_settings()):
-        resolved = await _resolve_target(update, context)
+    resolved = await _resolve_target(update, context)
     assert resolved is None
 
 
-async def test_admin_user_ids_bypass_membership_check():
+async def test_admin_user_ids_bypass_membership_check(configure):
     _admin_cache.clear()
     update = _update(user_id=42)
     context = _context(["@mychannel", "url"], chat=_channel())
     context.bot.get_chat_member = AsyncMock(side_effect=AssertionError("must not be called"))
-    fake = MagicMock()
-    fake.admin_user_ids = ["42"]
-    with patch("newsflow.adapters.telegram.bot.get_settings", return_value=fake):
-        resolved = await _resolve_target(update, context)
+    configure(admin_user_ids=["42"])
+    resolved = await _resolve_target(update, context)
     assert resolved == ("-1001234", ["url"])

@@ -11,14 +11,8 @@ from newsflow.api import create_app  # noqa: E402
 from newsflow.config import Settings  # noqa: E402
 
 
-def _patch_settings(monkeypatch, **overrides):
-    settings = Settings(telegram_token="dummy", **overrides)
-    monkeypatch.setattr("newsflow.api.get_settings", lambda: settings)
-    return settings
-
-
-def test_routes_include_admin_and_subscriptions(monkeypatch):
-    _patch_settings(monkeypatch)
+def test_routes_include_admin_and_subscriptions(configure):
+    configure(telegram_token="dummy")
     app = create_app()
     # starlette 1.x hides included routes behind lazy router objects — the
     # OpenAPI schema is the stable public surface to assert against.
@@ -30,14 +24,14 @@ def test_routes_include_admin_and_subscriptions(monkeypatch):
     assert "/health" in paths
 
 
-def test_cors_is_off_by_default_and_opt_in(monkeypatch):
+def test_cors_is_off_by_default_and_opt_in(configure):
     from fastapi.middleware.cors import CORSMiddleware
 
-    _patch_settings(monkeypatch)
+    configure(telegram_token="dummy")
     app = create_app()
     assert all(m.cls is not CORSMiddleware for m in app.user_middleware)
 
-    _patch_settings(monkeypatch, api_cors_origins=["https://dash.example.com"])
+    configure(api_cors_origins=["https://dash.example.com"])
     app = create_app()
     assert any(m.cls is CORSMiddleware for m in app.user_middleware)
 
@@ -64,26 +58,22 @@ class _BadDB:
         raise RuntimeError("db down")
 
 
-async def test_ready_returns_200_when_healthy(monkeypatch):
+async def test_ready_returns_200_when_healthy(configure):
     from newsflow.api.routes.health import readiness_check
 
-    monkeypatch.setattr(
-        "newsflow.api.routes.health.get_settings", lambda: Settings(telegram_token="x")
-    )
+    configure(telegram_token="x")
     resp = await readiness_check(db=_GoodDB())
     assert resp.status_code == 200
 
 
-async def test_ready_returns_503_when_db_down(monkeypatch):
+async def test_ready_returns_503_when_db_down(configure):
     """Orchestrators and load balancers act on the status code, not the
     body — a 200 with ready:false kept routing traffic to a dead app."""
     import json
 
     from newsflow.api.routes.health import readiness_check
 
-    monkeypatch.setattr(
-        "newsflow.api.routes.health.get_settings", lambda: Settings(telegram_token="x")
-    )
+    configure(telegram_token="x")
     resp = await readiness_check(db=_BadDB())
     assert resp.status_code == 503
     body = json.loads(resp.body)

@@ -1,12 +1,6 @@
-"""DigestService.run_now — the one orchestration behind every digest.
-
-The scheduled tick and the two /digest now handlers used to carry a copy each,
-which is how the mention header once fired only on scheduled runs. These pin
-the parts that differed: whether an empty window consumes the schedule slot,
-where the chunk budget comes from, and what each failure reports back.
-
-Real database and dispatcher; the platform adapter and the LLM are mocked.
-"""
+"""DigestService.run_now, the one orchestration behind the scheduled tick and both /digest
+now handlers: whether an empty window consumes the slot, where the chunk budget comes from,
+what each failure reports. Real database and dispatcher; the adapter and the LLM are mocked."""
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock

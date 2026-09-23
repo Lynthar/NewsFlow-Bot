@@ -13,11 +13,9 @@ from newsflow.models.base import Base
 if TYPE_CHECKING:
     from newsflow.models.subscription import Subscription
 
-# The server refused us (credentials, blocking) or declared the resource gone
-# for good (410): waiting longer fixes nothing, so these skip the backoff curve
-# and reach a person via the deactivate path. 404 stays on the curve: it is
-# usually a deploy in progress, and ten strikes at the plain interval would
-# deactivate a healthy feed over a bad afternoon.
+# Refused (401/403) or gone for good (410): waiting fixes nothing, so these skip the
+# backoff and reach a person via deactivation. 404 stays on the curve: it is usually a
+# deploy in progress, and ten strikes at the plain interval would kill a healthy feed.
 REFUSED_STATUSES = frozenset({401, 403, 410})
 
 
@@ -95,13 +93,9 @@ class Feed(Base):
     def mark_error(
         self, error: str | None, base_delay_seconds: int = 3600, status: int | None = None
     ) -> None:
-        """Record a failed fetch and schedule the next retry.
-
-        401/403/410 means the server refused us or the resource is gone —
-        waiting longer fixes nothing, so retry at the plain interval and let the
-        ten-strike deactivation reach a person within hours. Anything else backs
-        off: base * 2^min(error_count, 5).
-        """
+        """Record a failed fetch and schedule the next retry: a REFUSED_STATUSES status
+        retries at the plain interval, so ten-strike deactivation reaches a person within
+        hours; anything else backs off base * 2^min(error_count, 5)."""
         now = datetime.now(UTC)
         self.last_fetched_at = now
         self.error_count += 1

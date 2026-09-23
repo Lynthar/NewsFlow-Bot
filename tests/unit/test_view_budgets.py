@@ -1,13 +1,6 @@
-"""Length budgets for the subscription views on both platforms.
-
-Feed titles are stored to 512 characters and URLs to 2048, all of it
-third-party text, so two rows already overrun Telegram's 4096-character
-message and Discord's 4096-character embed description. An embed over any
-single field limit is rejected whole — the command then returns nothing at
-all. These drive the real renderers with worst-case rows and assert the
-platform limits hold. The OPML import summary is pinned here too, since both
-platforms render it from the same rows.
-"""
+"""Length budgets for the subscription views and the OPML import summary: 512-char titles and
+2048-char URLs overrun Telegram's 4096-char message and Discord's embed limits within two rows,
+and an over-limit embed is rejected whole. Real renderers, worst-case rows."""
 
 import html
 from types import SimpleNamespace

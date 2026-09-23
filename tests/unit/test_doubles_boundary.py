@@ -30,6 +30,7 @@ ALLOWED: dict[str, str] = {
     # The network, the LLM and the mailbox: what the code reaches through these is
     # outside the process.
     "newsflow.services.feed_service.get_fetcher": "HTTP boundary — the fetcher is the network",
+    "newsflow.core.get_fetcher": "HTTP boundary — the fetcher is the network",
     "newsflow.services.dispatcher.get_translation_service": "LLM boundary",
     "f._fetch_sync": "IMAP boundary — the synchronous imap-tools call",
     # Clocks: real waits would make the tests slow, not more truthful.

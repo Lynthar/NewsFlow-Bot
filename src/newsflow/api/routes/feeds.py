@@ -7,7 +7,7 @@ Provides CRUD operations for feeds.
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_api_key
@@ -26,6 +26,17 @@ class FeedCreate(BaseModel):
     """Request model for creating a feed."""
 
     url: HttpUrl
+
+
+class FeedTestRequest(BaseModel):
+    """Request model for testing a feed; accepts the bots' source shortcuts."""
+
+    url: HttpUrl
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _expand_shortcut(cls, value: object) -> object:
+        return expand_source_shortcut(value) if isinstance(value, str) else value
 
 
 class FeedResponse(BaseModel):
@@ -227,7 +238,7 @@ async def refresh_feed(
 
 @router.post("/test", response_model=FeedTestResponse)
 async def test_feed(
-    feed_data: FeedCreate,
+    feed_data: FeedTestRequest,
     _: None = Depends(require_api_key),
 ) -> FeedTestResponse:
     """
@@ -238,7 +249,7 @@ async def test_feed(
     from newsflow.core import get_fetcher
 
     fetcher = get_fetcher()
-    result = await fetcher.fetch_feed(expand_source_shortcut(str(feed_data.url)))
+    result = await fetcher.fetch_feed(str(feed_data.url))
 
     return FeedTestResponse(
         success=result.success,

@@ -1,14 +1,6 @@
-"""Redirect handling and capped body reads in FeedFetcher.
-
-aiohttp's default behavior follows redirects automatically, which would let a
-public (validated) feed 302 the fetcher into a private / cloud-metadata address.
-The fetcher now follows redirects manually and re-validates every hop against
-the SSRF allow-list. We stub aiohttp with a fake session keyed by URL so we can
-assert which hosts are (and crucially are NOT) contacted.
-
-fetch_bytes_capped shares that redirect walk and is the only sanctioned way for
-non-feed callers (OPML import) to read a body.
-"""
+"""FeedFetcher follows redirects itself and re-validates every hop against the SSRF allow-list,
+so a public feed cannot 302 it into a private address; a fake aiohttp session keyed by URL shows
+which hosts are (and are not) contacted. fetch_bytes_capped, used for OPML, shares that walk."""
 
 from __future__ import annotations
 

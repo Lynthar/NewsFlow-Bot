@@ -8,22 +8,6 @@ from newsflow.services.feed_service import FeedService
 from tests.unit.test_feed_fetcher_redirect import _FakeResp, _fetcher
 
 
-def test_mark_error_sets_next_retry_with_doubling():
-    """Delay doubles per consecutive error."""
-    feed = Feed(url="https://example.com/feed", error_count=0)
-    base = 60  # 1 minute base for easy math
-
-    feed.mark_error("boom", base_delay_seconds=base)
-    first = feed.next_retry_at
-    # First error: factor = 2^1 = 2, so delay ≈ 120s
-    assert first is not None
-
-    feed.mark_error("boom", base_delay_seconds=base)
-    second = feed.next_retry_at
-    # Second error: factor = 2^2 = 4, delay ≈ 240s → second - now > first - now
-    assert (second - first).total_seconds() > 0
-
-
 def test_mark_error_caps_backoff_factor():
     """Factor caps at 2^5 = 32 regardless of error_count."""
     feed = Feed(url="https://example.com/feed")

@@ -118,6 +118,55 @@ async def test_seed_sent_entries_keep_latest_preserves_n_newest(session):
     assert unsent[0].guid == "g2"  # the newest (1 hour ago)
 
 
+async def test_seed_keep_latest_picks_the_newest_by_published_at_not_by_id(session):
+    """The preview is the most recently published entry; insertion order is
+    no proxy — a backfilling feed inserts its oldest articles last."""
+    feed = Feed(url="https://example.com/feed")
+    session.add(feed)
+    await session.flush()
+
+    now = datetime.now(UTC)
+    for guid, hours_ago in [("old", 3), ("newest", 1), ("middle", 2)]:
+        session.add(
+            FeedEntry(
+                feed_id=feed.id,
+                guid=guid,
+                title=guid,
+                link=f"https://example.com/{guid}",
+                published_at=now - timedelta(hours=hours_ago),
+            )
+        )
+        await session.flush()  # ids ascend in insertion order: old < newest < middle
+    sub = await _make_subscription(session, feed.id)
+    repo = SubscriptionRepository(session)
+
+    assert await repo.seed_sent_entries(sub.id, feed.id, keep_latest=1) == 2
+
+    unsent = await repo.get_unsent_entries_for_subscription(sub.id)
+    assert [e.guid for e in unsent] == ["newest"]
+
+
+async def test_unsent_is_tracked_per_subscription_not_per_feed(session):
+    """SentEntry is keyed by (subscription, feed, guid): one channel receiving
+    an entry says nothing about another channel on the same feed."""
+    feed = await _make_feed_with_entries(session, 2)
+    first = await _make_subscription(session, feed.id)
+    second = Subscription(
+        platform="test", platform_user_id="user-2", platform_channel_id="chan-2", feed_id=feed.id
+    )
+    session.add(second)
+    await session.flush()
+    repo = SubscriptionRepository(session)
+
+    await repo.mark_entry_sent(first.id, feed.id, "guid-0")
+
+    assert {e.guid for e in await repo.get_unsent_entries_for_subscription(first.id)} == {"guid-1"}
+    assert {e.guid for e in await repo.get_unsent_entries_for_subscription(second.id)} == {
+        "guid-0",
+        "guid-1",
+    }
+
+
 async def test_entries_added_after_seed_are_unsent(session):
     feed = await _make_feed_with_entries(session, 2)
     sub = await _make_subscription(session, feed.id)
@@ -231,6 +280,53 @@ async def test_unsent_zero_disables_age_filter(session, configure):
 
     assert len(unsent) == 1
     assert unsent[0].guid == "ancient"
+
+
+async def _feed_with_recent_and_ancient(session) -> tuple[Feed, Subscription]:
+    feed = Feed(url="https://example.com/feed")
+    session.add(feed)
+    await session.flush()
+    now = datetime.now(UTC)
+    for guid, age in [("recent", timedelta(days=3)), ("ancient", timedelta(days=400))]:
+        session.add(
+            FeedEntry(
+                feed_id=feed.id,
+                guid=guid,
+                title=guid,
+                link=f"https://example.com/{guid}",
+                published_at=now - age,
+            )
+        )
+    sub = await _make_subscription(session, feed.id)
+    return feed, sub
+
+
+async def test_age_window_of_one_day_is_enforced(session, configure):
+    """1 is the smallest window that is still a window — only 0 disables it."""
+    _, sub = await _feed_with_recent_and_ancient(session)
+    repo = SubscriptionRepository(session)
+
+    configure(max_entry_publish_age_days=1)
+
+    assert list(await repo.get_unsent_entries_for_subscription(sub.id)) == []
+    assert await repo.count_unsent_entries_for_subscription(sub.id) == 0
+
+
+async def test_count_unsent_applies_the_same_age_window_as_delivery(session, configure):
+    """/feed status counts the backlog dispatch will actually deliver: the age
+    window applies, and max_entry_publish_age_days=0 turns it off."""
+    _, sub = await _feed_with_recent_and_ancient(session)
+    repo = SubscriptionRepository(session)
+
+    configure(max_entry_publish_age_days=14)
+    assert await repo.count_unsent_entries_for_subscription(sub.id) == 1
+    configure(max_entry_publish_age_days=0)
+    assert await repo.count_unsent_entries_for_subscription(sub.id) == 2
+
+
+async def test_count_unsent_is_zero_for_an_unknown_subscription(session):
+    repo = SubscriptionRepository(session)
+    assert await repo.count_unsent_entries_for_subscription(999_999) == 0
 
 
 async def test_set_silent_flips_single_subscription(session):

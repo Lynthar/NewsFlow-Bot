@@ -69,6 +69,33 @@ async def test_partial_translation_is_not_cached(session):
     assert not entry.summary_translated
 
 
+async def test_summary_only_success_is_not_cached_either(session):
+    """The mirror of the partial case: a failed title with a translated summary
+    is just as incomplete, so nothing reaches the FeedEntry cache."""
+    entry = await _make_entry(session)
+
+    def fake_translate(text, target_lang, source_lang=None):
+        if text == "Hello":
+            return TranslationResult(success=False, error="boom")
+        return TranslationResult(success=True, translated_text="世界正文")
+
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock(side_effect=fake_translate)
+
+    d = _dispatcher()
+    with patch(
+        "newsflow.services.dispatcher.get_translation_service",
+        return_value=fake_service,
+    ):
+        title_t, summary_t = await d._translate_entry(entry, "zh-CN", session, "World body text")
+    await session.commit()
+
+    assert (title_t, summary_t) == (None, "世界正文")
+    await session.refresh(entry)
+    assert entry.translation_language is None
+    assert not entry.summary_translated
+
+
 async def test_full_translation_is_cached(session):
     entry = await _make_entry(session)
 
@@ -96,6 +123,32 @@ async def test_full_translation_is_cached(session):
     assert entry.translation_language == "zh-CN"
     assert entry.title_translated == "你好"
     assert entry.summary_translated == "世界正文"
+
+
+async def test_title_only_entry_is_cached_once_its_title_translates(session):
+    """With no summary there is nothing left to wait for: a translated title
+    is the complete result and is cached like a full one."""
+    entry = await _make_entry(session)
+    entry.summary = None
+    await session.commit()
+
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock(
+        return_value=TranslationResult(success=True, translated_text="你好")
+    )
+
+    d = _dispatcher()
+    with patch(
+        "newsflow.services.dispatcher.get_translation_service",
+        return_value=fake_service,
+    ):
+        title_t, summary_t = await d._translate_entry(entry, "zh-CN", session, "")
+    await session.commit()
+
+    assert (title_t, summary_t) == ("你好", None)
+    await session.refresh(entry)
+    assert entry.translation_language == "zh-CN"
+    assert entry.title_translated == "你好"
 
 
 def _sub(feed_id: int, *, translate: bool, language: str) -> Subscription:

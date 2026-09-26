@@ -118,6 +118,11 @@ def test_validate_rejects_overlong_template() -> None:
     assert "too long" in errors[0]
 
 
+def test_validate_accepts_template_exactly_at_the_cap() -> None:
+    # The error reads "N > TEMPLATE_MAX_LENGTH", so a template of exactly that length is valid.
+    assert validate_template("x" * TEMPLATE_MAX_LENGTH) == []
+
+
 # ------------------------------------------------- Message value contract
 
 

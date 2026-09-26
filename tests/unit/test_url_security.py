@@ -71,6 +71,21 @@ def test_rejects_oversize_url():
         validate_feed_url(huge)
 
 
+def test_accepts_url_exactly_at_the_length_cap():
+    """The cap mirrors Feed.url's String(2048): a URL that fits the column is legal."""
+    prefix = "https://example.com/"
+    url = prefix + "a" * (MAX_FEED_URL_LENGTH - len(prefix))
+    assert len(url) == MAX_FEED_URL_LENGTH
+    validate_feed_url(url)
+
+
+@pytest.mark.parametrize("url", ["http://224.0.0.1/feed", "http://[ff02::1]/feed"])
+def test_rejects_multicast_literals(url):
+    # A multicast group is never a unicast HTTP endpoint (RFC 1112, RFC 4291 §2.7).
+    with pytest.raises(InvalidFeedURLError):
+        validate_feed_url(url)
+
+
 def test_rejects_url_with_no_host():
     with pytest.raises(InvalidFeedURLError):
         validate_feed_url("http:///feed")

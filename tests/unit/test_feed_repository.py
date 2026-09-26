@@ -1,6 +1,10 @@
 """Tests for FeedRepository.create_entries_bulk — dedup + bulk insert."""
 
+from datetime import UTC, datetime, timedelta
+
 from newsflow.repositories.feed_repository import FeedRepository
+
+_LAST_MODIFIED = "Wed, 21 Oct 2015 07:28:00 GMT"
 
 
 async def test_create_entries_bulk_inserts_all_new(session):
@@ -107,6 +111,45 @@ async def test_create_entries_bulk_degenerate_fallback_guids(session):
     )
 
     assert len(created) == 1
+
+
+async def test_create_entries_bulk_clamps_far_future_dates_and_keeps_near_ones(session):
+    """More than a day ahead is a broken clock or a hostile feed and is clamped
+    to now; a timezone-skewed near-future date is stored as published."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    now = datetime.now(UTC)
+    near = now + timedelta(hours=12)
+
+    created = await repo.create_entries_bulk(
+        feed.id,
+        [
+            {
+                "guid": "far",
+                "title": "F",
+                "link": "https://x/f",
+                "published_at": now + timedelta(hours=36),
+            },
+            {"guid": "near", "title": "N", "link": "https://x/n", "published_at": near},
+        ],
+    )
+
+    by_guid = {e.guid: e.published_at for e in created}
+    assert by_guid["far"] is not None and by_guid["far"] <= datetime.now(UTC)
+    assert by_guid["near"] == near
+
+
+async def test_update_feed_metadata_stores_both_validators(session):
+    """ETag and Last-Modified are what the next fetch sends back as
+    If-None-Match / If-Modified-Since; dropping either forfeits the 304 path."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+
+    await repo.update_feed_metadata(feed.id, etag='"v1"', last_modified=_LAST_MODIFIED)
+
+    await session.refresh(feed)
+    assert feed.etag == '"v1"'
+    assert feed.last_modified == _LAST_MODIFIED
 
 
 async def test_create_feed_caps_metadata_like_update_path(session):

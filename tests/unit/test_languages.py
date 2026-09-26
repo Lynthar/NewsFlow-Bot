@@ -35,6 +35,11 @@ def test_rejects_codes_longer_than_db_columns():
     assert normalize_language_code("cmn-Hans") == "cmn-Hans"  # 8 chars still fine
 
 
+def test_accepts_code_exactly_at_the_column_width():
+    # String(10) holds ten characters, so a well-formed ten-character code must pass.
+    assert normalize_language_code("abc-defghi") == "abc-defghi"
+
+
 # ===== same_primary_language =====
 
 

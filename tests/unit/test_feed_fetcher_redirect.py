@@ -5,6 +5,7 @@ which hosts are (and are not) contacted. fetch_bytes_capped, used for OPML, shar
 from __future__ import annotations
 
 import pytest
+from multidict import CIMultiDict
 
 from newsflow.core.feed_fetcher import MAX_REDIRECTS, FeedFetcher, FeedFetchError
 from newsflow.core.url_security import InvalidFeedURLError
@@ -46,7 +47,8 @@ class _FakeResp:
         content_type: str = "application/xml",
     ) -> None:
         self.status = status
-        self.headers = headers or {}
+        # aiohttp exposes headers case-insensitively; so must the stand-in.
+        self.headers = CIMultiDict(headers or {})
         self.charset = charset
         self.reason = reason
         # Real aiohttp responses always expose content_type; the fetcher reads
@@ -64,15 +66,17 @@ class _FakeResp:
 
 
 class _FakeSession:
-    """Maps URL -> _FakeResp. Records every requested URL."""
+    """Maps URL -> _FakeResp. Records every requested URL and the headers sent with it."""
 
     def __init__(self, responses: dict[str, _FakeResp]) -> None:
         self.responses = responses
         self.requested: list[str] = []
+        self.request_headers: list[dict[str, str]] = []
         self.closed = False
 
     def get(self, url: str, headers=None, allow_redirects: bool = True):
         self.requested.append(url)
+        self.request_headers.append(dict(headers or {}))
         # The fix must disable aiohttp's own redirect following.
         assert allow_redirects is False
         return self.responses[url]

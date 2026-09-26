@@ -12,10 +12,11 @@ import hashlib
 import hmac
 
 import aiohttp
+import pytest
 import pytest_asyncio
 
 from newsflow.adapters.base import Message
-from newsflow.adapters.webhook.bot import WebhookAdapter
+from newsflow.adapters.webhook.bot import WebhookAdapter, _retry_after_seconds
 from newsflow.models.webhook import WebhookDestination
 
 
@@ -314,7 +315,46 @@ async def test_post_does_not_follow_redirects():
     assert session.calls[0]["allow_redirects"] is False
 
 
+async def test_3xx_counts_as_a_failed_send(session):
+    """Only 2xx is success (RFC 9110 §15.3); a 300 must feed the breaker
+    like any other non-2xx instead of being credited as delivered."""
+    dest = await _persisted_dest(session)
+    adapter = _make_adapter(_FakeSession(status=300))
+    adapter._destinations = {"brk": dest}
+
+    assert await adapter.send_message("brk", _message()) is False
+    assert dest.error_count == 1
+    assert "HTTP 300" in (dest.last_error or "")
+
+
+@pytest.mark.parametrize(
+    "exc", [TimeoutError(), aiohttp.ClientError("boom"), ValueError("Invalid header value")]
+)
+async def test_transport_failures_count_toward_the_breaker(session, exc):
+    """A timeout, a connection error and a rejected header are failed sends:
+    each advances the breaker, so a dead endpoint still trips after ten."""
+    dest = await _persisted_dest(session)
+    adapter = _make_adapter(_FakeSession(raise_exc=exc))
+    adapter._destinations = {"brk": dest}
+
+    assert await adapter.send_message("brk", _message()) is False
+    assert dest.error_count == 1
+    assert dest.last_error
+
+
 # ─── rate limiting ───────────────────────────────────────────────────────────
+
+
+def test_retry_after_defaults_to_one_second_without_a_header():
+    assert _retry_after_seconds({}, cap=5.0) == 1.0
+
+
+def test_retry_after_is_the_header_value_up_to_and_including_the_cap():
+    """The wait is the header's value; only a wait exceeding the cap defers
+    the entry to the next round."""
+    assert _retry_after_seconds({"Retry-After": "0.5"}, cap=5.0) == 0.5
+    assert _retry_after_seconds({"Retry-After": "5"}, cap=5.0) == 5.0
+    assert _retry_after_seconds({"Retry-After": "5.01"}, cap=5.0) is None
 
 
 def _patch_sleep(monkeypatch) -> list[float]:

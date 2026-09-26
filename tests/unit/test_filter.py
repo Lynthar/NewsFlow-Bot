@@ -2,7 +2,12 @@
 
 import pytest
 
-from newsflow.core.filter import FilterRule, parse_filter_field, parse_keyword_csv
+from newsflow.core.filter import (
+    MAX_REGEX_LENGTH,
+    FilterRule,
+    parse_filter_field,
+    parse_keyword_csv,
+)
 
 
 def test_empty_rule_passes_everything():
@@ -133,6 +138,20 @@ def test_parse_filter_field_rejects_bad_regex():
         parse_filter_field("//")
     with pytest.raises(ValueError):
         parse_filter_field("/" + "a" * 300 + "/")
+
+
+def test_parse_filter_field_only_a_fully_slashed_field_is_a_regex():
+    # Keywords may start or end with a slash; only the /…/ envelope means regex.
+    assert parse_filter_field("/usr/bin, cpp") == (("/usr/bin", "cpp"), None)
+    assert parse_filter_field("api, c/") == (("api", "c/"), None)
+
+
+def test_parse_filter_field_regex_cap_is_inclusive():
+    # The rejection message promises "max 256 chars", so 256 is accepted and 257 is not.
+    at_cap = "a" * MAX_REGEX_LENGTH
+    assert parse_filter_field(f"/{at_cap}/") == ((), at_cap)
+    with pytest.raises(ValueError, match="too long"):
+        parse_filter_field(f"/{at_cap}a/")
 
 
 @pytest.mark.parametrize(

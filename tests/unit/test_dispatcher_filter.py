@@ -11,13 +11,7 @@ from sqlalchemy import select
 
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
-from newsflow.services.dispatcher import Dispatcher
-
-
-def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
-    d = Dispatcher()
-    d.register_adapter(platform, adapter)
-    return d
+from tests import seed
 
 
 async def test_filter_drops_non_matching_entry(session):
@@ -50,7 +44,7 @@ async def test_filter_drops_non_matching_entry(session):
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
 
     from newsflow.repositories.subscription_repository import SubscriptionRepository
 
@@ -106,7 +100,7 @@ async def test_empty_filter_passes_everything(session):
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
 
     from newsflow.repositories.subscription_repository import SubscriptionRepository
 
@@ -149,7 +143,7 @@ async def test_filter_matches_cleaned_text_not_raw_markup(session):
     adapter.send_message = AsyncMock(return_value=True)
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
 
     from newsflow.repositories.subscription_repository import SubscriptionRepository
 
@@ -191,7 +185,7 @@ async def test_filter_sees_article_content_field(session):
     adapter.send_message = AsyncMock(return_value=True)
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
 
     from newsflow.repositories.subscription_repository import SubscriptionRepository
 

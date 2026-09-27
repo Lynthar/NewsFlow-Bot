@@ -13,18 +13,15 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import discord
 from sqlalchemy import select
 
 from newsflow.adapters.base import Message, TopicGoneError
 from newsflow.adapters.discord.bot import (
-    DiscordAdapter,
     FeedCommands,
     NewsFlowBot,
     _mention_allowance,
 )
 from newsflow.adapters.telegram.bot import (
-    TelegramAdapter,
     _admin_cache,
     add_command,
     settopic_command,
@@ -81,27 +78,9 @@ async def _feed_with_entries(session, count: int = 1) -> tuple[Feed, list[FeedEn
     return feed, entries
 
 
-def _sub(feed: Feed, **overrides) -> Subscription:
-    defaults = dict(
-        platform="telegram",
-        platform_user_id="u",
-        platform_channel_id="c",
-        feed_id=feed.id,
-        is_active=True,
-        translate=False,
-        target_language="en",
-    )
-    defaults.update(overrides)
-    return Subscription(**defaults)
-
-
-def _dispatcher() -> Dispatcher:
-    return Dispatcher()
-
-
 async def test_dispatcher_fills_mention_and_thread(session):
     feed, entries = await _feed_with_entries(session)
-    sub = _sub(feed, mention="<@&9>", message_thread_id=77)
+    sub = seed.unsaved_subscription(feed, mention="<@&9>", message_thread_id=77)
     session.add(sub)
     await session.commit()
 
@@ -113,7 +92,7 @@ async def test_dispatcher_fills_mention_and_thread(session):
 
 async def test_template_pretrim_receives_mention(session):
     feed, entries = await _feed_with_entries(session)
-    sub = _sub(feed, mention="<@&9>", message_template="{mention}|{title}")
+    sub = seed.unsaved_subscription(feed, mention="<@&9>", message_template="{mention}|{title}")
     session.add(sub)
     await session.commit()
 
@@ -123,9 +102,9 @@ async def test_template_pretrim_receives_mention(session):
 
 
 async def test_topic_gone_self_heals_and_batch_continues(session):
-    d = _dispatcher()
+    d = Dispatcher()
     feed, entries = await _feed_with_entries(session, count=2)
-    sub = _sub(feed, message_thread_id=77)
+    sub = seed.unsaved_subscription(feed, message_thread_id=77)
     session.add(sub)
     await session.commit()
 
@@ -159,21 +138,6 @@ async def test_topic_gone_self_heals_and_batch_continues(session):
 # -------------------------------------------------------- discord adapter
 
 
-def _msg(**overrides) -> Message:
-    fields: dict = dict(title="T", summary="S", link="https://x.test/a", source="x.test")
-    fields.update(overrides)
-    return Message(**fields)
-
-
-def _discord_adapter() -> tuple[DiscordAdapter, MagicMock]:
-    adapter = DiscordAdapter.__new__(DiscordAdapter)
-    channel = MagicMock(spec=discord.TextChannel)
-    channel.send = AsyncMock()
-    adapter.bot = MagicMock()
-    adapter.bot.get_channel = MagicMock(return_value=channel)
-    return adapter, channel
-
-
 def test_mention_allowance_shapes():
     role = _mention_allowance("<@&123>")
     assert role.everyone is False and role.users is False
@@ -198,8 +162,8 @@ def test_newsflowbot_baseline_allows_no_pings():
 
 
 async def test_discord_mention_rides_default_embed():
-    adapter, channel = _discord_adapter()
-    ok = await adapter.send_message("42", _msg(mention="<@&9>"))
+    adapter, channel = seed.discord_adapter()
+    ok = await adapter.send_message("42", seed.message(mention="<@&9>"))
 
     assert ok is True
     kwargs = channel.send.await_args.kwargs
@@ -210,8 +174,8 @@ async def test_discord_mention_rides_default_embed():
 
 
 async def test_discord_no_mention_keeps_plain_embed_call():
-    adapter, channel = _discord_adapter()
-    await adapter.send_message("42", _msg())
+    adapter, channel = seed.discord_adapter()
+    await adapter.send_message("42", seed.message())
 
     call = channel.send.await_args
     assert "content" not in call.kwargs
@@ -219,8 +183,8 @@ async def test_discord_no_mention_keeps_plain_embed_call():
 
 
 async def test_discord_template_gets_mention_prefix():
-    adapter, channel = _discord_adapter()
-    await adapter.send_message("42", _msg(template_text="body", mention="<@7>"))
+    adapter, channel = seed.discord_adapter()
+    await adapter.send_message("42", seed.message(template_text="body", mention="<@7>"))
 
     call = channel.send.await_args
     assert call.args[0] == "<@7>\nbody"
@@ -228,15 +192,15 @@ async def test_discord_template_gets_mention_prefix():
 
 
 async def test_discord_template_with_placed_mention_not_prefixed():
-    adapter, channel = _discord_adapter()
-    await adapter.send_message("42", _msg(template_text="tail — <@7>", mention="<@7>"))
+    adapter, channel = seed.discord_adapter()
+    await adapter.send_message("42", seed.message(template_text="tail — <@7>", mention="<@7>"))
 
     assert channel.send.await_args.args[0] == "tail — <@7>"
 
 
 async def test_discord_template_without_mention_pings_nothing():
-    adapter, channel = _discord_adapter()
-    await adapter.send_message("42", _msg(template_text="@everyone free nitro"))
+    adapter, channel = seed.discord_adapter()
+    await adapter.send_message("42", seed.message(template_text="@everyone free nitro"))
 
     allowed = channel.send.await_args.kwargs["allowed_mentions"]
     assert allowed.everyone is False and allowed.users is False and allowed.roles is False
@@ -245,24 +209,17 @@ async def test_discord_template_without_mention_pings_nothing():
 # ------------------------------------------------------- telegram adapter
 
 
-def _tg_adapter() -> TelegramAdapter:
-    adapter = TelegramAdapter(token="test-token")
-    adapter.app = MagicMock()
-    adapter.app.bot.send_message = AsyncMock()
-    return adapter
-
-
 async def test_telegram_default_layout_targets_thread():
-    adapter = _tg_adapter()
-    ok = await adapter.send_message("123", _msg(thread_id=77))
+    adapter = seed.tg_adapter()
+    ok = await adapter.send_message("123", seed.message(thread_id=77))
 
     assert ok is True
     assert adapter.app.bot.send_message.await_args.kwargs["message_thread_id"] == 77
 
 
 async def test_telegram_template_targets_thread():
-    adapter = _tg_adapter()
-    await adapter.send_message("123", _msg(template_text="body", thread_id=77))
+    adapter = seed.tg_adapter()
+    await adapter.send_message("123", seed.message(template_text="body", thread_id=77))
 
     assert adapter.app.bot.send_message.await_args.kwargs["message_thread_id"] == 77
 
@@ -270,11 +227,11 @@ async def test_telegram_template_targets_thread():
 async def test_telegram_thread_gone_maps_to_topic_gone():
     from telegram.error import BadRequest
 
-    adapter = _tg_adapter()
+    adapter = seed.tg_adapter()
     adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Message thread not found"))
 
     try:
-        await adapter.send_message("123", _msg(thread_id=77))
+        await adapter.send_message("123", seed.message(thread_id=77))
         raised = None
     except TopicGoneError as e:
         raised = e
@@ -287,10 +244,10 @@ async def test_telegram_thread_gone_maps_to_topic_gone():
 async def test_telegram_thread_error_without_thread_is_plain_failure():
     from telegram.error import BadRequest
 
-    adapter = _tg_adapter()
+    adapter = seed.tg_adapter()
     adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Message thread not found"))
 
-    ok = await adapter.send_message("123", _msg())
+    ok = await adapter.send_message("123", seed.message())
 
     assert ok is False
 
@@ -324,7 +281,7 @@ async def test_get_or_create_records_thread(session):
 
 async def test_mention_and_thread_service_roundtrip(session):
     feed, _entries = await _feed_with_entries(session)
-    sub = _sub(feed)
+    sub = seed.unsaved_subscription(feed)
     other = Subscription(
         platform="telegram",
         platform_user_id="u",
@@ -477,14 +434,6 @@ async def test_add_records_topic_it_ran_in(db, monkeypatch):
 DISCORD_CHANNEL = "555"
 
 
-def _interaction():
-    interaction = MagicMock()
-    interaction.channel_id = int(DISCORD_CHANNEL)
-    interaction.response.defer = AsyncMock()
-    interaction.followup.send = AsyncMock()
-    return interaction
-
-
 async def _discord_subs(db, count: int = 1, **fields):
     return [
         await seed.subscription(
@@ -506,7 +455,7 @@ async def _mention_of(db, sub_id: int) -> str | None:
 
 async def _run_feed_mention(*, url: str, target=None, clear: bool = False):
     cog = FeedCommands(MagicMock())
-    interaction = _interaction()
+    interaction = seed.discord_interaction(DISCORD_CHANNEL)
     await FeedCommands.feed_mention.callback(cog, interaction, url=url, target=target, clear=clear)
     return interaction
 

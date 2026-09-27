@@ -77,19 +77,6 @@ class Feed(Base):
     def __repr__(self) -> str:
         return f"<Feed(id={self.id}, url='{self.url[:50]}...')>"
 
-    def mark_success(self, etag: str | None = None, last_modified: str | None = None) -> None:
-        """Mark a successful fetch."""
-        now = datetime.now(UTC)
-        self.last_fetched_at = now
-        self.last_successful_fetch_at = now
-        self.error_count = 0
-        self.last_error = None
-        self.next_retry_at = None
-        if etag:
-            self.etag = etag
-        if last_modified:
-            self.last_modified = last_modified
-
     def mark_error(
         self, error: str | None, base_delay_seconds: int = 3600, status: int | None = None
     ) -> None:
@@ -112,8 +99,8 @@ class Feed(Base):
         error streak and backoff so the next dispatch cycle fetches it again.
 
         This is the only revival path for a feed that mark_error() disabled —
-        get_feeds_due_for_fetch skips inactive feeds, so mark_success() can
-        never run for them. Called when a user resumes/re-adds a subscription
+        get_feeds_due_for_fetch skips inactive feeds, so the success path
+        (update_feed_metadata) never reaches them. Called when a user resumes/re-adds a subscription
         or a YAML sync re-declares the feed. `last_error` is kept for
         /feed status history until the next fetch outcome overwrites it.
         """

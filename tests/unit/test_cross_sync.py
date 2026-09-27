@@ -12,16 +12,15 @@ source_sync's subscriptions (and their SentEntry history) on every boot.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock
 
 import pytest_asyncio
 from sqlalchemy import select
 
-from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services.source_sync import SourceCfg, SubscriberCfg, _reconcile
 from newsflow.services.webhook_sync import sync_webhooks
+from tests import seed
 
 
 @pytest_asyncio.fixture
@@ -60,32 +59,6 @@ def _source_cfg(channel: str = "slack") -> SourceCfg:
     )
 
 
-def _patch_feed_fetcher(monkeypatch):
-    mock_fetcher = AsyncMock()
-    mock_fetcher.fetch_feed = AsyncMock(
-        return_value=FetchResult(
-            url="",
-            success=True,
-            entries=[
-                {
-                    "guid": "e1",
-                    "title": "First entry",
-                    "link": "https://feed.example.com/e1",
-                }
-            ],
-            etag=None,
-            last_modified=None,
-            feed_title="Test Feed",
-            feed_description=None,
-            feed_link=None,
-        )
-    )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher",
-        lambda: mock_fetcher,
-    )
-
-
 async def _source_yaml_subs(session) -> list[Subscription]:
     return (
         (
@@ -108,7 +81,7 @@ async def _boot(session, tmp_path, sources) -> None:
 async def test_restart_preserves_source_yaml_subscription_and_history(
     session, monkeypatch, tmp_path
 ):
-    _patch_feed_fetcher(monkeypatch)
+    seed.patch_feed_fetcher(monkeypatch)
     sources = [_source_cfg()]
 
     await _boot(session, tmp_path, sources)
@@ -136,7 +109,7 @@ async def test_restart_preserves_source_yaml_subscription_and_history(
 
 
 async def test_destination_removal_spares_source_yaml_subscription(session, monkeypatch, tmp_path):
-    _patch_feed_fetcher(monkeypatch)
+    seed.patch_feed_fetcher(monkeypatch)
     sources = [_source_cfg(channel="slack")]
 
     await _boot(session, tmp_path, sources)
@@ -163,7 +136,7 @@ async def test_webhook_sync_does_not_rewrite_source_yaml_settings(session, monke
     """If webhooks.yaml lists a (destination, feed) pair that sources.yaml
     already owns, webhook_sync must neither rewrite its settings nor create a
     duplicate row (which would double-deliver every entry)."""
-    _patch_feed_fetcher(monkeypatch)
+    seed.patch_feed_fetcher(monkeypatch)
     # Source subscriber with non-default settings, delivering to "slack".
     sources = [
         SourceCfg(

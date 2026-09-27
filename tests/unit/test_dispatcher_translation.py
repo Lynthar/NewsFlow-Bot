@@ -19,10 +19,6 @@ from newsflow.services.dispatcher import Dispatcher
 from newsflow.services.translation.base import TranslationResult
 
 
-def _dispatcher() -> Dispatcher:
-    return Dispatcher()
-
-
 async def _make_entry(session) -> FeedEntry:
     feed = Feed(url="https://example.com/feed", is_active=True, error_count=0)
     session.add(feed)
@@ -50,7 +46,7 @@ async def test_partial_translation_is_not_cached(session):
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(side_effect=fake_translate)
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -82,7 +78,7 @@ async def test_summary_only_success_is_not_cached_either(session):
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(side_effect=fake_translate)
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -108,7 +104,7 @@ async def test_full_translation_is_cached(session):
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(side_effect=fake_translate)
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -137,7 +133,7 @@ async def test_title_only_entry_is_cached_once_its_title_translates(session):
         return_value=TranslationResult(success=True, translated_text="你好")
     )
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -176,7 +172,7 @@ async def test_translate_off_ignores_cached_translation(session):
     """A channel that turned translation off gets the original, even when
     another subscription already cached a translation on the entry."""
     entry = await _entry_with_cached_zh(session)
-    d = _dispatcher()
+    d = Dispatcher()
 
     msg = await d._create_message(
         entry, _sub(entry.feed_id, translate=False, language="zh-CN"), session
@@ -189,7 +185,7 @@ async def test_translate_off_ignores_cached_translation(session):
 
 async def test_translate_on_reuses_matching_cache_without_api_call(session):
     entry = await _entry_with_cached_zh(session)
-    d = _dispatcher()
+    d = Dispatcher()
     fake_service = MagicMock()
     fake_service.translate = AsyncMock()
 
@@ -209,7 +205,7 @@ async def test_translate_on_ignores_cache_for_other_language(session):
     """Cache holds zh-CN; a ja-targeting subscription must retranslate, not
     inherit the zh-CN text."""
     entry = await _entry_with_cached_zh(session)
-    d = _dispatcher()
+    d = Dispatcher()
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(
         return_value=TranslationResult(success=True, translated_text="こんにちは")
@@ -252,7 +248,7 @@ async def test_script_shortcut_skips_provider_entirely(session):
     fake_service = MagicMock()
     fake_service.translate = AsyncMock()
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -273,7 +269,7 @@ async def test_script_shortcut_respects_variant_boundary(session):
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(side_effect=fake_translate)
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -295,7 +291,7 @@ async def test_provider_detected_same_language_skips_summary_and_caches(session)
         return_value=TranslationResult(success=True, translated_text="Hello.", source_language="EN")
     )
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,
@@ -325,7 +321,7 @@ async def test_provider_detection_never_shortcuts_zh(session):
     fake_service = MagicMock()
     fake_service.translate = AsyncMock(side_effect=fake_translate)
 
-    d = _dispatcher()
+    d = Dispatcher()
     with patch(
         "newsflow.services.dispatcher.get_translation_service",
         return_value=fake_service,

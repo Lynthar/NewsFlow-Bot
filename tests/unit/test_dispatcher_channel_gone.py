@@ -175,10 +175,6 @@ async def test_disable_for_channel_missing_row_is_safe_noop(session):
 # ===== Dispatcher-layer tests =====
 
 
-def _dispatcher() -> Dispatcher:
-    return Dispatcher()
-
-
 async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
     feed = Feed(
         url=f"https://{channel_id}.test/rss",
@@ -211,7 +207,7 @@ async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
 
 
 async def test_dispatch_catches_channel_gone_and_deactivates(session):
-    d = _dispatcher()
+    d = Dispatcher()
 
     sub = await _seed_sub_with_entry(session, channel_id="DEAD")
 
@@ -235,7 +231,7 @@ async def test_dispatch_catches_channel_gone_and_deactivates(session):
 
 
 async def test_dispatch_channel_gone_also_disables_digest(session):
-    d = _dispatcher()
+    d = Dispatcher()
 
     sub = await _seed_sub_with_entry(session, channel_id="DEAD")
     session.add(
@@ -272,7 +268,7 @@ async def test_dispatch_channel_gone_second_call_is_idempotent(session):
     """Simulate the dispatch cycle hitting TWO subs on the same dead
     channel: the second call should deactivate zero rows (all already
     flipped) and not explode."""
-    d = _dispatcher()
+    d = Dispatcher()
 
     feed_a = Feed(url="https://a/rss", is_active=True, error_count=0)
     feed_b = Feed(url="https://b/rss", is_active=True, error_count=0)
@@ -334,7 +330,7 @@ async def test_dead_channels_set_skips_remaining_subs(session):
     populated so the caller can skip remaining subs without burning
     more adapter calls. Verifies the second call short-circuits
     BEFORE adapter.send_message is invoked."""
-    d = _dispatcher()
+    d = Dispatcher()
 
     feed_a = Feed(url="https://a/rss", is_active=True, error_count=0)
     feed_b = Feed(url="https://b/rss", is_active=True, error_count=0)
@@ -402,7 +398,7 @@ async def test_dispatch_to_subscription_without_dead_channels_arg_still_works(
     """Backward-compat: callers that don't pass dead_channels (preview
     path, existing tests) keep the original behavior — handler runs to
     completion, no kwarg required."""
-    d = _dispatcher()
+    d = Dispatcher()
 
     sub = await _seed_sub_with_entry(session, channel_id="DEAD")
 
@@ -424,7 +420,7 @@ async def test_dispatch_to_subscription_without_dead_channels_arg_still_works(
 async def test_dispatch_channel_gone_other_channel_unaffected(session):
     """A dead channel's cleanup must not disable a healthy channel's
     subs or digest."""
-    d = _dispatcher()
+    d = Dispatcher()
 
     dead_sub = await _seed_sub_with_entry(session, channel_id="DEAD")
     alive_sub = await _seed_sub_with_entry(session, channel_id="ALIVE")

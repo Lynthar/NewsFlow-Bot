@@ -151,17 +151,9 @@ async def _discord_sub(db, **fields):
     )
 
 
-def _interaction():
-    interaction = MagicMock()
-    interaction.channel_id = int(CHANNEL)
-    interaction.response.defer = AsyncMock()
-    interaction.followup.send = AsyncMock()
-    return interaction
-
-
 async def _run_discord(*, url: str, template=None, reset=False):
     cog = FeedCommands(MagicMock())
-    interaction = _interaction()
+    interaction = seed.discord_interaction(CHANNEL)
     await FeedCommands.feed_template.callback(
         cog, interaction, url=url, template=template, reset=reset
     )

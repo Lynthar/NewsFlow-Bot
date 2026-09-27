@@ -14,13 +14,7 @@ from sqlalchemy import select
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
-from newsflow.services.dispatcher import Dispatcher
-
-
-def _dispatcher_with_adapter(platform: str, adapter) -> Dispatcher:
-    d = Dispatcher()
-    d.register_adapter(platform, adapter)
-    return d
+from tests import seed
 
 
 async def _seed_recent_entry(session, feed: Feed, guid: str, title: str) -> FeedEntry:
@@ -61,7 +55,7 @@ async def test_silent_subscription_marks_sent_without_delivery(session):
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
     sub_repo = SubscriptionRepository(session)
 
     sent_count = await d._dispatch_to_subscription(session, sub, sub_repo)
@@ -107,7 +101,7 @@ async def test_non_silent_subscription_delivers_normally(session):
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
     sub_repo = SubscriptionRepository(session)
 
     sent_count = await d._dispatch_to_subscription(session, sub, sub_repo)
@@ -142,7 +136,7 @@ async def test_bypass_silent_delivers_one_article(session):
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
     sub_repo = SubscriptionRepository(session)
 
     sent_count = await d._dispatch_to_subscription(session, sub, sub_repo, bypass_silent=True)
@@ -181,7 +175,7 @@ async def test_silent_respects_keyword_filter(session):
     adapter.send_text = AsyncMock(return_value=True)
     adapter.is_connected = MagicMock(return_value=True)
 
-    d = _dispatcher_with_adapter("discord", adapter)
+    d = seed.dispatcher_with_adapter("discord", adapter)
     sub_repo = SubscriptionRepository(session)
 
     await d._dispatch_to_subscription(session, sub, sub_repo)

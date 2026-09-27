@@ -17,10 +17,6 @@ from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.services.dispatcher import Dispatcher
 
 
-def _make_dispatcher() -> Dispatcher:
-    return Dispatcher()
-
-
 def _mock_adapter(
     *,
     pin_result: tuple[bool, str | None] = (True, "msg-new"),
@@ -43,7 +39,7 @@ def _mock_adapter(
 
 
 async def test_single_chunk_pin_succeeds_no_prior():
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, "msg-1"))
 
     sent, pin_id = await d.deliver_digest(
@@ -58,7 +54,7 @@ async def test_single_chunk_pin_succeeds_no_prior():
 
 
 async def test_single_chunk_pin_succeeds_with_prior_triggers_unpin():
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, "msg-new"))
 
     sent, pin_id = await d.deliver_digest(
@@ -74,7 +70,7 @@ async def test_pin_fails_prior_is_preserved():
     """Send succeeded but pin failed (common: missing Manage Messages
     perm). We must NOT unpin the prior — it stays as the channel's
     last known digest pin until the next successful pin replaces it."""
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, None))
 
     sent, pin_id = await d.deliver_digest(
@@ -87,7 +83,7 @@ async def test_pin_fails_prior_is_preserved():
 
 
 async def test_send_fails_returns_zero():
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(False, None))
 
     sent, pin_id = await d.deliver_digest(
@@ -104,7 +100,7 @@ async def test_send_fails_returns_zero():
 
 
 async def test_multi_chunk_only_first_pinned():
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, "msg-first"))
 
     # Force chunking: text much longer than chunk_size, with clear
@@ -124,7 +120,7 @@ async def test_multi_chunk_only_first_pinned():
 async def test_multi_chunk_partial_tail_failure_still_counts_pin():
     """A tail-chunk send failure doesn't invalidate the successful pin
     on the first chunk. chunks_sent reflects the true count."""
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, "msg-first"))
     # One tail chunk fails, the rest succeed. Use a function-style
     # side_effect to avoid StopIteration when chunk count grows.
@@ -152,7 +148,7 @@ async def test_multi_chunk_partial_tail_failure_still_counts_pin():
 
 
 async def test_empty_text_is_noop():
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter()
 
     sent, pin_id = await d.deliver_digest(adapter, "chan", "", chunk_size=1900, prior_pin_id=None)
@@ -193,7 +189,7 @@ class _PinlessAdapter(BaseAdapter):
 
 
 async def test_default_pin_fallback_delivers_without_pin():
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _PinlessAdapter()
 
     sent, pin_id = await d.deliver_digest(
@@ -210,7 +206,7 @@ async def test_unpin_noops_on_same_id():
     """Belt-and-suspenders: if new pin id somehow equals prior pin id
     (shouldn't happen on Discord/Telegram, but defensive), we skip the
     unpin to avoid unpinning the just-pinned digest."""
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, "same-id"))
 
     sent, pin_id = await d.deliver_digest(
@@ -225,7 +221,7 @@ async def test_unpin_noops_on_same_id():
 async def test_unpin_exception_is_swallowed():
     """Prior-unpin is pure best-effort; an exception must not break
     the caller's commit/delivery path."""
-    d = _make_dispatcher()
+    d = Dispatcher()
     adapter = _mock_adapter(pin_result=(True, "msg-new"))
     adapter.unpin_message = AsyncMock(side_effect=RuntimeError("network"))
 

@@ -20,13 +20,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import select
 
-from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError, Message
+from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.dispatcher import Dispatcher
+from tests import seed
 
 # ===== Repository-layer tests =====
 
@@ -180,10 +181,6 @@ async def test_migrate_channel_missing_rows_is_noop(session):
 # ===== Dispatcher-layer tests =====
 
 
-def _dispatcher() -> Dispatcher:
-    return Dispatcher()
-
-
 async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
     feed = Feed(url="https://mig.test/rss", is_active=True, error_count=0)
     session.add(feed)
@@ -212,7 +209,7 @@ async def _seed_sub_with_entry(session, *, channel_id: str) -> Subscription:
 
 
 async def test_dispatch_catches_migration_and_repoints(session):
-    d = _dispatcher()
+    d = Dispatcher()
     sub = await _seed_sub_with_entry(session, channel_id="-100OLD")
     session.add(_digest("-100OLD"))
     await session.commit()
@@ -262,10 +259,6 @@ def _tg_adapter():
     return adapter
 
 
-def _msg() -> Message:
-    return Message(title="T", summary="S", link="https://x.test/a", source="x.test")
-
-
 async def test_telegram_send_message_raises_migrated(session):
     from telegram.error import ChatMigrated
 
@@ -273,7 +266,7 @@ async def test_telegram_send_message_raises_migrated(session):
     adapter.app.bot.send_message = AsyncMock(side_effect=ChatMigrated(-100999))
 
     with pytest.raises(ChannelMigratedError) as exc_info:
-        await adapter.send_message("-100123", _msg())
+        await adapter.send_message("-100123", seed.message())
 
     assert exc_info.value.channel_id == "-100123"
     assert exc_info.value.new_channel_id == "-100999"

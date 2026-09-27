@@ -3,10 +3,8 @@ Core modules for NewsFlow Bot.
 """
 
 from newsflow.core.content_processor import (
-    ProcessedContent,
     clean_html,
     get_source_name,
-    process_content,
     truncate_text,
 )
 from newsflow.core.feed_fetcher import (
@@ -23,9 +21,7 @@ __all__ = [
     "get_fetcher",
     "close_fetcher",
     # Content processor
-    "ProcessedContent",
     "clean_html",
     "get_source_name",
-    "process_content",
     "truncate_text",
 ]

@@ -31,19 +31,6 @@ def test_mark_error_deactivates_at_ten():
     assert feed.error_count == 10
 
 
-def test_mark_success_clears_backoff():
-    feed = Feed(url="https://example.com/feed", error_count=0)
-    feed.mark_error("boom", base_delay_seconds=60)
-    assert feed.next_retry_at is not None
-    assert feed.error_count == 1
-
-    feed.mark_success(etag="new-etag")
-
-    assert feed.next_retry_at is None
-    assert feed.error_count == 0
-    assert feed.last_error is None
-
-
 async def test_get_feeds_due_for_fetch_excludes_backoff(session):
     repo = FeedRepository(session)
     ok = await repo.create_feed(url="https://example.com/ok")
@@ -85,7 +72,7 @@ async def test_update_feed_metadata_clears_next_retry(session):
 
 def test_reactivate_revives_auto_disabled_feed():
     """reactivate() is the only revival path for a feed mark_error disabled —
-    fetch skips inactive feeds, so mark_success can never run for them."""
+    fetch skips inactive feeds, so the success path never reaches them."""
     feed = Feed(
         url="https://example.com/feed",
         is_active=False,

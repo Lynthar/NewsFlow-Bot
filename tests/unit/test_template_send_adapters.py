@@ -9,38 +9,16 @@ staying untouched when no template is set.
 
 from unittest.mock import AsyncMock, MagicMock
 
-import discord
-
-from newsflow.adapters.base import Message
-from newsflow.adapters.discord.bot import DiscordAdapter
-from newsflow.adapters.telegram.bot import TelegramAdapter
-
-
-def _msg(**overrides) -> Message:
-    fields: dict = dict(
-        title="T",
-        summary="S",
-        link="https://x.test/a",
-        source="x.test",
-        template_text=None,
-    )
-    fields.update(overrides)
-    return Message(**fields)
-
+from tests import seed
 
 # ---------------------------------------------------------------- telegram
 
 
-def _tg_adapter() -> TelegramAdapter:
-    adapter = TelegramAdapter(token="test-token")
-    adapter.app = MagicMock()
-    adapter.app.bot.send_message = AsyncMock()
-    return adapter
-
-
 async def test_telegram_template_sends_converted_html():
-    adapter = _tg_adapter()
-    ok = await adapter.send_message("123", _msg(template_text="**Hi** [x](https://e.io/?a=1&b=2)"))
+    adapter = seed.tg_adapter()
+    ok = await adapter.send_message(
+        "123", seed.message(template_text="**Hi** [x](https://e.io/?a=1&b=2)")
+    )
 
     assert ok is True
     adapter.app.bot.send_message.assert_awaited_once()
@@ -53,8 +31,8 @@ async def test_telegram_template_sends_converted_html():
 
 
 async def test_telegram_no_template_uses_default_layout():
-    adapter = _tg_adapter()
-    ok = await adapter.send_message("123", _msg())
+    adapter = seed.tg_adapter()
+    ok = await adapter.send_message("123", seed.message())
 
     assert ok is True
     text = adapter.app.bot.send_message.await_args.kwargs["text"]
@@ -64,12 +42,12 @@ async def test_telegram_no_template_uses_default_layout():
 async def test_telegram_entity_rejection_falls_back_to_plain():
     from telegram.error import BadRequest
 
-    adapter = _tg_adapter()
+    adapter = seed.tg_adapter()
     adapter.app.bot.send_message = AsyncMock(
         side_effect=[BadRequest("Can't parse entities: unsupported start tag"), MagicMock()]
     )
 
-    ok = await adapter.send_message("123", _msg(template_text="**broken"))
+    ok = await adapter.send_message("123", seed.message(template_text="**broken"))
 
     assert ok is True
     assert adapter.app.bot.send_message.await_count == 2
@@ -81,10 +59,10 @@ async def test_telegram_entity_rejection_falls_back_to_plain():
 async def test_telegram_non_entity_bad_request_is_not_swallowed():
     from telegram.error import BadRequest
 
-    adapter = _tg_adapter()
+    adapter = seed.tg_adapter()
     adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Message is too long"))
 
-    ok = await adapter.send_message("123", _msg(template_text="{x}"))
+    ok = await adapter.send_message("123", seed.message(template_text="{x}"))
 
     # Falls through to the generic failure path: one attempt, retried
     # next cycle — no bogus plain-text resend of an unrelated error.
@@ -93,10 +71,10 @@ async def test_telegram_non_entity_bad_request_is_not_swallowed():
 
 
 async def test_telegram_oversized_html_sends_plain_text():
-    adapter = _tg_adapter()
+    adapter = seed.tg_adapter()
     # 3400 ampersands: fits as Markdown, but entity-escapes to 17k chars.
     template = "&" * 3400
-    ok = await adapter.send_message("123", _msg(template_text=template))
+    ok = await adapter.send_message("123", seed.message(template_text=template))
 
     assert ok is True
     kwargs = adapter.app.bot.send_message.await_args.kwargs
@@ -105,8 +83,8 @@ async def test_telegram_oversized_html_sends_plain_text():
 
 
 async def test_telegram_overlong_markdown_is_truncated():
-    adapter = _tg_adapter()
-    ok = await adapter.send_message("123", _msg(template_text="a" * 4000))
+    adapter = seed.tg_adapter()
+    ok = await adapter.send_message("123", seed.message(template_text="a" * 4000))
 
     assert ok is True
     text = adapter.app.bot.send_message.await_args.kwargs["text"]
@@ -117,18 +95,9 @@ async def test_telegram_overlong_markdown_is_truncated():
 # ----------------------------------------------------------------- discord
 
 
-def _discord_adapter() -> tuple[DiscordAdapter, MagicMock]:
-    adapter = DiscordAdapter.__new__(DiscordAdapter)
-    channel = MagicMock(spec=discord.TextChannel)
-    channel.send = AsyncMock()
-    adapter.bot = MagicMock()
-    adapter.bot.get_channel = MagicMock(return_value=channel)
-    return adapter, channel
-
-
 async def test_discord_template_sends_plain_content():
-    adapter, channel = _discord_adapter()
-    ok = await adapter.send_message("42", _msg(template_text="📌 **Big** news"))
+    adapter, channel = seed.discord_adapter()
+    ok = await adapter.send_message("42", seed.message(template_text="📌 **Big** news"))
 
     assert ok is True
     call = channel.send.await_args
@@ -140,9 +109,9 @@ async def test_discord_template_sends_plain_content():
 
 
 async def test_discord_template_with_image_attaches_image_only_embed():
-    adapter, channel = _discord_adapter()
+    adapter, channel = seed.discord_adapter()
     ok = await adapter.send_message(
-        "42", _msg(template_text="text", image_url="https://x.test/i.png")
+        "42", seed.message(template_text="text", image_url="https://x.test/i.png")
     )
 
     assert ok is True
@@ -154,8 +123,8 @@ async def test_discord_template_with_image_attaches_image_only_embed():
 
 
 async def test_discord_template_content_is_capped_at_2000():
-    adapter, channel = _discord_adapter()
-    ok = await adapter.send_message("42", _msg(template_text="a" * 2500))
+    adapter, channel = seed.discord_adapter()
+    ok = await adapter.send_message("42", seed.message(template_text="a" * 2500))
 
     assert ok is True
     content = channel.send.await_args.args[0]
@@ -164,8 +133,8 @@ async def test_discord_template_content_is_capped_at_2000():
 
 
 async def test_discord_no_template_keeps_embed_layout():
-    adapter, channel = _discord_adapter()
-    ok = await adapter.send_message("42", _msg())
+    adapter, channel = seed.discord_adapter()
+    ok = await adapter.send_message("42", seed.message())
 
     assert ok is True
     call = channel.send.await_args

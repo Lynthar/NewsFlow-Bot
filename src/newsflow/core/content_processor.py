@@ -9,7 +9,6 @@ Handles:
 """
 
 import re
-from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -19,9 +18,7 @@ from bs4 import BeautifulSoup
 _CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힯]")
 
 # Maximum lengths for Discord/Telegram
-MAX_TITLE_LENGTH = 256
 MAX_SUMMARY_LENGTH = 1024
-MAX_EMBED_DESCRIPTION = 4096
 
 # Domain to source name mapping
 DOMAIN_TO_SOURCE = {
@@ -55,17 +52,6 @@ DOMAIN_TO_SOURCE = {
     "theverge.com": {"en": "The Verge", "zh": "The Verge"},
     "hackernews.com": {"en": "Hacker News", "zh": "Hacker News"},
 }
-
-
-@dataclass
-class ProcessedContent:
-    """Processed content ready for display."""
-
-    title: str
-    summary: str
-    plain_text: str
-    images: list[str]
-    source_name: str
 
 
 def clean_html(html: str) -> tuple[str, list[str]]:
@@ -217,89 +203,3 @@ def get_source_name(url: str, language: str = "en") -> str:
 
     except Exception:
         return "Unknown"
-
-
-def process_content(
-    title: str,
-    summary: str | None,
-    content: str | None,
-    link: str,
-    language: str = "en",
-) -> ProcessedContent:
-    """
-    Process raw content into display-ready format.
-
-    Args:
-        title: Article title
-        summary: Article summary (may contain HTML)
-        content: Full content (may contain HTML)
-        link: Article URL
-        language: Target language for source name
-
-    Returns:
-        ProcessedContent with cleaned and truncated text
-    """
-    # Clean title
-    clean_title = clean_html(title)[0] if "<" in title else title
-    clean_title = truncate_text(clean_title, MAX_TITLE_LENGTH)
-
-    # Process summary/content
-    raw_text = content or summary or ""
-    plain_text, images = clean_html(raw_text)
-
-    # Truncate for display
-    display_summary = truncate_text(plain_text, MAX_SUMMARY_LENGTH)
-
-    # Get source name
-    source_name = get_source_name(link, language)
-
-    return ProcessedContent(
-        title=clean_title,
-        summary=display_summary,
-        plain_text=plain_text,
-        images=images,
-        source_name=source_name,
-    )
-
-
-def extract_first_image(html: str) -> str | None:
-    """
-    Extract first image URL from HTML content.
-
-    Args:
-        html: HTML content
-
-    Returns:
-        First image URL or None
-    """
-    _, images = clean_html(html)
-    return images[0] if images else None
-
-
-def is_valid_image_url(url: str) -> bool:
-    """
-    Check if URL looks like a valid image URL.
-
-    Args:
-        url: URL to check
-
-    Returns:
-        True if appears to be valid image URL
-    """
-    if not url or not url.startswith(("http://", "https://")):
-        return False
-
-    # Check extension
-    image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg")
-    parsed = urlparse(url)
-    path_lower = parsed.path.lower()
-
-    if any(path_lower.endswith(ext) for ext in image_extensions):
-        return True
-
-    # Check for common image hosting patterns
-    image_hosts = ("imgur.com", "i.imgur.com", "pbs.twimg.com", "media.")
-    if any(host in parsed.netloc.lower() for host in image_hosts):
-        return True
-
-    return False

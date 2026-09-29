@@ -11,6 +11,8 @@ scrape configs pass the key via ``authorization: {credentials: <API_KEY>}``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import Select, func, select
@@ -32,7 +34,8 @@ def _metric(name: str, kind: str, help_text: str, value: int) -> str:
     return f"# HELP {name} {help_text}\n# TYPE {name} {kind}\n{name} {value}\n"
 
 
-async def _count(db: AsyncSession, stmt: Select[tuple[int]]) -> int:
+# SQLAlchemy 2.0 types select(func.count()) as Select[tuple[int]], 2.1 as Select[int].
+async def _count(db: AsyncSession, stmt: Select[Any]) -> int:
     return int(await db.scalar(stmt) or 0)
 
 

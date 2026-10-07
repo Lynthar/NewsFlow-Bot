@@ -7,9 +7,13 @@ reported instead of raised, and one broken file doesn't block the other.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services.config_reload import reload_declarative_configs
@@ -88,3 +92,27 @@ async def test_admin_reload_route_returns_detail_on_success(db, yaml_dir):
     response = await reload_configs(_=None)
     assert response.ok is True
     assert "synced" in response.detail
+
+
+async def test_reload_of_a_webhooks_file_created_after_start_says_to_restart(session, yaml_dir):
+    # The webhook adapter starts only when the file exists at boot: the destinations are
+    # stored, but nothing delivers to them until a restart.
+    (yaml_dir / "webhooks.yaml").write_text(VALID, encoding="utf-8")
+
+    result = await reload_declarative_configs()
+
+    assert await _destination_names(session) == ["a"]
+    assert "restart" in result.detail
+
+
+async def test_reload_reports_a_database_failure_instead_of_raising(db, yaml_dir, monkeypatch):
+    # SIGHUP runs the reload as a task nobody awaits: an exception escaping it is lost.
+    (yaml_dir / "webhooks.yaml").write_text(VALID, encoding="utf-8")
+    locked = OperationalError("COMMIT", {}, Exception("database is locked"))
+    monkeypatch.setattr(AsyncSession, "commit", AsyncMock(side_effect=locked))
+
+    result = await reload_declarative_configs()
+
+    assert result.ok is False
+    assert "webhooks.yaml" in result.detail and "OperationalError" in result.detail
+    assert "database is locked" not in result.detail  # SQL errors can echo parameters

@@ -37,6 +37,7 @@ from newsflow.models.feed import FeedEntry
 from newsflow.models.subscription import Subscription
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services.channel_repair import migrate_channel, retire_channel
 from newsflow.services.feed_service import FeedService
 from newsflow.services.translation.factory import get_translation_service
 
@@ -467,23 +468,13 @@ class Dispatcher:
                 continue
 
             except ChannelMigratedError as e:
-                # Telegram supergroup upgrade: same channel, new chat id, old id rejects every
-                # send. Repoint all subs + digest config; unsent entries deliver there next
-                # cycle. The outer dispatch_once commit persists it.
-                from newsflow.repositories.digest_repository import (
-                    ChannelDigestRepository,
-                )
-
-                # Capture before migrate_channel: it rewrites the identity-
-                # mapped `subscription` object in place, so reading the
-                # attribute afterwards would yield the NEW id.
+                # Telegram supergroup upgrade: the old chat id rejects every send. Unsent entries
+                # go to the new id next cycle, once the outer commit persists the repointing. Read
+                # the old id first: migrate_channel rewrites the identity-mapped `subscription`.
                 platform = subscription.platform
                 old_channel_id = subscription.platform_channel_id
 
-                moved = await sub_repo.migrate_channel(platform, old_channel_id, e.new_channel_id)
-                digests_moved = await ChannelDigestRepository(session).migrate_channel(
-                    platform, old_channel_id, e.new_channel_id
-                )
+                moved = await migrate_channel(session, platform, old_channel_id, e.new_channel_id)
                 if dead_channels is not None:
                     # Remaining cached subs in this cycle still carry the
                     # old id — skip them; next cycle reads the migrated
@@ -491,25 +482,15 @@ class Dispatcher:
                     dead_channels.add((platform, old_channel_id))
                 logger.warning(
                     f"Channel {platform}/{old_channel_id} migrated to "
-                    f"{e.new_channel_id}; repointed {moved} subscription(s) "
-                    f"and {digests_moved} digest config(s)"
+                    f"{e.new_channel_id}; repointed {moved}"
                 )
                 return sent_count
 
             except ChannelGoneError as e:
-                # Channel permanently unreachable: deactivate every active subscription for it
-                # (a channel usually has many feeds) and disable any digest config.
-                # Idempotent — the WHERE is_active=True clause no-ops on repeat.
-                from newsflow.repositories.digest_repository import (
-                    ChannelDigestRepository,
-                )
-
-                subs_flipped = await sub_repo.deactivate_channel(
-                    subscription.platform, subscription.platform_channel_id
-                )
-                digest_repo = ChannelDigestRepository(session)
-                digests_flipped = await digest_repo.disable_for_channel(
-                    subscription.platform, subscription.platform_channel_id
+                # Channel permanently unreachable: every subscription for it goes (a channel
+                # usually has many feeds), and its digest with them.
+                subs_flipped, digests_flipped = await retire_channel(
+                    session, subscription.platform, subscription.platform_channel_id
                 )
                 # Tell dispatch_once to skip remaining cached subs on this channel, which is
                 # what makes the warning below fire exactly once per channel per cycle.
@@ -1126,49 +1107,29 @@ class Dispatcher:
             except ChannelMigratedError as e:
                 # Same channel, new chat id (supergroup upgrade). Repoint in a fresh session;
                 # the digest was not marked delivered, so the next tick redelivers.
-                from newsflow.repositories.subscription_repository import (
-                    SubscriptionRepository,
-                )
-
-                # Capture before migrating — migrate_channel may rewrite
-                # the identity-mapped `config` object in place.
                 platform = config.platform
                 old_channel_id = config.platform_channel_id
 
                 try:
                     async with session_factory() as mig_session:
-                        moved = await SubscriptionRepository(mig_session).migrate_channel(
-                            platform, old_channel_id, e.new_channel_id
-                        )
-                        digests_moved = await ChannelDigestRepository(mig_session).migrate_channel(
-                            platform, old_channel_id, e.new_channel_id
+                        moved = await migrate_channel(
+                            mig_session, platform, old_channel_id, e.new_channel_id
                         )
                         await mig_session.commit()
                     logger.warning(
                         f"Digest channel {platform}/{old_channel_id} "
-                        f"migrated to {e.new_channel_id}; repointed {moved} "
-                        f"subscription(s) and {digests_moved} digest "
-                        f"config(s)"
+                        f"migrated to {e.new_channel_id}; repointed {moved}"
                     )
                 except Exception:
                     logger.exception(f"Failed to migrate channel {platform}/{old_channel_id}")
             except ChannelGoneError as e:
-                # Digest target gone: disable the digest config AND any remaining active subs
-                # on this channel — this tick may run before the next feed dispatch visits
-                # them. Fresh session per channel keeps commits independent.
-                from newsflow.repositories.subscription_repository import (
-                    SubscriptionRepository,
-                )
-
+                # Digest target gone: retire the whole channel — this tick may run before the
+                # next feed dispatch visits its subscriptions. Fresh session per channel keeps
+                # commits independent.
                 try:
                     async with session_factory() as cleanup_session:
-                        sub_repo = SubscriptionRepository(cleanup_session)
-                        subs_flipped = await sub_repo.deactivate_channel(
-                            config.platform, config.platform_channel_id
-                        )
-                        cleanup_digest_repo = ChannelDigestRepository(cleanup_session)
-                        digests_flipped = await cleanup_digest_repo.disable_for_channel(
-                            config.platform, config.platform_channel_id
+                        subs_flipped, digests_flipped = await retire_channel(
+                            cleanup_session, config.platform, config.platform_channel_id
                         )
                         await cleanup_session.commit()
                     logger.warning(
@@ -1280,6 +1241,9 @@ class Dispatcher:
         await self.wait_for_adapters(timeout=60.0)
 
         logger.info(f"Starting dispatch loop with {interval} minute interval")
+        # Touched before the first round too: a first round that hangs then goes stale like
+        # any other, and HEALTHCHECK can require this file to exist.
+        self._write_heartbeat("dispatch")
 
         while True:
             try:

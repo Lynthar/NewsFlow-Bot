@@ -1,6 +1,6 @@
 """Tests for FeedRepository.create_entries_bulk — dedup + bulk insert."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -141,6 +141,22 @@ async def test_create_entries_bulk_clamps_far_future_dates_and_keeps_near_ones(s
     by_guid = {e.guid: e.published_at for e in created}
     assert by_guid["far"] is not None and by_guid["far"] <= datetime.now(UTC)
     assert by_guid["near"] == near
+
+
+async def test_create_entries_bulk_stores_an_offset_date_as_the_same_instant(session):
+    """SQLite keeps the wall-clock time and drops the offset, so a +08:00 date read
+    back as UTC would land eight hours late."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    published = datetime(2026, 3, 1, 12, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    await repo.create_entries_bulk(
+        feed.id, [{"guid": "g", "title": "T", "link": "https://x/g", "published_at": published}]
+    )
+    session.expire_all()
+
+    stored = (await session.execute(select(FeedEntry.published_at))).scalar_one()
+    assert stored.replace(tzinfo=stored.tzinfo or UTC) == published
 
 
 async def test_update_feed_metadata_stores_both_validators(session):

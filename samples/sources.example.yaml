@@ -22,7 +22,9 @@ sources:
     # fetch_interval_minutes: 240
     config:
       items: "$.data[*]"     # JSONPath to the array of items   (required)
-      guid: id               # field path per item; falls back to a content hash
+      guid: id               # field path to a stable per-item id. Without it each item
+                             # is keyed by a hash of all its fields, and one that changes
+                             # (a view count, an updated_at) is delivered again
       title: title
       link: url
       summary: summary

@@ -2392,13 +2392,16 @@ class TelegramAdapter(BaseAdapter):
         self.app: Application[Any, Any, Any, Any, Any, Any] | None = None
 
     def is_connected(self) -> bool:
-        """Application running + updater polling. PTB auto-reconnects on
-        transient errors; this flag turns off only when the updater is
-        actually stopped or never started."""
+        """Polling. PTB retries transient errors itself, but a revoked token ends its
+        polling task while `updater.running` stays True, so the task is checked too."""
         if self.app is None:
             return False
         updater = self.app.updater
-        return bool(updater is not None and updater.running)
+        if updater is None or not updater.running:
+            return False
+        # PTB keeps the task private; test_platform_monitor fails if the name changes.
+        polling: asyncio.Task[Any] | None = getattr(updater, "_Updater__polling_task", None)
+        return polling is None or not polling.done()
 
     async def start(self) -> None:
         """Start the Telegram bot."""

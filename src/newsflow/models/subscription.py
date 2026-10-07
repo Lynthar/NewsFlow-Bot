@@ -3,7 +3,7 @@ Subscription model for user feed subscriptions.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -12,6 +12,10 @@ from newsflow.models.base import Base
 
 if TYPE_CHECKING:
     from newsflow.models.feed import Feed
+
+# Platforms a subscription can deliver to: each has an adapter. Any other value is
+# stored but never sent.
+SubscriberPlatform = Literal["discord", "telegram", "webhook"]
 
 
 class Subscription(Base):
@@ -25,7 +29,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     # Platform identification
-    platform: Mapped[str] = mapped_column(String(20), nullable=False)  # discord, telegram
+    platform: Mapped[str] = mapped_column(String(20), nullable=False)  # a SubscriberPlatform
     platform_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     platform_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
     platform_guild_id: Mapped[str | None] = mapped_column(String(64))  # Discord guild

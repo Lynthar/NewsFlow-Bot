@@ -5,8 +5,8 @@ via JSONPath. Optional dependency: ``jsonpath-ng`` (extra ``source-json``).
 
     items:     JSONPath to the array of items, e.g. ``"$.data[*]"``  (required)
     guid:      field path within each item used as the dedupe key — falls back
-               to a content hash when absent, so distinct items never collapse
-               to one guid (which dedupe would treat as already-sent)
+               to a hash of the whole item when absent, so distinct items never
+               collapse to one guid; any field that changes then re-sends the item
     title, link, summary, content, published, image, author:
                optional field paths within each item
     headers:   mapping of extra request headers. Values may embed

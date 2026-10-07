@@ -62,7 +62,7 @@ def _check(errors: list[str], warnings: list[str], infos: list[str]) -> None:
     warnings.extend(settings.config_warnings())
 
     _check_webhooks_yaml(settings, errors, infos)
-    _check_sources_yaml(settings, errors, infos)
+    _check_sources_yaml(settings, errors, warnings, infos)
 
 
 def _check_webhooks_yaml(settings: Settings, errors: list[str], infos: list[str]) -> None:
@@ -83,10 +83,13 @@ def _check_webhooks_yaml(settings: Settings, errors: list[str], infos: list[str]
     )
 
 
-def _check_sources_yaml(settings: Settings, errors: list[str], infos: list[str]) -> None:
+def _check_sources_yaml(
+    settings: Settings, errors: list[str], warnings: list[str], infos: list[str]
+) -> None:
     from newsflow.services.source_sync import (
         SourceConfigError,
         parse_sources_yaml,
+        source_warnings,
         undeclared_webhook_destinations,
     )
 
@@ -102,6 +105,7 @@ def _check_sources_yaml(settings: Settings, errors: list[str], infos: list[str])
     infos.append(f"sources.yaml: {len(sources)} source(s)")
     for problem in undeclared_webhook_destinations(sources, settings.webhooks_config_path):
         errors.append(f"sources.yaml: {problem}")
+    warnings.extend(f"sources.yaml: {w}" for w in source_warnings(sources))
 
 
 def main() -> int:

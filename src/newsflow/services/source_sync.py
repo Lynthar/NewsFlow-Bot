@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from newsflow.core.source_fetcher import declarable_source_types
 from newsflow.models.base import get_session_factory
 from newsflow.models.feed import Feed
-from newsflow.models.subscription import Subscription
+from newsflow.models.subscription import SubscriberPlatform, Subscription
 from newsflow.services._owned_subscriptions import (
     SOURCES_OWNER,
     DeclaredSubscription,
@@ -44,7 +44,7 @@ from newsflow.services.feed_service import FeedService, SourceFeedConflictError
 logger = logging.getLogger(__name__)
 
 _OWNER = SOURCES_OWNER
-_SUB_PLATFORMS = frozenset({"discord", "telegram", "webhook"})
+_SUB_PLATFORMS: frozenset[str] = frozenset(get_args(SubscriberPlatform))
 
 
 class SourceConfigError(ValueError):
@@ -190,6 +190,18 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
 # ─── sync ────────────────────────────────────────────────────────────────────
 
 
+def source_warnings(sources: list[SourceCfg]) -> list[str]:
+    """Declarations that load but likely misbehave. Startup and reload log these;
+    checkconfig reports them. Neither refuses to run over one."""
+    return [
+        f"source {src.name!r}: json_api without `guid` keys each item by a hash of all its "
+        "fields, so an item whose counter or timestamp changes is delivered again; map "
+        "`guid` to a stable id"
+        for src in sources
+        if src.type == "json_api" and not src.config.get("guid")
+    ]
+
+
 def undeclared_webhook_destinations(sources: list[SourceCfg], webhooks_path: Path) -> list[str]:
     """One message per webhook subscriber naming a destination webhooks.yaml does not
     declare: it would sync but never deliver. An unparsable webhooks.yaml is reported as
@@ -232,6 +244,8 @@ async def sync_sources(path: Path, webhooks_path: Path) -> None:
     undeclared = undeclared_webhook_destinations(sources, webhooks_path)
     if undeclared:
         raise SourceConfigError("; ".join(undeclared))
+    for warning in source_warnings(sources):
+        logger.warning(f"source_sync: {warning}")
     logger.info(
         f"source_sync: {len(sources)} source(s), "
         f"{sum(len(s.subscribers) for s in sources)} subscription(s) in {path}"

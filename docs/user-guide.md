@@ -49,7 +49,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 | 命令 | 说明 |
 |---|---|
-| `/feed add <url>` | 订阅；`<url>` 可是 feed 地址、**网站首页**（自动发现）、**JSON Feed** 或简写（见下表后说明）。成功后几秒内自动推一条预览 |
+| `/feed add <url>` | 订阅；`<url>` 可是 feed 地址、**网站首页**（自动发现）、**JSON Feed** 或简写（见下表后说明）。成功后几秒内自动推一条预览。对已暂停的订阅执行等同恢复，回执会写明，暂停期间积下的条目随后补发 |
 | `/feed remove <url>` | 退订 |
 | `/feed pause <url>` | 暂停（不删，可 resume；暂停的订阅仍显示在 `/feed list`，带 ⏸ 标注） |
 | `/feed resume <url>` | 恢复已暂停的订阅；被自动禁用的 feed 也会一并复活重新抓取。`/feed resume all` 恢复本频道全部暂停订阅（bot 被踢出重邀后批量恢复用） |
@@ -164,7 +164,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 | 命令 | 说明 |
 |---|---|
-| `/add <url>` | 订阅 |
+| `/add <url>` | 订阅；对已暂停的订阅执行等同恢复，回执会写明，暂停期间积下的条目随后补发 |
 | `/remove <url>` | 退订 |
 | `/pause <url>` | 暂停（暂停的订阅仍显示在 `/list`，带 ⏸ 标注） |
 | `/resume <url>` | 恢复；被自动禁用的 feed 一并复活。`/resume all` 恢复本频道全部暂停订阅 |
@@ -762,7 +762,8 @@ sources:
     #                               # 间隔未满时跳过——给限速 API 用
     config:
       items: "$.data[*]"     # JSONPath 定位条目数组（必填）
-      guid: id               # 每条的去重键字段；缺失则按内容 hash
+      guid: id               # 每条的去重键字段，要指向稳定的 id。缺省时按整条
+                             # 内容 hash，阅读数、更新时间之类一变就再推一次
       title: title
       link: url
       summary: summary
@@ -901,16 +902,16 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 | `GET` | `/live` | 存活探针（K8s 友好） |
 | `GET` | `/metrics` | **Prometheus 指标**：调度轮次/发送量/错误计数器（`newsflow_send_errors_total` 逐条计发送失败）、`newsflow_entries_undeliverable_total`（平台反复拒收而放弃的条目）、`newsflow_entries_dropped_unsent_total`（排队期间过期被清理的条目）+ feed/订阅/destination/digest 数量 gauge（文本格式，零依赖手写渲染） |
 | `GET` | `/api/feeds` | 列全部 feed |
-| `POST` | `/api/feeds` | 添加 feed；`url` 也收聊天命令里的简写（`gh:owner/repo`、`pypi:包名` 等） |
+| `POST` | `/api/feeds` | 🔒 添加 feed；`url` 也收聊天命令里的简写（`gh:owner/repo`、`pypi:包名` 等） |
 | `GET` | `/api/feeds/{id}` | 单 feed 详情 |
-| `DELETE` | `/api/feeds/{id}` | 删 feed |
-| `POST` | `/api/feeds/{id}/refresh` | 强制刷新 |
-| `POST` | `/api/feeds/test` | 测试 URL，同样收简写 |
+| `DELETE` | `/api/feeds/{id}` | 🔒 删 feed |
+| `POST` | `/api/feeds/{id}/refresh` | 🔒 强制刷新 |
+| `POST` | `/api/feeds/test` | 🔒 测试 URL，同样收简写 |
 | `GET` | `/api/stats` | 总体统计 |
 | `GET` | `/api/stats/feeds` | 每个 feed 的统计 |
 | `GET` | `/api/subscriptions?platform=&channel=` | **列一个频道的全部订阅**（含暂停；返回 id 供下面的操作端点用） |
 | `GET` | `/api/subscriptions/opml?platform=&channel=` | 频道订阅导出为 OPML |
-| `POST` | `/api/subscriptions` | 🔒 订阅：`{platform, channel_id, feed_url}`——缺失的 feed 走与 `/add` 相同的抓取校验路径 |
+| `POST` | `/api/subscriptions` | 🔒 订阅：`{platform, channel_id, feed_url}`，`platform` 只收 `discord` / `telegram` / `webhook`（其余 422）——缺失的 feed 走与 `/add` 相同的抓取校验路径 |
 | `POST` | `/api/subscriptions/{id}/pause` · `/resume` | 🔒 暂停 / 恢复某订阅 |
 | `DELETE` | `/api/subscriptions/{id}` | 🔒 退订（连带过滤器与去重历史，语义同 `/remove`） |
 | `POST` | `/api/ingest/{source}` | 🔑 **入站推送**：条目 POST 进对应 `webhook_inbound` 源（见 §4B），**入库即触发一轮即时分发**——不再等下一个抓取周期 |
@@ -971,6 +972,8 @@ sudo chown -R newsflow: /opt/NewsFlow-Bot/data
 # 注意：.env 里注释必须独占一行。systemd 的 EnvironmentFile 不剥行内
 # 注释（Docker 会剥），`KEY=60  # 说明` 会让值变成 "60  # 说明" 直接
 # 崩在配置校验。仓库自带的 .env.example 已按此要求整理。
+# .env 里有 token，可以 `sudo chmod 600 .env`：systemd 以 root 读它、作为环境变量
+# 交给进程，bot 自己读不到这个文件时跳过它，启动日志告警一次，照常运行。
 
 sudo tee /etc/systemd/system/newsflow.service > /dev/null <<'EOF'
 [Unit]
@@ -1029,15 +1032,29 @@ docker compose -f docker/docker-compose.yml exec postgres pg_dump -U newsflow > 
 
 ### 7.5 健康检查详解
 
-Docker 镜像的 HEALTHCHECK 每 60s 扫描 `/app/data/heartbeat/` 目录 —— **任一文件超过 120 分钟未更新就算 unhealthy**。每个长期运行的任务各自负责刷新自己的文件：
+Docker 镜像的 HEALTHCHECK 每 60s 扫描 `/app/data/heartbeat/` 目录 —— **`dispatch` 文件不存在，或任一文件超过 120 分钟未更新，就算 unhealthy**。每个长期运行的任务各自负责刷新自己的文件：
 
 | 文件 | 来源 | 刷新频率 |
 |---|---|---|
-| `dispatch` | `Dispatcher.dispatch_once` 末尾 | 每轮抓取完 |
-| `cleanup` | `run_cleanup_loop` 每轮末尾 | 每 24h |
-| `digest` | `run_digest_loop` 每轮末尾 | 每 5min |
-| `discord` | `run_platform_monitor` 看到 `bot.is_ready()` | 每 30s |
-| `telegram` | `run_platform_monitor` 看到 updater.running | 每 30s |
+| `dispatch` | `run_dispatch_loop` 开始第一轮之前，之后每轮 `dispatch_once` 末尾 | 每轮抓取完（`FETCH_INTERVAL_MINUTES`） |
+| `cleanup` | `run_cleanup_loop` 的心跳节拍 | 每 5min（清理本身按 `CLEANUP_INTERVAL_HOURS` 跑） |
+| `digest` | `run_digest_loop` 每轮末尾 | 每 `DIGEST_CHECK_INTERVAL_MINUTES`（默认 5min） |
+| `discord` / `telegram` / `webhook` | `run_platform_monitor` 看到该 adapter 的 `is_connected()` 为真 | 每 30s |
+
+平台文件只在真连着时刷新：Discord 从网关断开到重连成功之间不刷新（discord.py 的 `is_ready()` 在重连期间一直为真，所以看的是网关的连接 / 断开事件）；
+Telegram 的轮询因 token 被撤销而停掉后不再刷新（PTB 这时 `updater.running` 仍为真，所以连轮询任务是否还活着一起看）。
+`dispatch` 在第一轮之前先写一次：第一轮就卡死时，它照样在 120 分钟后变旧。
+
+**120 分钟的阈值和抓取间隔绑在一起**：`dispatch` 每轮才刷新一次，`FETCH_INTERVAL_MINUTES` 调到 100 以上
+（再加一轮本身的耗时），它就会周期性超过阈值，容器被判 unhealthy。要用长间隔，在 compose 里把阈值一起放宽：
+
+```yaml
+services:
+  newsflow:
+    healthcheck:
+      # 240 = 阈值分钟数，要大于抓取间隔加一轮耗时；其余参数沿用镜像
+      test: ["CMD-SHELL", "test -f /app/data/heartbeat/dispatch && ! find /app/data/heartbeat -type f -mmin +240 | grep -q ."]
+```
 
 查看各任务 heartbeat 状态：
 
@@ -1085,7 +1102,8 @@ docker compose -f docker/docker-compose.yml logs -f newsflow    # 观察新值�
 
 **零风险，推荐在线调**：
 
-- `FETCH_INTERVAL_MINUTES` / `CLEANUP_INTERVAL_HOURS` / `ENTRY_RETENTION_DAYS`
+- `FETCH_INTERVAL_MINUTES`（调到 100 以上要同时放宽 HEALTHCHECK，见 §7.5）/ `CLEANUP_INTERVAL_HOURS`
+- `ENTRY_RETENTION_DAYS`：必须小于 `SENT_ENTRY_RETENTION_DAYS`，否则启动即报错退出；不大于 7 会告警（周报窗口里最早的文章会先被清掉）
 - `LOG_LEVEL=DEBUG`（临时排错）/ `LOG_FORMAT=json`
 - `TRANSLATION_SYSTEM_PROMPT` / `DIGEST_SYSTEM_PROMPT`（自定义 AI 提示词，见 §3.3）
 - `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` / `DIGEST_MODEL` / `OPENAI_MODEL`
@@ -1095,9 +1113,9 @@ docker compose -f docker/docker-compose.yml logs -f newsflow    # 观察新值�
 
 - 新加 `TELEGRAM_TOKEN`（从单平台变双平台）：`up -d` 后 Telegram 也会启动，第一次要等 slash command 同步
 - 新开 `TRANSLATION_ENABLED=true` + `OPENAI_API_KEY=xxx`：镜像里 `[all]` extras 已含 openai 包，直接 `up -d` 就行
-- `API_ENABLED=false → true`：FastAPI 会启动；写端点需 `API_KEY`（未配则一律 503，fail-closed），读端点开放；CORS 默认不发（`API_CORS_ORIGINS` 白名单开启），公网暴露建议再套 nginx 反代
+- `API_ENABLED=false → true`：FastAPI 会启动；写端点需 `API_KEY`（未配则一律 503，fail-closed），读端点在配 `API_KEY` 之前开放；CORS 默认不发（`API_CORS_ORIGINS` 白名单开启），公网暴露建议再套 nginx 反代
 - `API_PORT`：Docker 下容器内端口固定 8000（compose 钉死，避免映射错位），`.env` 里改它不生效——想换宿主机端口用 `API_PORT=9000 docker compose -f docker/docker-compose.yml up -d`（shell 变量控制端口映射）。裸机运行则 `.env` 的 `API_PORT` 正常生效。compose 默认把端口发布在 `127.0.0.1`（VPS 上 0.0.0.0 就是公网）；要远程访问请上反向代理（走 compose 网络，不需要宿主端口），或自行改 compose 里的绑定地址
-- `config/webhooks.yaml` / `config/sources.yaml` 内容变化：**不用重启**——两个 YAML 支持热重载：`POST /api/admin/reload`（带 API_KEY；需 `API_ENABLED=true`），或对进程发 `SIGHUP`（`docker kill -s HUP newsflow-bot` / `systemctl kill -s HUP newsflow`；仅 Linux）。重载跑的就是启动时那套幂等 sync + 刷新 webhook 目的地缓存；**文件解析失败时保持旧状态**（不像启动时直接中止），错误从 API 响应 / 日志返回。当然 `up -d` 重启也照样生效
+- `config/webhooks.yaml` / `config/sources.yaml` 内容变化：**不用重启**——两个 YAML 支持热重载：`POST /api/admin/reload`（带 API_KEY；需 `API_ENABLED=true`），或对进程发 `SIGHUP`（`docker kill -s HUP newsflow-bot` / `systemctl kill -s HUP newsflow`；仅 Linux）。重载跑的就是启动时那套幂等 sync + 刷新 webhook 目的地缓存；**文件解析失败时保持旧状态**（不像启动时直接中止），错误从 API 响应 / 日志返回；数据库出错时响应只给错误类型，完整信息在日志里（SQL 报错会带出参数）。例外：**启动时还没有 `webhooks.yaml`、运行中才新建的**，热重载会把它入库，但 webhook 投递要重启后才开始，响应里会写明。当然 `up -d` 重启也照样生效
 
 **需要换镜像**（仅改 `.env` 不够，得有新镜像才生效）：
 
@@ -1258,7 +1276,7 @@ docker compose -f docker/docker-compose.yml run --rm --no-deps newsflow python -
 一个任务正常返回只是它自己结束；**任何一个任务抛出异常，整个进程都会经同一条关停路径以退出码 1 退出**，
 日志里有一条 `Fatal: <任务名> failed`——例如开了 REST API 而端口已被占用。这是有意的：起不来的组件多半是配置错误，
 应该响亮地失败，交给 Docker / systemd 的重启策略与人去处理，而不是让进程带着缺一块的状态继续跑。
-每个任务都在 `data/heartbeat/<name>` 维护自己的 heartbeat 文件，供容器 HEALTHCHECK 判定存活。
+dispatch、cleanup、digest 三个循环和每个连着的平台各有一个 `data/heartbeat/<name>` 文件（见 §7.5），供容器 HEALTHCHECK 判定存活。
 
 ### 10.3 Dispatch 数据流
 
@@ -1291,7 +1309,7 @@ dispatch_once():
    │
    ├─▶ commit session
    └─▶ touch data/heartbeat/dispatch（HEALTHCHECK 用；
-       cleanup / digest / discord 各自独立心跳文件）
+       cleanup / digest / 各平台各自独立心跳文件）
 ```
 
 ---
@@ -1303,14 +1321,15 @@ dispatch_once():
 ### 11.1 为什么新订阅要 seed SentEntry？
 
 `SubscriptionService.subscribe()` 创建新订阅成功后，会调用
-`SubscriptionRepository.seed_sent_entries()`，把该 feed 当前所有 `FeedEntry`
-预先插入 `SentEntry` 表。
+`SubscriptionRepository.seed_sent_entries(keep_latest=1)`，把该 feed 库里除最新一条以外的
+`FeedEntry` 预先记进 `SentEntry` 表。
 
 **目的**：避免新订阅的频道被 feed 的历史文章（可能几十上百条）瞬间淹没。
-订阅时点之后才到达的新条目才会被推送。
+留下的最新一条是预览：`/add`（Discord `/feed add`）随即对这条订阅单独跑一次投递，几秒内就到；
+OPML 导入与 `POST /api/subscriptions` 不做即时投递（一次导入几十个源会刷屏），这一条在下一轮送达。
 
-如果想保留"订阅后推送最近 N 条"作为预览体验，把 seed 改成"跳过最新 N 条"
-即可 —— 扩展点留得很窄。
+YAML 声明的订阅（`webhooks.yaml` / `sources.yaml`）没有预览：订阅创建之前发表的条目和没有日期的条目
+一律记成已发，只推之后发表的。声明的源在订阅建好时往往还没抓过，所以它第一次抓取成功时按同一规则再补记一次。
 
 ### 11.2 为什么 dispatcher 要等 adapters 就绪？
 
@@ -1366,7 +1385,7 @@ alembic 发现啥都没做，但会把当前 revision 记录到 `alembic_version
 
 - 本项目是**单进程单实例**部署。没有多租户，没有多 event loop。
 - 配置、HTTP client、数据库引擎等资源是全局共享的，没必要每次注入。
-- 测试里如果需要隔离，通过 `monkeypatch.setattr` 或 `patch("module.get_xxx")` 即可。
+- 测试不靠 patch 这些单例来隔离：配置走 `configure` fixture，数据库走 `db` fixture（见 §14.6）。
 - 写得直接，入门读者更容易懂。
 
 ### 11.6 为什么 discord.py 不需要自己限流而 PTB 需要？
@@ -1564,6 +1583,9 @@ egress 策略 / VPS 网络边界作为第二层防御。
   下一轮 `get_all_active_subscriptions` 会在源头把它们滤掉。
 - **频道永久不可达**：停用该频道**所有**活跃订阅（一个频道通常挂着很多 feed），并关掉 digest 配置，
   不再往这个死目标烧 API 调用。`WHERE is_active=True` 让重复调用天然幂等。
+  Discord 上「不可达」有两种：频道被删（404），以及 bot 被移出服务器——判据是缓存里没有该频道、`fetch_channel` 又得 403。
+  它假定 bot 还在服务器里时，频道（含 bot 看不见的）总在 discord.py 的缓存里，所以这不是管理员收回了某个权限；
+  失权的私有话题也会落进这条，判为消失同样成立。缓存里有的频道发送时得 403，仍按暂时失败处理，等权限补回来。
 - **论坛 topic 被删但聊天还在**：清掉 thread，让投递回落到频道默认视图。当前这条保持未发状态、下轮再出；
   该批**剩余**条目已经按清空后的值构建，立刻就能投递。普通属性写入即可——逐订阅提交会持久化它，
   回滚了下轮再自愈一次，幂等。
@@ -1663,8 +1685,9 @@ alembic 自己的 logger（`alembic.runtime.migration` 等）照样向根 logger
 ### 11.30 Telegram 群升级为超级群的自愈
 
 群升级后频道仍在，但换了新的 chat id，旧 id 从此拒收一切发送。
-处置是把所有订阅与 digest 配置**重指到新 id**；尚未发送的条目（含当前这条）下一轮投到新地址。
-外层 `dispatch_once` 的提交负责持久化。
+处置是把所有订阅、digest 配置与频道默认值（`/language` 等）**重指到新 id**；新 id 上已有自己的行时以它为准、丢掉旧行。
+尚未发送的条目（含当前这条）下一轮投到新地址。外层 `dispatch_once` 的提交负责持久化。
+投递与 digest 两条发送路径都走 `services/channel_repair.py`，新增按频道存的表要在那里一起迁。
 
 ### 11.31 标记失败必须中止整批
 
@@ -1991,14 +2014,17 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 
 ### 14.2 修改数据库 schema
 
-1. 改 `src/newsflow/models/{feed,subscription,base}.py`
+1. 改 `src/newsflow/models/` 下的模型；新建的模型文件要在 `models/__init__.py` 里 import，表在那里注册
 2. 自动生成 migration：`make db-migrate msg="add feed.foo column"`
 3. **人工 review 生成的 migration 文件**（`alembic/versions/<timestamp>_<hash>_add_feed_foo_column.py`）
    - 确认 `upgrade()` / `downgrade()` 都合理
-   - SQLite 的 ALTER 依赖 `render_as_batch=True`（已在 env.py 配好）
+   - SQLite 的 ALTER 依赖 `render_as_batch=True`（已在 env.py 配好）。batch 模式靠「建新表 → 拷数据 → DROP 旧表 → 改名」
+     重建，外键开着时这个 DROP 会级联清空子表（`sent_entries` 首当其冲）；env.py 在开迁移事务之前关了外键，
+     **迁移里不要再打开 `PRAGMA foreign_keys`**
    - 如果生成的 diff 意外（比如意外 drop 了列），检查是不是模型改错了
 4. 本地跑一次 `make db-upgrade`（或让 main.py 启动时自动跑）验证
-5. 加相应的测试（如果是行为变更）
+5. `tests/unit/test_migrations.py` 带着真实行把迁移链从旧版本升到 head、降回去再升上来，断言 feeds / feed_entries /
+   subscriptions / sent_entries 的行数不变——新迁移自动在内；它只数这四张表，动到别的表要自己补断言。行为变更另加相应测试
 6. commit 一起（migration + model）
 
 ### 14.3 添加一个新的平台 adapter（例：Matrix / 企业微信 / Slack）
@@ -2031,21 +2057,26 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 2. 用 `APIRouter()`，写 Pydantic Request/Response 模型
 3. 通过 `Depends(get_db)` 注入 session，调用 `services/` 层
 4. 在 `src/newsflow/api/__init__.py::create_app()` 里 `app.include_router(your.router, prefix="/api/<resource>", tags=["..."])`
-5. 注意：写端点已有 `API_KEY` 鉴权（未配 `API_KEY` 时一律返回 503，fail-closed），读端点开放。新增有写入副作用的端点时记得挂 `Depends(require_api_key)`；公网集中化部署仍建议再补 rate-limit。
+5. 注意鉴权：已有 router 在 `create_app()` 里挂了读门禁 `dependencies=read_gate`（配了 `API_KEY` 后读也要 key），新建 router 照样带上；有写入副作用的端点再挂 `Depends(require_api_key)`（未配 `API_KEY` 时一律 503，fail-closed）；公网集中化部署仍建议再补 rate-limit。
 
 ### 14.6 加测试
 
 - **位置**：`tests/unit/` 里，按被测模块命名 `test_<module>.py`
 - **async**：`pyproject.toml` 里 `asyncio_mode = "auto"`，async 函数自动变成异步测试
-- **DB fixture**：`tests/conftest.py::session`，每个测试一个内存 SQLite engine
-- **隔离单例**：需要时用 `patch("newsflow.services.dispatcher.get_settings", return_value=MagicMock(...))`
+- **配置**：autouse 的 `configure` fixture 给每个测试一份真 `Settings`（照进程的方式从环境变量构建，不读仓库的 `.env`）；
+  要改字段就调 `configure(field=value)`，之后任何地方的 `get_settings()` 都看得到
+- **数据库**：经 `get_session_factory()` 拿会话的代码用 `db` fixture（每个测试一个新 SQLite 文件，结束时关引擎；
+  不经它打开的引擎会让测试在收尾时失败）；只测仓储层可以直接用 `session` fixture（内存 SQLite）
+- **替身只放在边界**：平台 SDK、HTTP、LLM、IMAP、时钟可以换；`get_settings`、`get_session_factory` 这类 newsflow
+  自己的名字不打 patch——`tests/unit/test_doubles_boundary.py` 会拦下来，确需例外就写进它的白名单并注明理由
 - **命名原则**：`test_<function>_<scenario>`（`test_seed_sent_entries_marks_all_existing`）
 
 推荐的测试层次：
 
 - Repository 层：直接用 `session` fixture，不 mock。验证 SQL 行为。
-- Service 层：给 service 传 session，mock 外部 I/O（fetcher、translation、adapter）。
-- Adapter / Route：mock 整个 service，验证路由/命令解析。
+- Service 层：给 service 传 session，只在边界换掉外部 I/O（fetcher、translation、adapter）。
+- Adapter / Route：handler 走真 service 和 `db`，只伪造平台对象（Telegram `Update`、Discord `Interaction`）；
+  REST 路由用 `httpx.ASGITransport(app=create_app())` 发真请求。
 
 不要给私有函数（`_foo`）写单独测试，除非它独立承担核心逻辑（e.g. `_apply_fetch_result`、`_write_heartbeat`）。
 
@@ -2055,7 +2086,12 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 
 ### 15.1 "第一次加了订阅但没收到消息"
 
-**预期行为**。新订阅会 seed 当前 feed 所有历史条目为"已发"，只推送订阅之后新到达的。等源发表新文章 + 一轮 fetch 间隔才会收到第一条消息。
+先看订阅是怎么建的（规则见 §11.1）：
+
+- **`/add`、Discord `/feed add`**：几秒内应收到最新一条作为预览。**没收到不是正常现象**——源可能还没有任何条目，
+  或者发送失败了：查 Telegram `/info <url>` / Discord `/feed status <url>`，日志里搜这个源的标题或 URL。
+- **OPML 导入、`POST /api/subscriptions`**：最新一条在下一轮抓取后送达。
+- **YAML 声明的订阅**：只推订阅之后发表的文章，等源发新文章再加一轮抓取间隔才有第一条，这是预期行为。
 
 如果想手动触发一轮测试：
 
@@ -2092,7 +2128,7 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 通常是以下之一：
 
-- 某个模型文件没 import 到 `alembic/env.py`（本项目已显式 import `feed` 和 `subscription`，加新模型文件记得在 env.py 里 import）
+- 新模型文件没在 `src/newsflow/models/__init__.py` 里 import——表在包的 `__init__` 里注册，`alembic/env.py` 只导入整个包，别在 env.py 里逐个补 import
 - 数据库的实际状态和 alembic 认知不一致（比如手工改过 schema）—— 跑 `make db-stamp` 重新同步
 - 模型字段默认值 / 可空性不一致 —— 读 diff 手动修正
 
@@ -2197,6 +2233,7 @@ NewsFlow-Bot/
 │   │   ├── webhook_sync.py           # webhooks.yaml → DB 对账（owner="yaml"）
 │   │   ├── source_sync.py            # sources.yaml → DB 对账（owner="source-yaml"）
 │   │   ├── config_reload.py          # SIGHUP / POST /api/admin/reload 的热重载
+│   │   ├── channel_repair.py         # 频道迁移 / 失效时，按频道存的各表一起改
 │   │   ├── cache.py                  # 内存 / Redis 抽象
 │   │   ├── translation/              # 翻译 provider + 工厂
 │   │   ├── summarization/            # Digest LLM provider + 工厂
@@ -2212,7 +2249,7 @@ NewsFlow-Bot/
 │   │                             #   / ingest / metrics / admin
 │   └── checkconfig.py            # 离线校验 .env + 两份 YAML（make checkconfig）
 ├── tests/
-│   ├── conftest.py               # 内存 SQLite session fixture
+│   ├── conftest.py               # configure / db / session fixture
 │   ├── unit/                     # 单元测试（CI 在 3.11/3.13 上全量跑）
 │   └── integration/              # 端到端集成（真 dispatch → 捕获型假 adapter）
 ├── pyproject.toml                # 依赖权威

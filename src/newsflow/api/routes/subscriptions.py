@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_api_key
-from newsflow.models.subscription import Subscription
+from newsflow.models.subscription import SubscriberPlatform, Subscription
 from newsflow.services.subscription_service import SubscriptionService
 
 router = APIRouter()
@@ -45,7 +45,7 @@ class SubscriptionListResponse(BaseModel):
 
 
 class SubscribeRequest(BaseModel):
-    platform: str
+    platform: SubscriberPlatform
     channel_id: str
     feed_url: str
     guild_id: str | None = None

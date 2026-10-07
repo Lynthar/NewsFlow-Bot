@@ -190,11 +190,18 @@ class SubscriptionService:
         )
 
         if not created:
+            message = "Already subscribed to this feed"
+            if not subscription.is_active:
+                # Adding a paused feed means "I want it": resume it, and say so, since what
+                # was queued while it was paused now goes out.
+                subscription.is_active = True
+                message = "Resumed this paused subscription; entries it missed will follow"
+                logger.info(f"Resumed on re-add: {platform}/{channel_id} × {feed_url}")
             return SubscribeResult(
                 success=True,
                 subscription=subscription,
                 feed=feed,
-                message="Already subscribed to this feed",
+                message=message,
                 is_new=False,
             )
 

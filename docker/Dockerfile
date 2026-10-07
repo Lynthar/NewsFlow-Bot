@@ -88,20 +88,12 @@ USER newsflow
 # Expose API port (optional)
 EXPOSE 8000
 
-# Health check
-# Each long-running task writes its own file in /app/data/heartbeat/:
-#   dispatch  — touched after every dispatch cycle
-#   cleanup   — touched after every cleanup iteration
-#   discord   — touched while Discord adapter reports is_connected
-#   telegram  — touched while Telegram adapter reports is_connected
-# Unhealthy if ANY existing heartbeat is older than 120 minutes, OR no
-# heartbeats exist after start_period. Crashed processes are handled by
-# the container's restart policy, not this check.
-# Raise the 120min threshold if you run with FETCH_INTERVAL_MINUTES > ~100.
+# Unhealthy if the dispatch heartbeat is missing or any heartbeat file (one per loop and
+# connected platform) is older than 120 minutes. dispatch is touched once per round, so
+# FETCH_INTERVAL_MINUTES above ~100 needs a higher threshold or the check flaps.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=5m --retries=2 \
-    CMD [ -d /app/data/heartbeat ] \
-     && [ "$(find /app/data/heartbeat -type f -mmin +120 2>/dev/null | wc -l)" = "0" ] \
-     && [ "$(find /app/data/heartbeat -type f -mmin -120 2>/dev/null | wc -l)" != "0" ]
+    CMD [ -f /app/data/heartbeat/dispatch ] \
+     && [ "$(find /app/data/heartbeat -type f -mmin +120 2>/dev/null | wc -l)" = "0" ]
 
 # Run the bot
 CMD ["python", "-m", "newsflow.main"]

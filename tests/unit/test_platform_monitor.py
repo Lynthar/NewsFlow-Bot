@@ -1,8 +1,14 @@
 """Tests for Dispatcher.run_platform_monitor — per-platform heartbeats."""
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
+from telegram.ext import Application
+from telegram.request import BaseRequest
+
+from newsflow.adapters.discord.bot import DiscordAdapter, NewsFlowBot
+from newsflow.adapters.telegram.bot import TelegramAdapter
 from newsflow.services.dispatcher import Dispatcher
 
 
@@ -72,3 +78,62 @@ async def test_platform_monitor_survives_is_connected_exceptions(configure):
 
     # No crash; just no heartbeat written.
     assert not d.heartbeat_path("discord").exists()
+
+
+# ===== what each adapter reports as connected =====
+
+
+async def test_discord_reports_disconnected_while_the_gateway_is_down():
+    # discord.py keeps is_ready() True through a reconnect, so readiness can't tell.
+    bot = NewsFlowBot()
+    adapter = DiscordAdapter(bot)
+
+    await bot.on_connect()
+    assert adapter.is_connected() is True
+    await bot.on_disconnect()
+    assert adapter.is_connected() is False
+    await bot.on_resumed()
+    assert adapter.is_connected() is True
+
+
+class _BotApi(BaseRequest):
+    """The Bot API as it answers once the token is revoked mid-run: start-up calls
+    succeeded, and getUpdates now answers 401."""
+
+    @property
+    def read_timeout(self) -> float | None:
+        return None
+
+    async def initialize(self) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+    async def do_request(self, url, method, request_data=None, *args, **kwargs):
+        if url.endswith("/getUpdates"):
+            return 401, b'{"ok":false,"error_code":401,"description":"Unauthorized"}'
+        result = {"id": 1, "is_bot": True, "first_name": "b", "username": "b"}
+        if url.endswith("/deleteWebhook"):
+            result = True
+        return 200, json.dumps({"ok": True, "result": result}).encode()
+
+
+async def test_telegram_reports_disconnected_once_polling_has_died():
+    # PTB ends the polling task on InvalidToken but leaves updater.running True.
+    api = _BotApi()
+    app = Application.builder().token("1:x").request(api).get_updates_request(api).build()
+    adapter = TelegramAdapter(token="1:x")
+    adapter.app = app
+    await app.initialize()
+    assert app.updater is not None
+    await app.updater.start_polling()
+    try:
+        for _ in range(100):
+            if not adapter.is_connected():
+                break
+            await asyncio.sleep(0.01)
+        assert app.updater.running is True
+        assert adapter.is_connected() is False
+    finally:
+        await adapter.stop()

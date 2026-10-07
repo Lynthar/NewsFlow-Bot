@@ -289,9 +289,11 @@ class FeedFetcher:
                     )
 
                 # A stream, never str or bytes: feedparser opens those as a URL or a file path,
-                # bypassing the URL checks and caps above. It also sniffs the charset itself.
+                # bypassing the URL checks and caps above; it sniffs the charset itself. Parsed
+                # off the loop: a feed at the size cap takes over a second, stalling every task.
                 content_type = response.headers.get("Content-Type")
-                feed = feedparser.parse(
+                feed = await asyncio.to_thread(
+                    feedparser.parse,
                     io.BytesIO(raw),
                     response_headers={"content-type": content_type} if content_type else None,
                 )
@@ -529,7 +531,7 @@ class FeedFetcher:
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=UTC)
                     return dt.astimezone(UTC)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     continue
 
         return None

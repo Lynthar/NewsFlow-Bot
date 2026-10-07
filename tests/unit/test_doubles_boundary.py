@@ -37,6 +37,8 @@ ALLOWED: dict[str, str] = {
     # Clocks: real waits would make the tests slow, not more truthful.
     "newsflow.services.dispatcher.asyncio.sleep": "clock — skips the 60s startup delay",
     "newsflow.adapters.webhook.bot.asyncio.sleep": "clock — records back-off waits",
+    # Probes: the real call still runs, wrapped to record how it was made.
+    "feedparser.parse": "records which thread parses",
     # Failure injection where the real component cannot be made to fail on cue.
     "AsyncSession.commit": "database boundary — one commit fails",
     "SubscriptionRepository.get_unsent_entries_for_subscription": (

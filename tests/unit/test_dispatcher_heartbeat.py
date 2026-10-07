@@ -3,6 +3,7 @@
 ``data_dir`` is the autouse ``tmp_path``: it derives from the database URL."""
 
 import asyncio
+import contextlib
 import os
 import time
 from datetime import UTC, datetime, timedelta
@@ -190,3 +191,22 @@ def test_clear_stale_heartbeats_tolerates_missing_dir(configure, tmp_path):
 
     settings = configure(database_url=f"sqlite+aiosqlite:///{tmp_path / 'nonexistent' / 'x.db'}")
     clear_stale_heartbeats(settings)  # must not raise
+
+
+async def test_dispatch_heartbeat_exists_before_the_first_round_ends():
+    # A first round that never finishes must still go stale in 120 minutes, and a
+    # HEALTHCHECK that requires the file can then tell it from a missing loop.
+    d = Dispatcher()
+    path = d.heartbeat_path("dispatch")
+
+    async with d.delivery_lock:  # the first round waits here and cannot finish
+        loop = asyncio.create_task(d.run_dispatch_loop())
+        for _ in range(100):
+            if path.exists():
+                break
+            await asyncio.sleep(0.01)
+        loop.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop
+
+    assert path.exists()

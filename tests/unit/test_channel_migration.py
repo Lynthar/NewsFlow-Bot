@@ -21,12 +21,15 @@ import pytest
 from sqlalchemy import select
 
 from newsflow.adapters.base import ChannelGoneError, ChannelMigratedError
+from newsflow.models.channel_settings import ChannelSettings
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
+from newsflow.repositories.channel_settings_repository import ChannelSettingsRepository
 from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.dispatcher import Dispatcher
+from newsflow.services.summarization.base import DigestResult
 from tests import seed
 
 # ===== Repository-layer tests =====
@@ -124,6 +127,9 @@ async def test_migrate_channel_conflict_keeps_incumbent(session):
     assert [s.id for s in remaining] == [incumbent_id]
 
 
+_DEFAULTS = {"default_language": "ja", "default_translate": True, "default_silent": False}
+
+
 def _digest(channel_id: str, **overrides) -> ChannelDigest:
     fields = dict(
         platform="telegram",
@@ -171,11 +177,48 @@ async def test_migrate_channel_digest_incumbent_wins(session):
     assert rows[0].enabled is False  # incumbent kept as-is
 
 
+async def test_migrate_channel_moves_channel_defaults(session):
+    session.add(ChannelSettings(platform="telegram", platform_channel_id="-100OLD", **_DEFAULTS))
+    await session.commit()
+
+    moved = await ChannelSettingsRepository(session).migrate_channel(
+        "telegram", "-100OLD", "-100NEW"
+    )
+    await session.commit()
+
+    assert moved == 1
+    row = await ChannelSettingsRepository(session).get("telegram", "-100NEW")
+    assert row is not None and row.default_language == "ja"
+    assert await ChannelSettingsRepository(session).get("telegram", "-100OLD") is None
+
+
+async def test_migrate_channel_defaults_incumbent_wins(session):
+    session.add_all(
+        [
+            ChannelSettings(platform="telegram", platform_channel_id="-100OLD", **_DEFAULTS),
+            ChannelSettings(
+                platform="telegram", platform_channel_id="-100NEW", default_silent=True
+            ),
+        ]
+    )
+    await session.commit()
+
+    moved = await ChannelSettingsRepository(session).migrate_channel(
+        "telegram", "-100OLD", "-100NEW"
+    )
+    await session.commit()
+
+    assert moved == 0
+    rows = (await session.execute(select(ChannelSettings))).scalars().all()
+    assert [(r.platform_channel_id, r.default_silent) for r in rows] == [("-100NEW", True)]
+
+
 async def test_migrate_channel_missing_rows_is_noop(session):
     sub_repo = SubscriptionRepository(session)
     digest_repo = ChannelDigestRepository(session)
     assert await sub_repo.migrate_channel("telegram", "nope", "-100NEW") == 0
     assert await digest_repo.migrate_channel("telegram", "nope", "-100NEW") == 0
+    assert await ChannelSettingsRepository(session).migrate_channel("telegram", "nope", "x") == 0
 
 
 # ===== Dispatcher-layer tests =====
@@ -212,6 +255,7 @@ async def test_dispatch_catches_migration_and_repoints(session):
     d = Dispatcher()
     sub = await _seed_sub_with_entry(session, channel_id="-100OLD")
     session.add(_digest("-100OLD"))
+    session.add(ChannelSettings(platform="telegram", platform_channel_id="-100OLD", **_DEFAULTS))
     await session.commit()
 
     adapter = MagicMock()
@@ -241,6 +285,10 @@ async def test_dispatch_catches_migration_and_repoints(session):
     digest = (await session.execute(select(ChannelDigest))).scalar_one()
     assert digest.platform_channel_id == "-100NEW"
     assert digest.enabled is True
+
+    # A /add in the upgraded group still inherits the language set before the upgrade.
+    defaults = (await session.execute(select(ChannelSettings))).scalar_one()
+    assert defaults.platform_channel_id == "-100NEW"
 
     # The entry was never marked sent — next cycle delivers it to the
     # new chat id.
@@ -319,3 +367,47 @@ def test_channel_migrated_error_carries_ids():
     assert "-100OLD" in str(e) and "-100NEW" in str(e)
     # Not a subclass of ChannelGoneError — handlers are distinct.
     assert not isinstance(e, ChannelGoneError)
+
+
+async def test_scheduled_digest_that_meets_a_migration_repoints_the_channel(db, monkeypatch):
+    # The digest tick has its own catch, in its own session, apart from the delivery path.
+    sub = await seed.subscription(db, platform="telegram", channel_id="-100OLD")
+    entry = await seed.entry(db, sub.feed_id, guid="g1")
+    async with db() as session:
+        session.add(
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=entry.feed_id,
+                guid=entry.guid,
+                sent_at=datetime.now(UTC) - timedelta(hours=1),
+            )
+        )
+        session.add(
+            ChannelSettings(platform="telegram", platform_channel_id="-100OLD", **_DEFAULTS)
+        )
+        # Last served two days ago, so a catch-up is due whatever the hour is now.
+        await ChannelDigestRepository(session).upsert(
+            "telegram",
+            "-100OLD",
+            None,
+            language="en",
+            last_slot_at=datetime.now(UTC) - timedelta(days=2),
+        )
+        await session.commit()
+    summarizer = MagicMock()
+    summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="body"))
+    monkeypatch.setattr("newsflow.services.summarization.get_summarizer", lambda: summarizer)
+    migrated = ChannelMigratedError("-100OLD", "-100NEW", reason="migrated")
+    adapter = MagicMock(digest_chunk_size=3800)
+    adapter.send_digest_text_pinned = AsyncMock(side_effect=migrated)
+    adapter.send_digest_text = AsyncMock(side_effect=migrated)
+    adapter.unpin_message = AsyncMock(return_value=True)
+    d = Dispatcher()
+    d.register_adapter("telegram", adapter)
+
+    await d._tick_digests()
+
+    async with db() as session:
+        for model in (Subscription, ChannelDigest, ChannelSettings):
+            row = (await session.execute(select(model))).scalar_one()
+            assert row.platform_channel_id == "-100NEW", model.__name__

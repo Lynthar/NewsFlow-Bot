@@ -26,7 +26,7 @@ def test_missing_files_are_informational_not_errors(tmp_path):
     infos: list[str] = []
     settings = _settings(tmp_path)
     _check_webhooks_yaml(settings, errors, infos)
-    _check_sources_yaml(settings, errors, infos)
+    _check_sources_yaml(settings, errors, [], infos)
     assert errors == []
     assert any("not present" in line for line in infos)
 
@@ -55,7 +55,7 @@ def test_dangling_webhook_destination_reference_is_an_error(tmp_path):
         encoding="utf-8",
     )
     errors: list[str] = []
-    _check_sources_yaml(_settings(tmp_path), errors, [])
+    _check_sources_yaml(_settings(tmp_path), errors, [], [])
     assert len(errors) == 1
     assert "ghost" in errors[0]
 
@@ -72,5 +72,28 @@ def test_declared_webhook_destination_reference_passes(tmp_path):
         encoding="utf-8",
     )
     errors: list[str] = []
-    _check_sources_yaml(_settings(tmp_path), errors, [])
+    _check_sources_yaml(_settings(tmp_path), errors, [], [])
     assert errors == []
+
+
+def test_json_api_without_a_guid_is_warned(tmp_path):
+    # Each item is then keyed by a hash of all its fields: a changing counter re-sends it.
+    (tmp_path / "sources.yaml").write_text(
+        "sources:\n  s:\n    url: https://e/x\n    type: json_api\n"
+        "    config:\n      items: '$.a'\n",
+        encoding="utf-8",
+    )
+    errors: list[str] = []
+    warnings: list[str] = []
+    _check_sources_yaml(_settings(tmp_path), errors, warnings, [])
+    assert errors == []
+    assert len(warnings) == 1 and "guid" in warnings[0]
+
+    (tmp_path / "sources.yaml").write_text(
+        "sources:\n  s:\n    url: https://e/x\n    type: json_api\n"
+        "    config:\n      items: '$.a'\n      guid: id\n",
+        encoding="utf-8",
+    )
+    warnings.clear()
+    _check_sources_yaml(_settings(tmp_path), errors, warnings, [])
+    assert warnings == []

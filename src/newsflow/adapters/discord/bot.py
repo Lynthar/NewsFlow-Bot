@@ -24,6 +24,7 @@ from newsflow.adapters.views import (
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     DISCORD_EMBED_FIELD_VALUE_LIMIT,
     DISCORD_EMBED_TITLE_LIMIT,
+    DISCORD_MESSAGE_LIMIT,
     IMPORT_RESULT_TITLE,
     clip,
     import_count_rows,
@@ -259,6 +260,9 @@ class NewsFlowBot(commands.Bot):
         )
 
         self.settings = get_settings()
+        # discord.py keeps is_ready() True while it reconnects, so the gateway's own
+        # connect / resume / disconnect events are what say whether the bot is online.
+        self.gateway_connected = False
 
     async def setup_hook(self) -> None:
         """Called when the bot is ready to setup."""
@@ -296,6 +300,15 @@ class NewsFlowBot(commands.Bot):
         adapter = DiscordAdapter(self)
         dispatcher.register_adapter("discord", adapter)
         logger.info("Discord adapter registered with dispatcher")
+
+    async def on_connect(self) -> None:
+        self.gateway_connected = True
+
+    async def on_resumed(self) -> None:
+        self.gateway_connected = True
+
+    async def on_disconnect(self) -> None:
+        self.gateway_connected = False
 
     async def on_error(self, event: str, *args: object, **kwargs: object) -> None:
         """Handle errors."""
@@ -1604,30 +1617,24 @@ class DiscordAdapter(BaseAdapter):
         """Nothing to do: start_discord and stop_discord run the bot's lifecycle."""
 
     def is_connected(self) -> bool:
-        """Ready + not closed. discord.py handles auto-reconnect internally
-        but briefly reports not-ready during disconnect windows."""
-        return self.bot is not None and self.bot.is_ready() and not self.bot.is_closed()
+        """Connected to the gateway: false from a disconnect until the reconnect lands."""
+        return self.bot.gateway_connected and not self.bot.is_closed()
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Discord channel.
 
-        Raises ChannelGoneError when the channel no longer exists
-        (deleted by guild owner, or bot was removed from the guild —
-        both surface as HTTP 404). Raises UndeliverableError when Discord
-        answers 400 to the entry and to its bare title-and-link form.
-        Transient problems (403 Forbidden, network, rate-limit) still
-        return False so the next dispatch cycle can retry.
+        Raises:
+            ChannelGoneError: The channel was deleted (404), or the bot was removed from
+                its server (not cached, and the fetch refused).
+            UndeliverableError: Discord answered 400 to the entry and to its bare
+                title-and-link form.
+
+        Anything else returns False for the next round to retry, a 403 on the send
+        itself included: an admin can grant a permission back.
         """
         try:
-            channel = self.bot.get_channel(int(channel_id))
-            if not channel:
-                channel = await self.bot.fetch_channel(int(channel_id))
-
-            if not channel or not isinstance(channel, discord.abc.Messageable):
-                logger.warning(
-                    f"Channel {channel_id} not found or not messageable "
-                    f"(type={type(channel).__name__})"
-                )
+            channel = await self._messageable(channel_id)
+            if channel is None:
                 return False
 
             try:
@@ -1648,7 +1655,7 @@ class DiscordAdapter(BaseAdapter):
                     ) from bare_error
             return True
 
-        except UndeliverableError:
+        except (UndeliverableError, ChannelGoneError):
             raise
         except discord.NotFound as e:
             raise ChannelGoneError(channel_id, reason=str(e)) from e
@@ -1658,6 +1665,23 @@ class DiscordAdapter(BaseAdapter):
         except Exception as e:
             logger.exception(f"Failed to send message to {channel_id}: {e}")
             return False
+
+    async def _messageable(self, channel_id: str) -> discord.abc.Messageable | None:
+        """The channel to send to, or None (logged) when it cannot take messages. Raises
+        ChannelGoneError when Discord says it no longer exists, or when it is not cached and
+        Discord refuses to fetch it: the bot is no longer in its server."""
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            # The cache holds every channel of every server the bot is in, hidden ones too,
+            # so a refusal here is not a permission an admin can grant back.
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden) as e:
+                raise ChannelGoneError(channel_id, reason=str(e)) from e
+        if not isinstance(channel, discord.abc.Messageable):
+            logger.warning(f"Channel {channel_id} is not messageable ({type(channel).__name__})")
+            return None
+        return channel
 
     async def _send_entry(self, channel: discord.abc.Messageable, message: Message) -> None:
         """Post `message` in its full layout: the custom template, else the embed."""
@@ -1669,8 +1693,7 @@ class DiscordAdapter(BaseAdapter):
             content = message.template_text
             if mention and mention not in content:
                 content = f"{mention}\n{content}"
-            if len(content) > 2000:
-                content = content[:1999] + "…"
+            content = clip(content, DISCORD_MESSAGE_LIMIT)
             allowed = _mention_allowance(mention) if mention else discord.AllowedMentions.none()
             if is_http_url(message.image_url):
                 image_embed = discord.Embed()
@@ -1702,7 +1725,7 @@ class DiscordAdapter(BaseAdapter):
             if message.mention
             else discord.AllowedMentions.none()
         )
-        await channel.send("\n".join(lines)[:2000], allowed_mentions=allowed)
+        await channel.send("\n".join(lines)[:DISCORD_MESSAGE_LIMIT], allowed_mentions=allowed)
 
     async def send_text(self, channel_id: str, text: str) -> bool:
         """Send plain text to a Discord channel. Raises ChannelGoneError
@@ -1719,12 +1742,10 @@ class DiscordAdapter(BaseAdapter):
         """Shared plain-text send. `allowed_mentions=None` inherits the
         client-wide AllowedMentions.none() baseline; digest sends pass an
         explicit allowance instead (see send_digest_text)."""
+        text = clip(text, DISCORD_MESSAGE_LIMIT)
         try:
-            channel = self.bot.get_channel(int(channel_id))
-            if not channel:
-                channel = await self.bot.fetch_channel(int(channel_id))
-
-            if not channel or not isinstance(channel, discord.abc.Messageable):
+            channel = await self._messageable(channel_id)
+            if channel is None:
                 return False
 
             if allowed_mentions is not None:
@@ -1733,6 +1754,8 @@ class DiscordAdapter(BaseAdapter):
                 await channel.send(text)
             return True
 
+        except ChannelGoneError:
+            raise
         except discord.NotFound as e:
             raise ChannelGoneError(channel_id, reason=str(e)) from e
         except Exception as e:
@@ -1791,17 +1814,18 @@ class DiscordAdapter(BaseAdapter):
             )
             return sent, None
 
+        text = clip(text, DISCORD_MESSAGE_LIMIT)
         try:
-            channel = self.bot.get_channel(int(channel_id))
-            if not channel:
-                channel = await self.bot.fetch_channel(int(channel_id))
-            if not channel or not isinstance(channel, discord.abc.Messageable):
+            channel = await self._messageable(channel_id)
+            if channel is None:
                 return False, None
 
             if allowed_mentions is not None:
                 msg = await channel.send(text, allowed_mentions=allowed_mentions)
             else:
                 msg = await channel.send(text)
+        except ChannelGoneError:
+            raise
         except discord.NotFound as e:
             raise ChannelGoneError(channel_id, reason=str(e)) from e
         except discord.Forbidden:
@@ -1825,18 +1849,16 @@ class DiscordAdapter(BaseAdapter):
             return True, None
 
     async def unpin_message(self, channel_id: str, message_id: str) -> bool:
-        """Unpin a previously-pinned message. Treats NotFound as success
-        (the message is no longer around to unpin — goal achieved)."""
+        """Unpin a previously-pinned message. A message or channel that is gone counts as
+        success: there is nothing left to unpin."""
         try:
-            channel = self.bot.get_channel(int(channel_id))
-            if not channel:
-                channel = await self.bot.fetch_channel(int(channel_id))
-            if not channel or not isinstance(channel, discord.abc.Messageable):
+            channel = await self._messageable(channel_id)
+            if channel is None:
                 return False
             msg = await channel.fetch_message(int(message_id))
             await msg.unpin()
             return True
-        except discord.NotFound:
+        except (discord.NotFound, ChannelGoneError):
             return True
         except discord.Forbidden:
             logger.warning(

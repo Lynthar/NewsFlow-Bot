@@ -29,8 +29,8 @@ Between the in and the out: keyword and regex filters per subscription,
 translation via DeepL, Google, or any OpenAI-compatible endpoint (including a
 local model), daily and weekly AI digests, per-channel language and display
 settings, OPML import and export, and automatic back-off that disables a feed
-after ten consecutive failures instead of retrying indefinitely. 730 tests, run
-on Python 3.11 and 3.13 in CI.
+after ten consecutive failures instead of retrying indefinitely. The test suite
+runs on Python 3.11 and 3.13 in CI.
 
 ## Install
 

@@ -210,3 +210,16 @@ async def test_discord_5xx_is_not_retried_as_title_and_link():
 
     assert await adapter.send_message("42", seed.message()) is False
     assert channel.send.await_count == 1
+
+
+@pytest.mark.parametrize("send", ["send_text", "send_digest_text", "send_text_pinned"])
+async def test_discord_plain_text_is_cut_to_the_message_limit(configure, send):
+    # A feed-disabled notice carries the feed's title and URL; Discord refuses past 2000.
+    configure(digest_auto_pin=True)
+    adapter, channel = seed.discord_adapter()
+    channel.send.return_value = MagicMock(id=1, pin=AsyncMock())
+
+    await getattr(adapter, send)("42", "x" * 2500)
+
+    (text,) = channel.send.await_args.args
+    assert len(text) == 2000 and text.endswith("…")

@@ -74,6 +74,33 @@ async def test_resume_subscription_reactivates(session):
     assert sub.is_active is True
 
 
+async def test_adding_a_paused_feed_again_says_it_was_resumed(session):
+    # Resuming releases everything queued while paused; "Already subscribed" hid that.
+    sub = await _seed_sub(session)
+    sub.is_active = False
+    await session.flush()
+
+    result = await SubscriptionService(session).subscribe(
+        platform="discord", user_id="u1", channel_id="c1", feed_url=FEED_URL
+    )
+
+    assert result.success is True and result.is_new is False
+    assert sub.is_active is True
+    assert "resumed" in result.message.lower()
+
+
+async def test_adding_an_active_feed_again_changes_nothing(session):
+    sub = await _seed_sub(session)
+
+    result = await SubscriptionService(session).subscribe(
+        platform="discord", user_id="u1", channel_id="c1", feed_url=FEED_URL
+    )
+
+    assert result.success is True and result.is_new is False
+    assert sub.is_active is True
+    assert result.message == "Already subscribed to this feed"
+
+
 async def test_resume_revives_auto_disabled_feed(session):
     """The deactivation notice tells users resume re-enables the source —
     so resume must reset the Feed's error state, not just the subscription

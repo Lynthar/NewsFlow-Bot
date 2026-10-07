@@ -35,8 +35,8 @@ class ReloadResult:
 
 async def reload_declarative_configs() -> ReloadResult:
     """Re-run webhook_sync + source_sync and refresh the webhook adapter's
-    destination cache. Returns ok=False (with every error collected) when any
-    file failed to parse; that file's previous state stays in effect."""
+    destination cache. Never raises: returns ok=False, with every error collected,
+    when a file failed to parse (its previous state stays in effect) or a step failed."""
     settings = get_settings()
     async with _reload_lock:
         applied: list[str] = []
@@ -50,6 +50,8 @@ async def reload_declarative_configs() -> ReloadResult:
                 applied.append("webhooks.yaml synced")
             except WebhookConfigError as e:
                 errors.append(f"webhooks.yaml: {e}")
+            except Exception as e:
+                errors.append(_failed("webhooks.yaml sync", e) + "; it may be partly applied")
         else:
             applied.append("webhooks.yaml absent (skipped)")
 
@@ -61,6 +63,8 @@ async def reload_declarative_configs() -> ReloadResult:
                 applied.append("sources.yaml synced")
             except SourceConfigError as e:
                 errors.append(f"sources.yaml: {e}")
+            except Exception as e:
+                errors.append(_failed("sources.yaml sync", e))
         else:
             applied.append("sources.yaml absent (skipped)")
 
@@ -69,8 +73,16 @@ async def reload_declarative_configs() -> ReloadResult:
         adapter = get_dispatcher().get_adapter("webhook")
         reload_fn = getattr(adapter, "reload_destinations", None)
         if reload_fn is not None:
-            await reload_fn()
-            applied.append("webhook destinations cache refreshed")
+            try:
+                await reload_fn()
+                applied.append("webhook destinations cache refreshed")
+            except Exception as e:
+                errors.append(_failed("webhook destinations refresh", e))
+        elif settings.webhooks_enabled:
+            # The adapter starts only when webhooks.yaml exists at boot.
+            note = "webhook adapter not running: restart to deliver to webhooks.yaml"
+            logger.warning(f"config reload: {note}")
+            applied.append(note)
 
         detail = "; ".join(errors + applied)
         if errors:
@@ -78,3 +90,10 @@ async def reload_declarative_configs() -> ReloadResult:
             return ReloadResult(ok=False, detail=detail)
         logger.info(f"config reload OK: {detail}")
         return ReloadResult(ok=True, detail=detail)
+
+
+def _failed(step: str, e: Exception) -> str:
+    """Log the failure in full; report only its type, since a database error's text can
+    carry SQL parameters and this detail goes back over the API."""
+    logger.exception(f"config reload: {step} failed")
+    return f"{step} failed ({type(e).__name__}); details in the log"

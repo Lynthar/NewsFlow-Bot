@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("fastapi")  # needs the api extra
 
 from fastapi import HTTPException  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from newsflow.api.routes.subscriptions import (  # noqa: E402
     SubscribeRequest,
@@ -146,3 +147,9 @@ async def test_opml_export_contains_feed_urls(session):
     body = response.body.decode()
     assert feed.url in body
     assert "<opml" in body
+
+
+def test_create_subscription_rejects_a_platform_with_no_adapter():
+    # Accepted, it would log "No adapter" every round and never deliver.
+    with pytest.raises(ValidationError):
+        SubscribeRequest(platform="slack", channel_id="42", feed_url="https://ex.com/rss")

@@ -9,7 +9,7 @@ import os
 from difflib import get_close_matches
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from dotenv import dotenv_values
 from pydantic import Field, ValidationInfo, field_validator, model_validator
@@ -31,6 +31,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def __init__(self, **values: Any) -> None:
+        # An env file this user cannot open is skipped, not fatal: under systemd's
+        # EnvironmentFile its values already arrive as the environment, and reading it
+        # would crash every start. config_warnings reports the skip.
+        if "_env_file" not in values and _unreadable_env_file() is not None:
+            values["_env_file"] = None
+        super().__init__(**values)
 
     # ===== Required (at least one) =====
     discord_token: str | None = None
@@ -292,6 +300,11 @@ class Settings(BaseSettings):
             f"{key} is not a setting and is ignored — did you mean {name}?"
             for key, name in self._misspelled_keys()
         ]
+        if (env_file := _unreadable_env_file()) is not None:
+            warnings.append(
+                f"this user cannot read {env_file}; it is skipped and settings come from "
+                "the environment only"
+            )
         if self.entry_retention_days <= 7:
             warnings.append(
                 f"entry_retention_days={self.entry_retention_days} does not outlast the "
@@ -326,7 +339,11 @@ class Settings(BaseSettings):
         names = list(type(self).model_fields)
         keys = set(os.environ)
         env_file = self.model_config.get("env_file")
-        if isinstance(env_file, str | Path) and Path(env_file).is_file():
+        if (
+            isinstance(env_file, str | Path)
+            and Path(env_file).is_file()
+            and _unreadable_env_file() is None
+        ):
             keys.update(dotenv_values(env_file))
         found = []
         for key in sorted(keys):
@@ -358,6 +375,15 @@ class Settings(BaseSettings):
         if not self.translation_enabled:
             return False
         return bool(self.get_translation_api_key())
+
+
+def _unreadable_env_file() -> Path | None:
+    """The configured env file, if it exists and this process cannot read it."""
+    env_file = Settings.model_config.get("env_file")
+    if not isinstance(env_file, str | Path):
+        return None
+    path = Path(env_file)
+    return path if path.is_file() and not os.access(path, os.R_OK) else None
 
 
 @lru_cache

@@ -11,6 +11,7 @@ from newsflow.services.subscription_service import OpmlImportResult
 # Platform hard limits. Discord additionally caps the sum of every embed
 # title / description / field across one message at 6000 characters.
 TELEGRAM_TEXT_LIMIT = 4096
+DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_EMBED_TITLE_LIMIT = 256
 DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 DISCORD_EMBED_FIELD_VALUE_LIMIT = 1024

@@ -86,17 +86,16 @@ def _guid_key(guid: str) -> str:
     return f"{prefix}#{digest}"
 
 
-def _clamp_future_date(published_at: datetime | None, now: datetime) -> datetime | None:
-    """Clamp a clearly-future published_at (more than a day ahead) to `now`.
-
-    A broken or hostile feed can stamp entries far in the future; left as-is the
-    entry shows an absurd timestamp and sorts as the newest item forever-first
-    in the backlog. Only dates >1 day ahead are clamped, so a legitimately
-    timezone-skewed near-future entry is left untouched."""
+def _storable_date(published_at: datetime | None, now: datetime) -> datetime | None:
+    """`published_at` in UTC (naive counts as UTC), or `now` if more than a day ahead.
+    SQLite drops the offset, so another zone would read back shifted by it; a far-future
+    stamp would sort first forever. Within a day is a skewed clock and is kept."""
     if published_at is None:
         return None
-    aware = published_at if published_at.tzinfo else published_at.replace(tzinfo=UTC)
-    return now if aware > now + timedelta(days=1) else published_at
+    aware = (
+        published_at.astimezone(UTC) if published_at.tzinfo else published_at.replace(tzinfo=UTC)
+    )
+    return now if aware > now + timedelta(days=1) else aware
 
 
 class FeedRepository:
@@ -320,7 +319,7 @@ class FeedRepository:
                     summary=_storable(data.get("summary")),
                     content=_storable(data.get("content")),
                     author=_storable(data.get("author"), _ENTRY_AUTHOR_CAP),
-                    published_at=_clamp_future_date(data.get("published_at"), now),
+                    published_at=_storable_date(data.get("published_at"), now),
                     image_url=_storable(data.get("image_url"), _ENTRY_URL_CAP),
                 )
             )

@@ -213,18 +213,14 @@ class SubscriptionRepository:
         `silent` / `translate` / `target_language` / `message_thread_id`
         are applied only when a new subscription is created (typically the
         channel defaults — see ChannelSettings — plus the forum topic the
-        command ran in). An existing subscription's preferences are
-        preserved: re-subscribing won't flip them back.
+        command ran in). An existing subscription is returned as it is,
+        paused or not: re-subscribing won't flip its preferences back.
 
         Returns:
             Tuple of (subscription, created)
         """
         existing = await self.get_subscription(platform, channel_id, feed_id)
         if existing:
-            # Reactivate if inactive
-            if not existing.is_active:
-                existing.is_active = True
-                return existing, False
             return existing, False
 
         subscription = await self.create_subscription(

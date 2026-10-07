@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+import feedparser
 import pytest
 from multidict import CIMultiDict
 
@@ -180,6 +181,25 @@ async def test_normal_feed_without_redirect_still_works():
     assert result.success is True
     assert result.etag == '"v1"'
     assert len(result.entries) == 1
+
+
+async def test_feed_is_parsed_off_the_event_loop_thread(monkeypatch: pytest.MonkeyPatch):
+    # A 5 MB feed takes over a second to parse; on the loop thread every other task stalls.
+    real_parse = feedparser.parse
+    parse_threads: list[int] = []
+
+    def recording_parse(*args, **kwargs):
+        parse_threads.append(threading.get_ident())
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(feedparser, "parse", recording_parse)
+    pub = "https://example.com/feed"
+    f = _fetcher({pub: _FakeResp(200, body=_VALID_RSS)})
+
+    result = await f.fetch_feed(pub)
+
+    assert len(result.entries) == 1
+    assert parse_threads and threading.get_ident() not in parse_threads
 
 
 async def test_fetch_bytes_capped_reassembles_a_chunked_body():

@@ -230,6 +230,22 @@ def test_misspelled_dotenv_key_is_reported(configure, monkeypatch, tmp_path):
     assert any("TRANSLATON_ENABLED" in w and "TRANSLATION_ENABLED" in w for w in warnings)
 
 
+def test_unreadable_dotenv_is_skipped_and_reported(configure, monkeypatch, tmp_path):
+    # systemd's EnvironmentFile reads .env as root and passes the values on as the
+    # environment; the service user cannot open the file itself, and must still start.
+    env_file = tmp_path / ".env"
+    env_file.write_text("TELEGRAM_TOKEN=from-file\n", encoding="utf-8")
+    env_file.chmod(0)
+    assert not os.access(env_file, os.R_OK), "needs a user that file modes apply to"
+    monkeypatch.setitem(Settings.model_config, "env_file", str(env_file))
+    monkeypatch.setenv("TELEGRAM_TOKEN", "from-environment")
+
+    settings = configure()
+
+    assert settings.telegram_token == "from-environment"
+    assert any(str(env_file) in w and "cannot read" in w for w in settings.config_warnings())
+
+
 def test_admin_user_ids_accept_a_json_list_of_numbers(configure, monkeypatch):
     monkeypatch.setenv("ADMIN_USER_IDS", "[123, 456]")
     assert configure().admin_user_ids == ["123", "456"]

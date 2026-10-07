@@ -16,6 +16,7 @@ just burns one failed API call per dispatch cycle per sub.
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 from sqlalchemy import select
 from telegram.error import BadRequest, Forbidden
@@ -28,6 +29,7 @@ from newsflow.models.subscription import Subscription
 from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
 from newsflow.services.dispatcher import Dispatcher
+from tests import seed
 
 # ===== Repository-layer tests =====
 
@@ -529,3 +531,43 @@ def test_telegram_errors_for_a_gone_chat(error):
 )
 def test_telegram_errors_that_leave_the_chat_alive(error):
     assert TelegramAdapter._is_chat_gone(error) is False
+
+
+# ===== Discord: which failures mean the channel is gone =====
+
+
+def _discord_error(cls: type[discord.HTTPException], status: int, code: int):
+    return cls(MagicMock(status=status, reason="refused"), {"code": code, "message": "refused"})
+
+
+def _uncached_channel_adapter(fetch_error: Exception):
+    """A bot whose cache lacks the channel and whose fetch fails: every guild channel is
+    cached while the bot is a member, so this is a server the bot was removed from."""
+    adapter, _channel = seed.discord_adapter()
+    adapter.bot.get_channel = MagicMock(return_value=None)
+    adapter.bot.fetch_channel = AsyncMock(side_effect=fetch_error)
+    return adapter
+
+
+@pytest.mark.parametrize("send", ["send_message", "send_text", "send_text_pinned"])
+async def test_discord_channel_of_a_server_the_bot_left_is_gone(configure, send):
+    configure(digest_auto_pin=True)
+    adapter = _uncached_channel_adapter(_discord_error(discord.Forbidden, 403, 50001))
+    payload = seed.message() if send == "send_message" else "text"
+
+    with pytest.raises(ChannelGoneError):
+        await getattr(adapter, send)("42", payload)
+
+
+async def test_discord_forbidden_send_to_a_visible_channel_is_not_gone():
+    # Missing Send Messages in a channel the bot can see: an admin can fix that.
+    adapter, channel = seed.discord_adapter()
+    channel.send.side_effect = _discord_error(discord.Forbidden, 403, 50013)
+
+    assert await adapter.send_message("42", seed.message()) is False
+
+
+async def test_discord_failed_fetch_for_another_reason_is_not_gone():
+    adapter = _uncached_channel_adapter(_discord_error(discord.DiscordServerError, 503, 0))
+
+    assert await adapter.send_text("42", "text") is False

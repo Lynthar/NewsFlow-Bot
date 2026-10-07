@@ -81,6 +81,19 @@ def test_parse_json_feed_sniffs_without_content_type():
     assert res[0][0]["guid"] == "x"
 
 
+def test_parse_json_feed_drops_a_date_too_large_to_represent():
+    # dateutil raises OverflowError here; one bad item must not fail the whole feed.
+    body = json.dumps(
+        {
+            "version": "https://jsonfeed.org/version/1.1",
+            "items": [{"id": "x", "url": "https://e/x", "date_published": "9" * 20}],
+        }
+    )
+    res = _f()._parse_json_feed(body, "application/feed+json", "https://e/f")
+    assert res is not None
+    assert res[0][0]["published_at"] is None
+
+
 def test_parse_json_feed_returns_none_for_xml():
     # An RSS/XML body must NOT be claimed by the JSON branch (caller uses
     # feedparser instead).

@@ -46,3 +46,18 @@ class ChannelSettingsRepository:
         await self.session.flush()
         await self.session.refresh(row)
         return row
+
+    async def migrate_channel(self, platform: str, old_channel_id: str, new_channel_id: str) -> int:
+        """Repoint the channel's defaults at a new id (Telegram group→supergroup). If the
+        new id already has its own row, that row wins and the old one is dropped. Returns
+        the number of rows repointed (0 or 1)."""
+        old = await self.get(platform, old_channel_id)
+        if old is None:
+            return 0
+        if await self.get(platform, new_channel_id) is not None:
+            await self.session.delete(old)
+            await self.session.flush()
+            return 0
+        old.platform_channel_id = new_channel_id
+        await self.session.flush()
+        return 1

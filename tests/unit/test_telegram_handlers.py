@@ -12,7 +12,7 @@ gets an acknowledgement, handler never raises).
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from newsflow.adapters.telegram.bot import _on_error, add_command
+from newsflow.adapters.telegram.bot import TelegramAdapter, _on_error, add_command
 from newsflow.core.feed_fetcher import FetchResult
 
 
@@ -107,3 +107,31 @@ async def test_on_error_tolerates_updateless_invocation():
     context.error = ValueError("job error")
 
     await _on_error(object(), context)  # must not raise
+
+
+# ─── stopping after a start that did not finish ──────────────────────────────
+
+
+class _NotRunning:
+    """PTB's Updater / Application when start() never got that far: `stop()` raises."""
+
+    def __init__(self, updater: "_NotRunning | None" = None) -> None:
+        self.updater = updater
+        self.running = False
+        self.shut_down = False
+
+    async def stop(self) -> None:
+        raise RuntimeError("This Application is not running!")
+
+    async def shutdown(self) -> None:
+        self.shut_down = True
+
+
+async def test_stop_after_a_failed_start_still_shuts_the_application_down():
+    adapter = TelegramAdapter(token="test-token")
+    app = _NotRunning(updater=_NotRunning())
+    adapter.app = app  # type: ignore[assignment]
+
+    await adapter.stop()
+
+    assert app.shut_down is True

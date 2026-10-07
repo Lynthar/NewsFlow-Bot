@@ -123,10 +123,18 @@ class Dispatcher:
         # event loop only holds weak refs and a task can be GC'd mid-run. See
         # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        # Serialises dispatch rounds: the loop and ingest-triggered rounds share this
-        # path, and two interleaved rounds double-send.
-        self._dispatch_mutex = asyncio.Lock()
+        # Held by every writer of delivery marks (rounds, the /add preview) and briefly by
+        # a digest reading its material. Two interleaved deliveries double-send.
+        self.delivery_lock = asyncio.Lock()
+        # Serialise digest runs per (platform, channel); see digest_lock().
+        self._digest_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.totals = DispatcherTotals()
+
+    def digest_lock(self, platform: str, channel_id: str) -> asyncio.Lock:
+        """The lock one channel's digest run holds from reading its window to recording
+        the delivery. Take it before `delivery_lock`, never while holding it: a digest
+        waits on a round, so the reverse order can deadlock."""
+        return self._digest_locks.setdefault((platform, channel_id), asyncio.Lock())
 
     def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task[Any]:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
@@ -136,6 +144,10 @@ class Dispatcher:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def background_tasks(self) -> list[asyncio.Task[Any]]:
+        """The spawn()ed tasks still running, for the shutdown to cancel."""
+        return list(self._background_tasks)
 
     def register_adapter(self, platform: str, adapter: MessageSender) -> None:
         """Register a platform adapter for message sending."""
@@ -185,7 +197,7 @@ class Dispatcher:
         ingest-triggered round) waits for the current round instead of racing
         it into double-sends.
         """
-        async with self._dispatch_mutex:
+        async with self.delivery_lock:
             result = await self._dispatch_once_inner()
         self.totals.dispatch_rounds += 1
         self.totals.feeds_fetched += result.feeds_fetched
@@ -246,14 +258,15 @@ class Dispatcher:
                         dead_channels=dead_channels,
                     )
                     result.messages_sent += sent
-                    # Commit after each subscription, never once per round: messages went out when
-                    # the adapter returned, so a late failure would roll back the whole round's
-                    # sent-marks and re-push everything. expire_on_commit=False keeps objects usable.
+                    # Each sent-mark was committed on its own; this commits what the batch's
+                    # handlers wrote (a gone or migrated channel, a cleared topic).
                     try:
                         await session.commit()
                     except Exception:
+                        # sub_id, not sub.id: a failed flush expired `sub`, and reading it
+                        # here would raise again before the rollback below could run.
                         logger.exception(
-                            f"Commit failed after subscription {sub.id}; "
+                            f"Commit failed after subscription {sub_id}; "
                             f"its sent-marks may replay next cycle"
                         )
                         await session.rollback()
@@ -315,8 +328,12 @@ class Dispatcher:
         # Empty rule matches everything (no-op filter).
         filter_rule = FilterRule.from_json(subscription.filter_rule)
 
+        # A failed flush expires every loaded instance, so the error handlers below
+        # log these plain ids: reading an expired attribute raises a second time.
+        sub_id = subscription.id
         sent_count = 0
         for entry in entries:
+            entry_id = entry.id
             try:
                 # Filter before the expensive translate/send path; filtered entries are marked
                 # processed. Match on CLEANED text — raw markup fires exclude words on URLs
@@ -332,6 +349,7 @@ class Dispatcher:
                             entry.guid,
                             was_filtered=True,
                         )
+                        await session.commit()
                         logger.debug(
                             f"Entry {entry.id} filtered out for "
                             f"{subscription.platform}/{subscription.platform_channel_id}"
@@ -348,6 +366,7 @@ class Dispatcher:
                         entry.guid,
                         was_filtered=False,
                     )
+                    await session.commit()
                     logger.debug(
                         f"Entry {entry.id} silenced for "
                         f"{subscription.platform}/{subscription.platform_channel_id} "
@@ -355,18 +374,22 @@ class Dispatcher:
                     )
                     continue
 
-                # Create message (with translation if enabled)
+                # Create message (with translation if enabled). Commit its translation-cache
+                # write first: no write transaction stays open across a network await, or
+                # every other writer (the webhook breaker, a digest, a command) waits on it.
                 message = await self._create_message(entry, subscription, session)
+                await session.commit()
 
-                # Send
                 success = await adapter.send_message(
                     subscription.platform_channel_id,
                     message,
                 )
 
                 if success:
-                    # Mark as sent
+                    # Committed per entry: the message is already out, so the mark must not
+                    # wait on, or be rolled back with, anything sent after it.
                     await sub_repo.mark_entry_sent(subscription.id, entry.feed_id, entry.guid)
+                    await session.commit()
                     sent_count += 1
                     logger.debug(
                         f"Sent entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
@@ -455,17 +478,18 @@ class Dispatcher:
                 return sent_count
 
             except SQLAlchemyError:
-                # A failed mark/flush has poisoned the transaction: every later mark in this
-                # batch fails while its message was already pushed — a guaranteed duplicate
-                # next cycle. Stop the batch; the round continues with the next subscription.
+                # A failed mark or commit leaves the session needing a rollback, which expires
+                # `subscription` and the entries. Stop the batch; the round goes on with the
+                # next subscription, re-fetched by id.
                 logger.exception(
-                    f"DB error marking entry {entry.id} for subscription "
-                    f"{subscription.id}; aborting this subscription's batch"
+                    f"DB error marking entry {entry_id} for subscription "
+                    f"{sub_id}; aborting this subscription's batch"
                 )
+                await session.rollback()
                 break
 
             except Exception as e:
-                logger.exception(f"Error sending entry {entry.id}: {e}")
+                logger.exception(f"Error sending entry {entry_id}: {e}")
 
         return sent_count
 
@@ -667,8 +691,10 @@ class Dispatcher:
         Returns:
             Number of messages successfully sent.
         """
+        # Shares the round mutex: a round reading the same unsent entry while the
+        # preview is still sending it would push it a second time.
         session_factory = get_session_factory()
-        async with session_factory() as session:
+        async with self.delivery_lock, session_factory() as session:
             sub_repo = SubscriptionRepository(session)
             sub = await sub_repo.get_subscription_by_id(subscription_id)
             if sub is None or not sub.is_active:
@@ -979,9 +1005,7 @@ class Dispatcher:
                     config.platform_channel_id,
                     summarizer,
                     now,
-                    # A scheduled run consumes its slot even on an empty window,
-                    # or is_due re-fires it on every tick until the hour passes.
-                    mark_empty_delivered=True,
+                    scheduled=True,
                 )
                 if outcome.status == "no_adapter":
                     logger.debug(f"Digest due for {channel} but adapter not registered; deferring")

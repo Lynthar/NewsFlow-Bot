@@ -256,6 +256,7 @@ async def test_import_opml_bulk_subscribes(session):
     from newsflow.core.feed_fetcher import FetchResult
 
     svc = SubscriptionService(session)
+    svc.feed_service.fetcher = AsyncMock()
     svc.feed_service.fetcher.fetch_feed = AsyncMock(
         return_value=FetchResult(
             url="placeholder",
@@ -283,6 +284,47 @@ async def test_import_opml_bulk_subscribes(session):
     ]
     assert result.already_subscribed == []
     assert result.failed == []
+
+
+async def test_import_opml_leaves_the_database_writable_while_fetching(db):
+    """Each imported feed is committed before the next is fetched. Holding one write
+    transaction across the fetches locked out every other writer, so a dispatch round
+    could not record what it had just sent."""
+    import sqlite3
+    from unittest.mock import AsyncMock
+
+    from newsflow.config import get_settings
+    from newsflow.core.feed_fetcher import FetchResult
+
+    db_path = get_settings().database_url.split("///", 1)[1]
+    other_writer_ok: list[bool] = []
+
+    async def fetch_feed(url, *args, **kwargs):
+        if url.startswith("https://b."):
+            # A second writer, as a dispatch round marking a sent entry would be.
+            try:
+                with sqlite3.connect(db_path, timeout=0.5) as conn:
+                    conn.execute("UPDATE feeds SET error_count = error_count")
+                other_writer_ok.append(True)
+            except sqlite3.OperationalError:
+                other_writer_ok.append(False)
+        entries = [{"guid": "g", "title": "T", "link": "https://x"}]
+        return FetchResult(url=url, success=True, entries=entries, feed_title="Fetched")
+
+    opml_doc = """<opml><body>
+        <outline type="rss" xmlUrl="https://a.example/feed"/>
+        <outline type="rss" xmlUrl="https://b.example/feed"/>
+    </body></opml>"""
+    async with db() as session:
+        svc = SubscriptionService(session)
+        svc.feed_service.fetcher = AsyncMock()
+        svc.feed_service.fetcher.fetch_feed = AsyncMock(side_effect=fetch_feed)
+        result = await svc.import_opml(
+            platform="discord", user_id="u", channel_id="c", opml_content=opml_doc
+        )
+
+    assert len(result.added) == 2
+    assert other_writer_ok == [True]
 
 
 async def test_set_feed_filter_persists_keywords(session):

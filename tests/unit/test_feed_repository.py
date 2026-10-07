@@ -2,6 +2,10 @@
 
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
+
+from newsflow.models.feed import FeedEntry
+from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.feed_repository import FeedRepository
 
 _LAST_MODIFIED = "Wed, 21 Oct 2015 07:28:00 GMT"
@@ -178,3 +182,110 @@ async def test_update_entry_translation_caps_title(session):
     assert refreshed is not None
     assert refreshed.title_translated is not None
     assert len(refreshed.title_translated) == 1024
+
+
+async def test_create_entries_bulk_stores_text_no_backend_rejects(session):
+    # A lone surrogate has no UTF-8 encoding and fails the INSERT; NUL fails it on
+    # Postgres. A pair split into two code points (surrogatepass decoding) rejoins.
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+
+    [entry] = await repo.create_entries_bulk(
+        feed.id,
+        [
+            {
+                "guid": "g\ud83d",
+                "title": "cut \ud83d emoji",
+                "link": "https://x/a",
+                "summary": "Breaking\x00 news",
+                "author": "\ud83d\ude00",
+            }
+        ],
+    )
+    await session.commit()
+
+    assert (entry.guid, entry.title) == ("g\ufffd", "cut \ufffd emoji")
+    assert (entry.summary, entry.author) == ("Breaking news", "\U0001f600")
+
+
+async def test_create_entries_bulk_matches_a_mended_guid_on_the_next_fetch(session):
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    item = {"guid": "g\ud83d", "title": "T", "link": "https://x/a"}
+
+    assert len(await repo.create_entries_bulk(feed.id, [item])) == 1
+    assert await repo.create_entries_bulk(feed.id, [item]) == []
+
+
+async def test_cleanup_keeps_an_old_entry_processed_within_the_digest_window(session):
+    """An entry stored 11 days ago but processed 3 days ago (its subscription was
+    paused, then resumed) is still the next weekly digest's material; entries whose
+    processing is older, that were never processed, or that were only seeded at
+    subscribe time, go on the usual schedule."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    sub = Subscription(
+        platform="telegram", platform_user_id="u", platform_channel_id="c", feed_id=feed.id
+    )
+    session.add(sub)
+    now = datetime.now(UTC)
+    stored = now - timedelta(days=11)
+    for guid in ("late", "stale", "unsent", "seeded"):
+        session.add(
+            FeedEntry(feed_id=feed.id, guid=guid, title=guid, link="https://x/", created_at=stored)
+        )
+    await session.flush()
+    for guid, sent_ago, seeded in (("late", 3, False), ("stale", 8, False), ("seeded", 3, True)):
+        session.add(
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=feed.id,
+                guid=guid,
+                sent_at=now - timedelta(days=sent_ago),
+                seeded=seeded,
+            )
+        )
+    await session.commit()
+
+    deleted = await repo.cleanup_old_entries(10)
+    await session.commit()
+
+    assert deleted == 3
+    assert list(await session.scalars(select(FeedEntry.guid))) == ["late"]
+
+
+async def test_long_guids_sharing_a_prefix_stay_distinct(session):
+    """Cutting a guid to the column width used to merge two that differ only past it,
+    and the second article was dropped as a duplicate on every fetch."""
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    prefix = "g" * 2048
+
+    def item(suffix: str) -> dict:
+        return {"guid": prefix + suffix, "title": suffix, "link": "https://x/" + suffix}
+
+    same_batch = await repo.create_entries_bulk(feed.id, [item("A"), item("B")])
+    next_fetch = await repo.create_entries_bulk(feed.id, [item("C")])
+    refetch = await repo.create_entries_bulk(feed.id, [item("A"), item("B"), item("C")])
+
+    assert [e.title for e in same_batch] == ["A", "B"]
+    assert [e.title for e in next_fetch] == ["C"]
+    assert refetch == []
+
+
+async def test_guid_keys_fit_the_column_and_the_index(session):
+    # 1,000 CJK characters are 3,000 UTF-8 bytes, past Postgres's btree entry limit.
+    repo = FeedRepository(session)
+    feed = await repo.create_feed(url="https://example.com/feed")
+    short = "https://example.com/a?id=1"
+
+    created = await repo.create_entries_bulk(
+        feed.id,
+        [
+            {"guid": "文" * 1000, "title": "cjk", "link": "https://x/1"},
+            {"guid": short, "title": "short", "link": "https://x/2"},
+        ],
+    )
+
+    assert len(created[0].guid.encode()) <= 2048
+    assert created[1].guid == short  # a guid that fits is stored unchanged

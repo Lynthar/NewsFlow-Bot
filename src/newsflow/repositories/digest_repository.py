@@ -138,13 +138,10 @@ class ChannelDigestRepository:
         """All FeedEntries sent to this channel in (since, until]. `limit`
         caps by the *most recent* N.
 
-        SentEntry → FeedEntry is matched on (feed_id, guid) since the
-        2026-05-08 schema migration. INNER JOIN means SentEntry rows
-        whose underlying FeedEntry has been cleaned up (their content is
-        gone) won't appear in digests — acceptable: digest windows are
-        normally <= 7d while FeedEntry retention is also 7d, so they
-        line up. A SentEntry without its FeedEntry is just a dedupe
-        signal with no body to summarize.
+        SentEntry → FeedEntry is matched on (feed_id, guid). INNER JOIN drops
+        SentEntry rows whose FeedEntry is gone; cleanup keeps every entry
+        processed within WEEKLY_WINDOW, so only a window longer than that
+        (missed deliveries) can lose bodies.
         """
         conditions = [
             Subscription.platform == platform,

@@ -38,6 +38,7 @@ from newsflow.core.feed_fetcher import (
     FetchResult,
     follow_redirects,
     read_body_capped,
+    to_text,
 )
 from newsflow.core.source_fetcher import SourceRequest, register_source_fetcher
 from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
@@ -100,12 +101,6 @@ def _resolve_headers(raw: Any) -> dict[str, str]:
 
         out[name] = _ENV_REF_RE.sub(expand, str(value))
     return out
-
-
-def _to_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    return value if isinstance(value, str) else str(value)
 
 
 def _parse_date(value: Any) -> datetime | None:
@@ -212,11 +207,11 @@ class JsonApiSourceFetcher:
         image = first("image")
         return {
             "guid": str(guid),
-            "title": _to_text(first("title")) or "Untitled",
-            "link": _to_text(first("link")) or feed_url,
-            "summary": _to_text(first("summary")) or "",
-            "content": _to_text(first("content")),
-            "author": _to_text(first("author")),
+            "title": to_text(first("title")) or "Untitled",
+            "link": to_text(first("link")) or feed_url,
+            "summary": to_text(first("summary")) or "",
+            "content": to_text(first("content")),
+            "author": to_text(first("author")),
             "published_at": _parse_date(first("published")),
             "image_url": image if isinstance(image, str) else None,
         }

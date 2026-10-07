@@ -5,10 +5,15 @@ archive.
 """
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
+from sqlalchemy import select
+
+from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.feed import Feed, FeedEntry
-from newsflow.models.subscription import Subscription
+from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services.feed_service import FeedService
 
 
 async def _make_feed_with_entries(session, n: int) -> Feed:
@@ -541,3 +546,79 @@ async def test_unsent_age_filter_boundary(session, configure):
 
     guids = {e.guid for e in unsent}
     assert guids == {"inside"}
+
+
+# ── sent records outlive their retention while the source lists the entry ────
+
+_LONG_AGO = timedelta(days=100)
+
+
+async def _sent_long_ago(session, guids: list[str], **feed_fields) -> Feed:
+    """A subscribed feed whose `guids` were each sent 100 days ago."""
+    feed = Feed(url=f"https://ex.com/{guids[0]}", is_active=True, error_count=0, **feed_fields)
+    session.add(feed)
+    await session.flush()
+    sub = Subscription(
+        platform="telegram", platform_user_id="u", platform_channel_id="c", feed_id=feed.id
+    )
+    session.add(sub)
+    await session.flush()
+    for guid in guids:
+        session.add(
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=feed.id,
+                guid=guid,
+                sent_at=datetime.now(UTC) - _LONG_AGO,
+            )
+        )
+    await session.commit()
+    return feed
+
+
+async def _remaining(session) -> list[str]:
+    return sorted(await session.scalars(select(SentEntry.guid)))
+
+
+async def test_record_survives_retention_while_the_source_still_lists_the_entry(session):
+    """An undated entry passes every age gate, so a record dropped at 90 days while
+    the source still lists the entry let it be delivered again, every 90 days."""
+    feed = await _sent_long_ago(session, ["listed", "dropped"])
+    svc = FeedService(session)
+    svc.fetcher = AsyncMock()
+    svc.fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(
+            url=feed.url,
+            success=True,
+            entries=[{"guid": "listed", "title": "T", "link": "https://x/1"}],
+        )
+    )
+    await svc.fetch_and_store(feed)
+    await session.commit()
+
+    await SubscriptionRepository(session).cleanup_old_sent_entries(90)
+    await session.commit()
+
+    assert await _remaining(session) == ["listed"]
+
+
+async def test_record_survives_while_the_feed_only_answers_not_modified(session):
+    # The last full snapshot predates the send, so nothing says the entry has left.
+    await _sent_long_ago(
+        session, ["static"], last_full_fetch_at=datetime.now(UTC) - _LONG_AGO - timedelta(days=1)
+    )
+
+    await SubscriptionRepository(session).cleanup_old_sent_entries(90)
+    await session.commit()
+
+    assert await _remaining(session) == ["static"]
+
+
+async def test_record_of_a_feed_without_snapshots_ages_out(session):
+    # Push sources are never fetched; their records go by when they were sent.
+    await _sent_long_ago(session, ["pushed"])
+
+    await SubscriptionRepository(session).cleanup_old_sent_entries(90)
+    await session.commit()
+
+    assert await _remaining(session) == []

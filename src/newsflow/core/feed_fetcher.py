@@ -9,6 +9,7 @@ Handles fetching and parsing RSS feeds with:
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -69,6 +70,14 @@ async def read_body_capped(
             return None
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def to_text(value: Any) -> str | None:
+    """A source field as text. JSON hands over numbers where a string belongs (an
+    unquoted 2024 title), and one stored unconverted fails the feed's whole insert."""
+    if value is None:
+        return None
+    return value if isinstance(value, str) else str(value)
 
 
 class FeedFetchError(Exception):
@@ -279,7 +288,13 @@ class FeedFetcher:
                         feed_title=json_title,
                     )
 
-                feed = feedparser.parse(content)
+                # A stream, never str or bytes: feedparser opens those as a URL or a file path,
+                # bypassing the URL checks and caps above. It also sniffs the charset itself.
+                content_type = response.headers.get("Content-Type")
+                feed = feedparser.parse(
+                    io.BytesIO(raw),
+                    response_headers={"content-type": content_type} if content_type else None,
+                )
 
                 # If the body was an HTML page advertising a feed (<link rel="alternate">, which
                 # feedparser surfaces in feed.feed.links), hand those back so add_feed can
@@ -455,7 +470,7 @@ class FeedFetcher:
 
     def _json_feed_item(self, item: dict[str, Any], feed_url: str) -> dict[str, Any]:
         """Map one JSON Feed item to the normalized dict ``_parse_entry`` yields."""
-        url = item.get("url") or item.get("external_url")
+        url = to_text(item.get("url") or item.get("external_url"))
         # JSON Feed requires a unique `id`; fall back to the url, then to a
         # content hash so multiple id-less items can't collapse to one guid
         # (which would make dedupe drop all but the first).
@@ -473,17 +488,18 @@ class FeedFetcher:
         author = None
         if isinstance(authors, list) and authors and isinstance(authors[0], dict):
             author = authors[0].get("name")
+        image = item.get("image") or item.get("banner_image")
         # Reuse _parse_date's naive→UTC string handling via a feedparser-shaped
         # dict, rather than duplicating it here.
         return {
             "guid": str(guid),
-            "title": item.get("title") or "Untitled",
+            "title": to_text(item.get("title")) or "Untitled",
             "link": url or feed_url,
-            "summary": item.get("content_text") or "",
-            "content": item.get("content_html"),
-            "author": author,
+            "summary": to_text(item.get("content_text")) or "",
+            "content": to_text(item.get("content_html")),
+            "author": to_text(author),
             "published_at": self._parse_date({"published": item.get("date_published")}),
-            "image_url": item.get("image") or item.get("banner_image"),
+            "image_url": image if isinstance(image, str) else None,
         }
 
     def _parse_date(self, entry: Any) -> datetime | None:

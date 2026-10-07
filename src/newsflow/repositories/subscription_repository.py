@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -523,6 +523,41 @@ class SubscriptionRepository:
         await self.session.flush()
         return sent
 
+    async def seed_predating_entries(
+        self, feed_id: int, subscription_ids: Sequence[int] | None = None
+    ) -> int:
+        """Mark as seeded each entry of `feed_id` published before the subscription was
+        created (undated ones too), for `subscription_ids` or all the feed's subscriptions,
+        skipping entries a subscription already has a record for. Returns rows added."""
+        from newsflow.models.feed import FeedEntry
+
+        already = exists().where(
+            SentEntry.subscription_id == Subscription.id,
+            SentEntry.feed_id == FeedEntry.feed_id,
+            SentEntry.guid == FeedEntry.guid,
+        )
+        stmt = (
+            select(Subscription.id, FeedEntry.guid)
+            .join(FeedEntry, FeedEntry.feed_id == Subscription.feed_id)
+            .where(
+                Subscription.feed_id == feed_id,
+                or_(
+                    FeedEntry.published_at.is_(None),
+                    FeedEntry.published_at < Subscription.created_at,
+                ),
+                ~already,
+            )
+        )
+        if subscription_ids is not None:
+            stmt = stmt.where(Subscription.id.in_(subscription_ids))
+        pairs = (await self.session.execute(stmt)).all()
+        self.session.add_all(
+            SentEntry(subscription_id=sub_id, feed_id=feed_id, guid=guid, seeded=True)
+            for sub_id, guid in pairs
+        )
+        await self.session.flush()
+        return len(pairs)
+
     async def seed_sent_entries(
         self,
         subscription_id: int,
@@ -677,9 +712,24 @@ class SubscriptionRepository:
         return int(count or 0)
 
     async def cleanup_old_sent_entries(self, days: int = 7) -> int:
-        """Delete old sent entry records."""
-        from datetime import timedelta
+        """Delete sent records last seen more than `days` ago, once their feed's latest
+        full snapshot no longer lists the entry; for a feed without snapshots (a push
+        source), once sent more than `days` ago."""
+        from newsflow.models.feed import Feed
 
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        result = await self.session.execute(delete(SentEntry).where(SentEntry.sent_at < cutoff))
+        last_seen = func.coalesce(SentEntry.last_seen_at, SentEntry.sent_at)
+        snapshot = select(Feed.last_full_fetch_at).where(Feed.id == SentEntry.feed_id)
+        result = await self.session.execute(
+            delete(SentEntry).where(
+                # Implied by the next line (last_seen_at is never before sent_at);
+                # stated so the sent_at index narrows the scan.
+                SentEntry.sent_at < cutoff,
+                last_seen < cutoff,
+                or_(
+                    snapshot.scalar_subquery().is_(None),
+                    last_seen < snapshot.scalar_subquery(),
+                ),
+            )
+        )
         return rowcount(result)

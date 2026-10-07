@@ -7,7 +7,7 @@ Provides CRUD operations for feeds.
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_api_key
@@ -54,8 +54,7 @@ class FeedResponse(BaseModel):
     created_at: datetime
     entry_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FeedListResponse(BaseModel):

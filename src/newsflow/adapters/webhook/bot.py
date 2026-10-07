@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -22,16 +21,17 @@ from sqlalchemy import select
 
 from newsflow.adapters.base import BaseAdapter, Message
 from newsflow.adapters.webhook.formats import (
+    Refusal,
     WireRequest,
+    body_refusal,
     build_notification_payload,
     build_payload,
+    reads_verdict_from_body,
 )
+from newsflow.core.feed_fetcher import read_body_capped
 from newsflow.models.base import get_session_factory
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services.dispatcher import get_dispatcher
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,28 @@ def _retry_after_seconds(headers: Mapping[str, str], cap: float) -> float | None
     except ValueError:
         return 1.0
     return None if delay > cap else max(0.0, delay)
+
+
+def _loggable_host(url: str) -> str:
+    """`hostname[:port]` of `url`, without the userinfo that `netloc` would carry."""
+    parts = urlsplit(url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    host = parts.hostname or "<no-host>"
+    return f"{host}:{port}" if port else host
+
+
+# A verdict body is a few dozen bytes; anything past this is not one.
+_VERDICT_BODY_CAP = 4096
+
+
+async def _read_refusal(format_name: str, resp: aiohttp.ClientResponse) -> Refusal | None:
+    if not reads_verdict_from_body(format_name):
+        return None
+    body = await read_body_capped(resp.content, _VERDICT_BODY_CAP)
+    return None if body is None else body_refusal(format_name, body)
 
 
 class WebhookAdapter(BaseAdapter):
@@ -93,14 +115,14 @@ class WebhookAdapter(BaseAdapter):
         """Open the aiohttp session, register with the dispatcher, and block
         until stop() is called (so the task stays alive for cleanup)."""
         self._session = aiohttp.ClientSession()
-        await self.reload_destinations()
-        self._started = True
         self._stop_event = asyncio.Event()
-
-        get_dispatcher().register_adapter("webhook", self)
-        logger.info("WebhookAdapter registered with dispatcher")
-
+        # Everything after the session is opened sits in the try: a shutdown can
+        # cancel this task while it is still loading destinations.
         try:
+            await self.reload_destinations()
+            self._started = True
+            get_dispatcher().register_adapter("webhook", self)
+            logger.info("WebhookAdapter registered with dispatcher")
             await self._stop_event.wait()
         finally:
             self._started = False
@@ -146,7 +168,7 @@ class WebhookAdapter(BaseAdapter):
 
         # Log host only — the full URL often contains a secret token (Slack,
         # Zapier, feishu signed URLs all do) that shouldn't land in logs.
-        host = urlsplit(dest.url).netloc or "<no-host>"
+        host = _loggable_host(dest.url)
         timeout = aiohttp.ClientTimeout(total=max(1, dest.timeout_s))
 
         for attempt in range(2):
@@ -166,9 +188,20 @@ class WebhookAdapter(BaseAdapter):
                     timeout=timeout,
                     allow_redirects=False,
                 ) as resp:
+                    refusal: Refusal | None = None
                     if 200 <= resp.status < 300:
-                        await self._record_send_result(dest, ok=True)
-                        return True
+                        refusal = await _read_refusal(dest.format, resp)
+                        if refusal is None:
+                            await self._record_send_result(dest, ok=True)
+                            return True
+                    if refusal is not None and refusal.rate_limited:
+                        # No wait to honour: the code says only "slow down", and WeCom's
+                        # window is a minute. Like a 429, it never touches the breaker.
+                        logger.warning(
+                            f"webhook {dest.name} ({host}) rate-limited ({refusal.error}); "
+                            f"deferring to the next dispatch round"
+                        )
+                        return False
                     if resp.status == 429:
                         # The receiver is pacing us, not failing. Neither branch touches the
                         # breaker: 10 rate-limits in a row would disable a healthy endpoint,
@@ -185,6 +218,10 @@ class WebhookAdapter(BaseAdapter):
                             f"deferring to the next dispatch round"
                         )
                         return False
+                    if refusal is not None:
+                        logger.warning(f"webhook {dest.name} ({host}) refused: {refusal.error}")
+                        await self._record_send_result(dest, ok=False, error=refusal.error)
+                        return False
                     # Read a small slice of the body for diagnostics without
                     # letting a misbehaving server push megabytes into our logs.
                     snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
@@ -198,14 +235,17 @@ class WebhookAdapter(BaseAdapter):
                 )
                 return False
             except aiohttp.ClientError as e:
-                logger.warning(f"webhook {dest.name} ({host}) client error: {e}")
-                await self._record_send_result(dest, ok=False, error=str(e))
+                # Type name only: aiohttp's message can quote the whole URL, token included.
+                error = type(e).__name__
+                logger.warning(f"webhook {dest.name} ({host}) client error: {error}")
+                await self._record_send_result(dest, ok=False, error=error)
                 return False
             except ValueError as e:
                 # aiohttp raises ValueError on an illegal header value. Treat it as a failed send
                 # rather than letting it escape and wedge the entry in the dispatch loop.
-                logger.warning(f"webhook {dest.name} ({host}) bad header/request: {e}")
-                await self._record_send_result(dest, ok=False, error=str(e))
+                error = type(e).__name__
+                logger.warning(f"webhook {dest.name} ({host}) bad header/request: {error}")
+                await self._record_send_result(dest, ok=False, error=error)
                 return False
         return False
 

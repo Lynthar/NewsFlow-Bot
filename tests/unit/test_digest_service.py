@@ -15,6 +15,13 @@ from newsflow.services.digest_service import (
 )
 from newsflow.services.summarization.base import DigestArticle, DigestResult
 
+
+async def _generate(service: DigestService, config: ChannelDigest) -> DigestResult | None:
+    """collect, then summarize — what run_now does on either side of its locks."""
+    material = await service.collect(config, datetime.now(UTC))
+    return None if material is None else await service.summarize(config.language, material)
+
+
 # ===== is_due scheduling =====
 
 
@@ -336,7 +343,7 @@ async def test_digest_generate_returns_none_when_window_empty(session):
     )
     service = DigestService(session, summarizer)
 
-    result = await service.generate(config)
+    result = await _generate(service, config)
 
     assert result is None
     summarizer.generate_digest.assert_not_awaited()
@@ -364,7 +371,7 @@ async def test_digest_generate_invokes_summarizer_with_articles(session):
     )
     service = DigestService(session, summarizer)
 
-    result = await service.generate(config)
+    result = await _generate(service, config)
 
     assert result is not None
     assert result.success is True
@@ -404,7 +411,7 @@ async def test_digest_generate_honors_max_articles_cap(session):
     summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
 
-    await service.generate(config)
+    await _generate(service, config)
 
     call = summarizer.generate_digest.await_args
     assert len(call.kwargs["articles"]) == 2
@@ -479,7 +486,7 @@ async def test_digest_generate_excludes_filtered_by_default(session):
     summarizer = AsyncMock()
     summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
-    await service.generate(config)
+    await _generate(service, config)
 
     titles = {a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]}
     assert titles == {"Real"}  # Filtered one is hidden by default
@@ -552,7 +559,7 @@ async def test_digest_generate_includes_filtered_when_configured(session):
     summarizer = AsyncMock()
     summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
-    await service.generate(config)
+    await _generate(service, config)
 
     titles = {a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]}
     assert titles == {"A", "B"}
@@ -632,7 +639,7 @@ async def test_digest_excludes_seeded_backlog(session):
     summarizer = AsyncMock()
     summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="ok"))
     service = DigestService(session, summarizer)
-    await service.generate(config)
+    await _generate(service, config)
 
     titles = {a.title for a in summarizer.generate_digest.await_args.kwargs["articles"]}
     assert titles == {"Shown"}  # seeded backlog excluded

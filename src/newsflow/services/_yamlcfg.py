@@ -5,7 +5,23 @@ by name, so nothing here may raise a common base instead."""
 from __future__ import annotations
 
 from dataclasses import fields
+from pathlib import Path
 from typing import Any
+
+import yaml
+
+
+def load_yaml(exc: type[Exception], path: Path) -> Any:
+    """Parse `path`, raising `exc` if it can't be read or parsed. Parsed from the open
+    file, never its text: from a str, PyYAML quotes the source lines around an error,
+    and that line can hold a secret or a tokenised URL."""
+    try:
+        with path.open(encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except OSError as e:
+        raise exc(f"couldn't read {path}: {e}") from e
+    except yaml.YAMLError as e:
+        raise exc(f"malformed YAML in {path}: {e}") from e
 
 
 def yaml_keys(cls: type[Any]) -> frozenset[str]:

@@ -147,12 +147,12 @@ async def test_dated_mail_still_maps_its_date(monkeypatch):
 
 
 class _CapturingMailBox:
-    """Records the ssl_context the fetcher hands to imap_tools."""
+    """Records the ssl_context and timeout the fetcher hands to imap_tools."""
 
     seen: dict = {}
 
-    def __init__(self, host, port, ssl_context=None):
-        _CapturingMailBox.seen["ssl_context"] = ssl_context
+    def __init__(self, host, port, timeout=None, ssl_context=None):
+        _CapturingMailBox.seen.update(ssl_context=ssl_context, timeout=timeout)
 
     def login(self, *args, **kwargs):
         return self
@@ -173,6 +173,12 @@ def _context_for(tls: str) -> ssl.SSLContext:
         _CapturingMailBox, "imap.example.com", 993, "u", "p", "INBOX", 10, tls
     )
     return _CapturingMailBox.seen["ssl_context"]
+
+
+def test_connection_has_a_socket_timeout():
+    # Without one, a server that accepts and then stops answering wedges the round.
+    _context_for("verify")
+    assert 0 < _CapturingMailBox.seen["timeout"] <= 60
 
 
 def test_default_tls_verifies_the_certificate():

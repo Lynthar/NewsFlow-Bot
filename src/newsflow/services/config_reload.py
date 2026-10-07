@@ -7,7 +7,8 @@ Failure semantics differ from startup: a bad file at boot aborts, a bad file at 
 keeps the PREVIOUS synced state (both syncs parse fully before touching the DB) and
 reports the error to the caller. The two files reload independently.
 
-An absent file skips that sync and keeps its state; disabling a feature is a restart.
+An absent file skips that sync and keeps its state; sources.yaml's sources stay active
+until the file is emptied to ``sources: {}``.
 """
 
 from __future__ import annotations

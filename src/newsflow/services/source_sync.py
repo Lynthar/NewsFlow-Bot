@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,8 +26,11 @@ from newsflow.core.source_fetcher import declarable_source_types
 from newsflow.models.base import get_session_factory
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import Subscription
-from newsflow.repositories.subscription_repository import SubscriptionRepository
-from newsflow.services._yamlcfg import reject_unknown_keys, require_bool, yaml_keys
+from newsflow.services._owned_subscriptions import (
+    DeclaredSubscription,
+    reconcile_owned_subscriptions,
+)
+from newsflow.services._yamlcfg import load_yaml, reject_unknown_keys, require_bool, yaml_keys
 from newsflow.services.feed_service import FeedService, SourceFeedConflictError
 
 logger = logging.getLogger(__name__)
@@ -79,14 +81,7 @@ _SUBSCRIBER_KEYS = yaml_keys(SubscriberCfg)
 def parse_sources_yaml(path: Path) -> list[SourceCfg]:
     """Load and validate sources.yaml. Raises SourceConfigError on any
     structural problem so the operator sees it at boot."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise SourceConfigError(f"couldn't read {path}: {e}") from e
-    try:
-        raw = yaml.safe_load(text) or {}
-    except yaml.YAMLError as e:
-        raise SourceConfigError(f"malformed YAML in {path}: {e}") from e
+    raw = load_yaml(SourceConfigError, path)
     if not isinstance(raw, dict):
         raise SourceConfigError(f"{path}: top-level must be a mapping with a `sources:` key")
     reject_unknown_keys(SourceConfigError, f"{path}", raw, _TOP_LEVEL_KEYS)
@@ -202,10 +197,9 @@ async def sync_sources(path: Path) -> None:
 
 async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
     feed_service = FeedService(session)
-    sub_repo = SubscriptionRepository(session)
 
     desired_urls: set[str] = set()
-    desired_subs: set[tuple[str, str, int]] = set()  # (platform, channel, feed_id)
+    declared: list[DeclaredSubscription] = []
 
     for src in sources:
         # The reserved scheduling key rides inside Feed.config so no schema
@@ -223,66 +217,29 @@ async def _reconcile(session: AsyncSession, sources: list[SourceCfg]) -> None:
             continue
         await session.flush()  # ensure feed.id is populated
         desired_urls.add(src.url)
-
-        for sub_cfg in src.subscribers:
-            desired_subs.add((sub_cfg.platform, sub_cfg.channel, feed.id))
-            existing = await sub_repo.get_subscription(
+        declared.extend(
+            DeclaredSubscription(
                 platform=sub_cfg.platform,
                 channel_id=sub_cfg.channel,
                 feed_id=feed.id,
+                settings={
+                    "silent": sub_cfg.silent,
+                    "translate": sub_cfg.translate,
+                    "target_language": sub_cfg.language,
+                },
             )
-            if existing is None:
-                sub = Subscription(
-                    platform=sub_cfg.platform,
-                    # No human user owns these — a literal marker tells future
-                    # readers (and the removal logic) "owned by sources.yaml".
-                    platform_user_id=_OWNER,
-                    platform_channel_id=sub_cfg.channel,
-                    feed_id=feed.id,
-                    is_active=True,
-                    silent=sub_cfg.silent,
-                    translate=sub_cfg.translate,
-                    target_language=sub_cfg.language,
-                )
-                session.add(sub)
-                await session.flush()
-                # Don't flood the channel with the source's whole backlog on
-                # first sync — same policy as webhook_sync / regular /feed add.
-                await sub_repo.seed_sent_entries(sub.id, feed.id, keep_latest=0)
-                logger.info(
-                    f"source_sync: subscribed {sub_cfg.platform}/{sub_cfg.channel} → {src.name!r}"
-                )
-            elif existing.platform_user_id != _OWNER:
-                # Defence in depth: a sub at this (platform, channel, feed) that we do not own
-                # must never be silently rewritten by the file.
-                logger.warning(
-                    f"source_sync: subscription {existing.platform}/"
-                    f"{existing.platform_channel_id} → feed_id={feed.id} is "
-                    f"owned by {existing.platform_user_id!r}, not sources.yaml;"
-                    f" leaving its settings untouched"
-                )
-            else:
-                # Keep settings in sync with the file so operators can change
-                # them by editing and restarting.
-                existing.silent = sub_cfg.silent
-                existing.translate = sub_cfg.translate
-                existing.target_language = sub_cfg.language
-                if not existing.is_active:
-                    existing.is_active = True
+            for sub_cfg in src.subscribers
+        )
 
-    await _remove_stale(session, desired_urls, desired_subs)
+    await reconcile_owned_subscriptions(session, _OWNER, declared, "source_sync")
+    await _remove_stale(session, desired_urls)
 
 
-async def _remove_stale(
-    session: AsyncSession,
-    desired_urls: set[str],
-    desired_subs: set[tuple[str, str, int]],
-) -> None:
+async def _remove_stale(session: AsyncSession, desired_urls: set[str]) -> None:
+    """Drop non-RSS feeds that left the file. Deleting a feed cascades to ALL its
+    subscriptions and their SentEntry history, including rows this sync does not own,
+    so a feed with foreign subscribers is kept alive."""
     known = declarable_source_types()
-
-    # 1. Drop non-RSS feeds that left the file. Deleting a feed cascades to ALL its
-    #    subscriptions and their SentEntry history, including rows this sync does
-    #    not own, so a feed with foreign subscribers is kept alive.
     feeds_result = await session.execute(select(Feed).where(Feed.source_type.in_(known)))
     for feed in feeds_result.scalars().all():
         if feed.url in desired_urls:
@@ -308,18 +265,4 @@ async def _remove_stale(
             continue
         logger.info(f"source_sync: removing source feed {feed.url!r}")
         await session.delete(feed)
-    await session.flush()
-
-    # 2. Drop our subscriptions whose (platform, channel, feed) left the file
-    #    while the source itself stayed (a subscriber was removed).
-    subs_result = await session.execute(
-        select(Subscription).where(Subscription.platform_user_id == _OWNER)
-    )
-    for sub in subs_result.scalars().all():
-        if (sub.platform, sub.platform_channel_id, sub.feed_id) not in desired_subs:
-            logger.info(
-                f"source_sync: unsubscribing {sub.platform}/{sub.platform_channel_id} "
-                f"→ feed_id={sub.feed_id}"
-            )
-            await session.delete(sub)
     await session.flush()

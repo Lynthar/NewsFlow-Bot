@@ -98,7 +98,8 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         settings = get_settings()
         connect_args: dict[str, Any] = {}
-        if settings.database_url.startswith("sqlite"):
+        is_sqlite = settings.database_url.startswith("sqlite")
+        if is_sqlite:
             # aiosqlite timeout maps to sqlite3's busy handler: wait up to 15s for another
             # writer instead of raising "database is locked". With WAL this removes the
             # dispatch-loop vs slash-command contention.
@@ -106,6 +107,12 @@ def get_engine() -> AsyncEngine:
         _engine = create_async_engine(
             settings.database_url,
             echo=settings.db_echo,
+            # Bound values ride in every DB exception's text, webhook secrets and auth
+            # headers included; DB_ECHO is the explicit opt-in to seeing them.
+            hide_parameters=not settings.db_echo,
+            # A server restart leaves every pooled connection dead; test each on checkout
+            # instead of failing the first query on it. SQLite has no server to lose.
+            pool_pre_ping=not is_sqlite,
             future=True,
             connect_args=connect_args,
         )

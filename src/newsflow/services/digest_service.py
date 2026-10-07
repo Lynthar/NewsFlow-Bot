@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.core.content_processor import clean_html, get_source_name
 from newsflow.models.base import get_session_factory
-from newsflow.models.digest import ChannelDigest
+from newsflow.models.digest import WEEKLY_WINDOW, ChannelDigest
 from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.services.summarization import (
     DigestArticle,
@@ -37,11 +37,20 @@ _DEDUPE_DELTA_WEEKLY = timedelta(days=6)
 DigestRunStatus = Literal[
     "no_adapter",
     "no_config",
+    "not_due",
     "no_articles",
     "generation_failed",
     "delivery_failed",
     "delivered",
 ]
+
+
+@dataclass
+class DigestMaterial:
+    """One digest's input, read from the database before the LLM is called."""
+
+    articles: list[DigestArticle]
+    window_desc: str
 
 
 @dataclass
@@ -204,7 +213,7 @@ def _time_window_desc(config: ChannelDigest, now: datetime) -> tuple[datetime, s
     """
     if config.last_delivered_at is None:
         if config.schedule == "weekly":
-            return now - timedelta(days=7), "the past 7 days"
+            return now - WEEKLY_WINDOW, "the past 7 days"
         return now - timedelta(hours=24), "the past 24 hours"
     # See is_due() — SQLite drops tzinfo on read; re-attach UTC so
     # downstream comparisons stay consistent.
@@ -234,11 +243,14 @@ class DigestService:
         summarizer: SummarizationProvider,
         now: datetime,
         *,
-        mark_empty_delivered: bool,
+        scheduled: bool,
     ) -> DigestDeliveryResult:
         """Generate one channel's digest, deliver it, record the delivery — the
-        single entry for the scheduler and both /digest now handlers. With
-        `mark_empty_delivered` an empty window still consumes the schedule slot.
+        single entry for the scheduler and both /digest now handlers.
+
+        A `scheduled` run re-checks that its slot is still due once it holds the
+        channel, and an empty window consumes the slot; a manual run does neither,
+        or it would eat the digest the user was going to receive.
 
         Raises:
             ChannelGoneError, ChannelMigratedError: propagated from delivery so
@@ -249,64 +261,66 @@ class DigestService:
             return DigestDeliveryResult("no_adapter")
 
         session_factory = get_session_factory()
-        # A session per phase: holding one across the LLM call or the platform
-        # send collided with the dispatch loop's long write transaction and
-        # stalled it for the whole busy-timeout.
-        async with session_factory() as session:
-            service = DigestService(session, summarizer)
-            config = await service.repo.get(platform, channel_id)
-            if config is None:
-                return DigestDeliveryResult("no_config")
+        # Two runs for one channel would read the same window and both deliver it,
+        # and the slower one would write its older time back over the newer.
+        async with dispatcher.digest_lock(platform, channel_id):
+            # The window is read while no delivery is in flight: a sent-mark flushed
+            # but not committed is invisible here, and the window would then move
+            # past it for good. Sessions end before the LLM call and the send.
+            async with dispatcher.delivery_lock, session_factory() as session:
+                service = DigestService(session, summarizer)
+                config = await service.repo.get(platform, channel_id)
+                if config is None:
+                    return DigestDeliveryResult("no_config")
+                if scheduled and not is_due(config, now):
+                    return DigestDeliveryResult("not_due")
 
-            config_id = config.id
-            prior_pin_id = config.last_pinned_message_id
-            result = await service.generate(config, now=now)
+                config_id = config.id
+                prior_pin_id = config.last_pinned_message_id
+                language = config.language
+                material = await service.collect(config, now)
+                if material is None:
+                    if scheduled:
+                        await service.repo.mark_delivered(config_id, now)
+                        await session.commit()
+                    return DigestDeliveryResult("no_articles")
 
-            if result is None:
-                if mark_empty_delivered:
-                    await service.repo.mark_delivered(config_id, now)
-                    await session.commit()
-                return DigestDeliveryResult("no_articles")
+            result = await service.summarize(language, material)
             if not result.success:
                 return DigestDeliveryResult("generation_failed", error=result.error)
-
             digest_text = dispatcher.apply_digest_header(result.text, platform)
 
-        chunks, new_pin_id = await dispatcher.deliver_digest(
-            adapter,
-            channel_id,
-            digest_text,
-            chunk_size=adapter.digest_chunk_size,
-            prior_pin_id=prior_pin_id,
-        )
-        if chunks == 0:
-            return DigestDeliveryResult("delivery_failed")
-
-        # The digest is already on-platform, so a failed UPDATE is reported,
-        # not raised: dying here would lose the fact that it was delivered.
-        mark_failed = False
-        try:
-            async with session_factory() as session:
-                await ChannelDigestRepository(session).mark_delivered(
-                    config_id, now, pinned_message_id=new_pin_id
-                )
-                await session.commit()
-        except Exception:
-            logger.exception(
-                f"mark_delivered failed for {platform}/{channel_id}; the digest was "
-                f"delivered ({chunks} chunks) but the stored state is stale"
+            chunks, new_pin_id = await dispatcher.deliver_digest(
+                adapter,
+                channel_id,
+                digest_text,
+                chunk_size=adapter.digest_chunk_size,
+                prior_pin_id=prior_pin_id,
             )
-            mark_failed = True
+            if chunks == 0:
+                return DigestDeliveryResult("delivery_failed")
+
+            # The digest is already on-platform, so a failed UPDATE is reported,
+            # not raised: dying here would lose the fact that it was delivered.
+            mark_failed = False
+            try:
+                async with session_factory() as session:
+                    await ChannelDigestRepository(session).mark_delivered(
+                        config_id, now, pinned_message_id=new_pin_id
+                    )
+                    await session.commit()
+            except Exception:
+                logger.exception(
+                    f"mark_delivered failed for {platform}/{channel_id}; the digest was "
+                    f"delivered ({chunks} chunks) but the stored state is stale"
+                )
+                mark_failed = True
 
         return DigestDeliveryResult("delivered", chunks=chunks, mark_failed=mark_failed)
 
-    async def generate(
-        self,
-        config: ChannelDigest,
-        now: datetime | None = None,
-    ) -> DigestResult | None:
-        """Generate digest text. Returns None if there's nothing to say."""
-        now = now or datetime.now(UTC)
+    async def collect(self, config: ChannelDigest, now: datetime) -> DigestMaterial | None:
+        """The articles `config`'s channel received in its window up to `now`, ready
+        for the summarizer, or None if there's nothing to say."""
         since, window_desc = _time_window_desc(config, now)
 
         entries = await self.repo.get_channel_articles(
@@ -339,15 +353,18 @@ class DigestService:
                     published_at=e.published_at,
                 )
             )
+        return DigestMaterial(articles=articles, window_desc=window_desc)
 
+    async def summarize(self, language: str, material: DigestMaterial) -> DigestResult:
+        """The digest text for `material`, from the LLM. Touches no database."""
         result = await self.summarizer.generate_digest(
-            articles=articles,
-            language=config.language,
-            time_window_desc=window_desc,
+            articles=material.articles,
+            language=language,
+            time_window_desc=material.window_desc,
         )
         # The provider returns the digest body only; the source list is
         # appended here in code so URLs are never left to the model to
         # reproduce (they get truncated/hallucinated past a dozen links).
         if result.success and result.text:
-            result.text = append_source_list(result.text, articles, config.language)
+            result.text = append_source_list(result.text, material.articles, language)
         return result

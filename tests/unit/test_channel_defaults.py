@@ -12,6 +12,7 @@ from newsflow.services.subscription_service import SubscriptionService
 
 
 def _mock_fetch(svc: SubscriptionService, url: str = "https://example.com/feed") -> None:
+    svc.feed_service.fetcher = AsyncMock()
     svc.feed_service.fetcher.fetch_feed = AsyncMock(
         return_value=FetchResult(
             url=url,

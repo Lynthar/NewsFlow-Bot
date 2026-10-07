@@ -14,13 +14,14 @@ point a Slack / ntfy / feishu webhook URL directly at NewsFlow.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.header import Header
 from html import escape as html_escape
 from typing import Any
 
-from newsflow.adapters.base import Message
+from newsflow.adapters.base import Message, is_http_url
 
 
 @dataclass
@@ -42,6 +43,44 @@ def build_notification_payload(format_name: str, text: str) -> WireRequest:
     into the given wire format."""
     converter = _TEXT_CONVERTERS.get(format_name, _to_generic_text)
     return converter(text)
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """A receiver's verdict, carried in a 2xx response body, that it dropped the message."""
+
+    error: str
+    rate_limited: bool
+
+
+def reads_verdict_from_body(format_name: str) -> bool:
+    """Whether a 2xx from this format's receiver still needs its body checked."""
+    return format_name in _BODY_VERDICTS
+
+
+def body_refusal(format_name: str, body: bytes) -> Refusal | None:
+    """The refusal a 2xx body reports, or None when the message was accepted.
+
+    A body that is not the receiver's JSON envelope counts as accepted: nothing in
+    it says otherwise, which is all a 2xx without this contract would tell us.
+    """
+    spec = _BODY_VERDICTS.get(format_name)
+    if spec is None:
+        return None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    code = next((data[k] for k in spec.code_keys if k in data), 0)
+    if not code:
+        return None
+    reason = next((str(data[k]) for k in spec.message_keys if data.get(k)), "")
+    return Refusal(
+        error=f"{format_name} code {code}: {reason}"[:300],
+        rate_limited=code in spec.rate_limit_codes,
+    )
 
 
 # ─── generic ─────────────────────────────────────────────────────────────────
@@ -81,14 +120,16 @@ def _to_generic_text(text: str) -> WireRequest:
 
 def _to_slack(m: Message) -> WireRequest:
     title = m.display_title
-    summary = m.display_summary or "_No summary_"
     # Block kit section text limit is 3000; leave some headroom.
-    if len(summary) > 2950:
-        summary = summary[:2947] + "…"
+    summary = _slack_mrkdwn(m.display_summary, 2950) if m.display_summary else "_No summary_"
+    # A link that isn't http(s) is left out: `<!channel|Open>` would be a mention.
+    url = _slack_url(m.link) if is_http_url(m.link) else None
+    fallback = _slack_mrkdwn(title, 2950)
+    context = f"Source: {_slack_mrkdwn(m.source, 200)}"
     payload = {
         # `text` is the fallback shown in notifications / clients that don't
         # render blocks. Keep it compact.
-        "text": f"{title} — {m.link}",
+        "text": f"{fallback} — <{url}>" if url else fallback,
         "blocks": [
             {
                 "type": "header",
@@ -103,7 +144,7 @@ def _to_slack(m: Message) -> WireRequest:
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Source: {m.source} · <{m.link}|Open>",
+                        "text": f"{context} · <{url}|Open>" if url else context,
                     }
                 ],
             },
@@ -113,7 +154,23 @@ def _to_slack(m: Message) -> WireRequest:
 
 
 def _to_slack_text(text: str) -> WireRequest:
-    return _json({"text": text})
+    return _json({"text": _slack_mrkdwn(text, 3000)})
+
+
+def _slack_mrkdwn(text: str, limit: int) -> str:
+    """Feed text as inert mrkdwn: Slack reads ``<!channel>`` and ``<@U…>`` as mentions,
+    and ``&``, ``<``, ``>`` written as entities display as themselves."""
+    out = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if len(out) > limit:
+        # Never end on half an entity.
+        out = re.sub(r"&[a-z]*$", "", out[: limit - 1]) + "…"
+    return out
+
+
+def _slack_url(url: str) -> str:
+    """`url` for the ``<url|label>`` syntax, which ``<``, ``>`` and ``|`` would end early.
+    None of the three is legal unencoded in a URL, so encoding them keeps its meaning."""
+    return url.replace("<", "%3C").replace(">", "%3E").replace("|", "%7C")
 
 
 # ─── ntfy ────────────────────────────────────────────────────────────────────
@@ -186,7 +243,10 @@ def _to_lark(m: Message) -> WireRequest:
 
 
 def _to_lark_text(text: str) -> WireRequest:
-    return _json({"msg_type": "text", "content": {"text": text}})
+    # A post, like entries: `msg_type: text` reads <at user_id="all"> in the text itself,
+    # while a post only mentions through an explicit `at` element.
+    post = {"title": "NewsFlow", "content": [[{"tag": "text", "text": text}]]}
+    return _json({"msg_type": "post", "content": {"post": {"zh_cn": post}}})
 
 
 # ─── work-wechat (企业微信) ──────────────────────────────────────────────────
@@ -194,18 +254,31 @@ def _to_lark_text(text: str) -> WireRequest:
 # https://developer.work.weixin.qq.com/document/path/91770
 
 
+# Byte caps on `content`; over them the robot answers errcode 40058 and drops the message.
+_WECOM_MARKDOWN_MAX_BYTES = 4096
+_WECOM_TEXT_MAX_BYTES = 2048
+
+
 def _to_wecom(m: Message) -> WireRequest:
-    title = m.display_title
-    summary = m.display_summary or ""
-    if len(summary) > 1500:
-        summary = summary[:1497] + "…"
-    md = f"### {title}\n> {summary}\n\n[Read on {m.source}]({m.link})"
+    title = _clip_utf8(_wecom_inert(m.display_title), 1024)
+    tail = f"\n\n[Read on {_wecom_inert(m.source)}]({_wecom_inert(m.link)})"
+    head = f"### {title}\n> "
+    room = _WECOM_MARKDOWN_MAX_BYTES - len(head.encode()) - len(tail.encode())
+    summary = _clip_utf8(_wecom_inert(m.display_summary or ""), room)
+    md = _clip_utf8(head + summary + tail, _WECOM_MARKDOWN_MAX_BYTES)
     payload = {"msgtype": "markdown", "markdown": {"content": md}}
     return _json(payload)
 
 
 def _to_wecom_text(text: str) -> WireRequest:
-    return _json({"msgtype": "text", "text": {"content": text}})
+    content = _clip_utf8(_wecom_inert(text), _WECOM_TEXT_MAX_BYTES)
+    return _json({"msgtype": "text", "text": {"content": content}})
+
+
+def _wecom_inert(text: str) -> str:
+    """Both text and markdown content read ``<@userid>`` as a mention; a zero-width
+    space after the ``<`` leaves it as visible text."""
+    return text.replace("<@", "<\u200b@")
 
 
 # ─── discord ─────────────────────────────────────────────────────────────────
@@ -230,12 +303,12 @@ def _to_discord(m: Message) -> WireRequest:
         "timestamp": ts.isoformat(),
         "footer": {"text": f"Source: {m.source}"[:2048]},
     }
-    if _is_http_url(m.link):
+    if is_http_url(m.link):
         embed["url"] = m.link
     summary = m.display_summary
     if summary:
         embed["fields"] = [{"name": "Summary", "value": summary[:1024], "inline": False}]
-    if _is_http_url(m.image_url):
+    if is_http_url(m.image_url):
         embed["image"] = {"url": m.image_url}
     # Feed text rides entirely inside the embed, where mentions never notify. The
     # explicit empty parse list holds that line if `content` ever carries text.
@@ -265,7 +338,7 @@ def _to_matrix(m: Message) -> WireRequest:
     # Feed text reaches Matrix clients as HTML, so every interpolated value is
     # escaped here instead of trusting the client's tag whitelist.
     head = html_escape(title)
-    if _is_http_url(m.link):
+    if is_http_url(m.link):
         head = f'<a href="{html_escape(m.link)}">{head}</a>'
     parts = [f"<b>{head}</b>"]
     if summary:
@@ -281,6 +354,16 @@ def _to_matrix_text(text: str) -> WireRequest:
 
 
 # ─── shared helpers ──────────────────────────────────────────────────────────
+
+
+def _clip_utf8(text: str, max_bytes: int) -> str:
+    """`text` cut to at most `max_bytes` of UTF-8, with "…" marking a cut."""
+    raw = text.encode()
+    if len(raw) <= max_bytes:
+        return text
+    if max_bytes < 3:
+        return ""
+    return raw[: max_bytes - 3].decode(errors="ignore") + "…"
 
 
 def _json(payload: dict[str, Any]) -> WireRequest:
@@ -310,30 +393,10 @@ def _rfc2047(s: str) -> str:
     return Header(collapsed, "utf-8").encode(maxlinelen=998)
 
 
-def _is_http_url(value: str | None) -> bool:
-    """Whether `value` may be used as a link target inside a JSON body.
-
-    Scheme check only, matching the native Discord adapter. `_safe_header_url`
-    is stricter because HTTP header values can't carry control or non-latin-1
-    bytes; a JSON body can, and json.dumps escapes them.
-    """
-    return value is not None and value.startswith(("http://", "https://"))
-
-
 def _safe_header_url(value: str | None) -> str | None:
-    """Return `value` only if it's a clean http(s) URL safe to place in an HTTP
-    header, else None. Unlike the body, header values can't carry arbitrary
-    bytes: aiohttp raises ValueError on control chars (CR/LF/NUL) and on
-    non-latin-1 characters. A well-formed URL is already printable ASCII, so
-    this only rejects malformed or hostile feed values (which would otherwise
-    crash the send)."""
-    if not value or not value.startswith(("http://", "https://")):
-        return None
-    if not value.isascii():
-        return None
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
-        return None
-    return value
+    """`value` if it may also ride in an HTTP header, else None: aiohttp refuses a
+    non-latin-1 header value with ValueError, failing the send."""
+    return value if is_http_url(value) and value.isascii() else None
 
 
 _ENTRY_CONVERTERS = {
@@ -357,3 +420,17 @@ _TEXT_CONVERTERS = {
 }
 
 SUPPORTED_FORMATS: frozenset[str] = frozenset(_ENTRY_CONVERTERS.keys())
+
+
+@dataclass(frozen=True)
+class _BodyVerdict:
+    code_keys: tuple[str, ...]
+    message_keys: tuple[str, ...]
+    rate_limit_codes: frozenset[int]
+
+
+# Receivers that answer HTTP 200 to a refused message, with a non-zero code in the body.
+_BODY_VERDICTS = {
+    "wecom": _BodyVerdict(("errcode",), ("errmsg",), frozenset({45009})),
+    "lark": _BodyVerdict(("code", "StatusCode"), ("msg", "StatusMessage"), frozenset({11232})),
+}

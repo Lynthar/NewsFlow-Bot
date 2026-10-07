@@ -2,6 +2,7 @@
 length bound explicit. Adapters add their own markup afterwards, so nothing here
 can cut an HTML tag or a markdown link in half."""
 
+from newsflow.adapters.base import is_http_url
 from newsflow.core.timeutil import relative_time, time_until
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
@@ -85,9 +86,9 @@ def last_error_text(feed: Feed) -> str | None:
 
 def recent_entry_parts(entry: FeedEntry) -> tuple[str, str | None, str]:
     """(title, link, relative time) for one recent-article row. The link is
-    None when it exceeds URL_LIMIT: a truncated href points nowhere, and an
-    untruncated one alone can overrun the message budget."""
-    link = entry.link if entry.link and len(entry.link) <= URL_LIMIT else None
+    None unless it is an http(s) URL within URL_LIMIT: a truncated href points
+    nowhere, and another scheme (tg://) can mention a user."""
+    link = entry.link if is_http_url(entry.link) and len(entry.link) <= URL_LIMIT else None
     when = relative_time(entry.published_at) if entry.published_at else ""
     return clip(entry.title, TITLE_LIMIT), link, when
 

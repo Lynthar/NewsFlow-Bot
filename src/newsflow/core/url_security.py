@@ -8,6 +8,7 @@ needs a connector pinning the resolved IP before connect.
 """
 
 import ipaddress
+import socket
 from urllib.parse import urlparse
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
@@ -38,14 +39,28 @@ def validate_feed_url(url: str) -> None:
     if not host:
         raise InvalidFeedURLError("URL has no host")
 
-    # If host is an IP literal, reject unsafe ranges. Hostname-based URLs
-    # pass this check — see module docstring for the DNS caveat.
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return  # Hostname, not an IP literal — OK at this layer.
+    ip = _ip_literal(host)
+    if ip is None:
+        return  # Hostname, not an IP literal — OK at this layer (see the DNS caveat above).
 
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
         raise InvalidFeedURLError(f"Host {host} resolves to a private/loopback/link-local address")
     if ip.is_multicast or ip.is_unspecified:
         raise InvalidFeedURLError(f"Host {host} is a multicast/unspecified address")
+
+
+def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The address `host` denotes without a DNS lookup, or None for a hostname.
+
+    Asks the OS resolver, which is what the connection will use: it accepts shorthand
+    such as ``127.1`` or ``0x7f000001`` that ``ipaddress`` rejects as not an address.
+    """
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return ipaddress.ip_address(infos[0][4][0])

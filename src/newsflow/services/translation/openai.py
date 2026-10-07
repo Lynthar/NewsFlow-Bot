@@ -76,7 +76,9 @@ class OpenAIProvider(TranslationProvider):
             try:
                 from openai import AsyncOpenAI
 
-                kwargs: dict[str, Any] = {"api_key": self.api_key}
+                # The SDK default waits 600 s and retries twice; a hung endpoint would stall
+                # the whole dispatch round for half an hour. A failure delivers the original.
+                kwargs: dict[str, Any] = {"api_key": self.api_key, "timeout": 60, "max_retries": 1}
                 if self.base_url:
                     kwargs["base_url"] = self.base_url
 

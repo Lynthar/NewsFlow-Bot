@@ -291,8 +291,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `FETCH_INTERVAL_MINUTES` | `60` | 抓取循环间隔 |
 | `FEED_MAX_CONCURRENT` | `10` | 每轮并发抓取的最大 feed 数（限流信号量 + HTTP 连接数）；feed 多且主机快可调高 |
 | `CLEANUP_INTERVAL_HOURS` | `24` | 清理循环间隔 |
-| `ENTRY_RETENTION_DAYS` | `10` | 保留多少天的 FeedEntry（按 `created_at`）。默认留了 3 天余量给 weekly digest 的 7 天输入窗口——设回 ≤7 会让清理在周报生成前删掉窗口最早的文章 |
-| `SENT_ENTRY_RETENTION_DAYS` | `90` | 保留多少天的 `SentEntry`（去重信号；必须远长于 `ENTRY_RETENTION_DAYS`，否则源 feed 重新 serve 同 GUID 会被当作新条目重复推送）|
+| `ENTRY_RETENTION_DAYS` | `10` | 保留多少天的 FeedEntry（按 `created_at`）。默认留了 3 天余量给 weekly digest 的 7 天输入窗口——设回 ≤7 会让清理在周报生成前删掉窗口最早的文章（启动时告警）。近 7 天内才被处理的条目（例如暂停后恢复的订阅）不论入库多久都会留到周报用完 |
+| `SENT_ENTRY_RETENTION_DAYS` | `90` | 保留多少天的 `SentEntry`（去重信号），从源最后一次还列着该条目时算起（见 §11.14）。必须大于 `ENTRY_RETENTION_DAYS`，否则启动报错；不大于 `MAX_ENTRY_PUBLISH_AGE_DAYS` 时告警——这两种情况下源 feed 重新 serve 同一 GUID 都会被当作新条目重复推送 |
 | `MAX_ENTRY_PUBLISH_AGE_DAYS` | `14` | dispatch 时跳过 `published_at` 早于此值的条目，防止 feed 突然吐 archive 老文章。`published_at IS NULL` 总是放行；`0` = 禁用此过滤 |
 
 ### 2.5 缓存
@@ -332,7 +332,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `WEBHOOKS_CONFIG_PATH` | `./data/webhooks.yaml` | 出站 webhook 目的地与订阅声明（见 §4）。文件存在即启用，启动日志打印 `Webhook: ✓ enabled` |
-| `SOURCES_CONFIG_PATH` | `./data/sources.yaml` | 非 RSS 源（JSON-API / IMAP / 入站 webhook）声明（见 §4B）。文件存在即启用同步 |
+| `SOURCES_CONFIG_PATH` | `./data/sources.yaml` | 非 RSS 源（JSON-API / IMAP / 入站 webhook）声明（见 §4B）。文件存在即启用同步。删掉文件只是不再同步，已同步的源照常抓取与投递；要撤下全部源，把文件清空为 `sources: {}` 再重启或热重载 |
 
 > **Docker 下别用上面的默认值**：compose 已把两者分别覆盖为 `/app/config/webhooks.yaml` 和 `/app/config/sources.yaml`，对应宿主机上挂载进去的 `config/` 目录（只读）。也就是说 Docker 部署只要把文件放进仓库根目录的 `config/` 就行，`.env` 里**不用**设这两个变量。表中的路径是裸机运行的默认值。
 
@@ -503,7 +503,7 @@ DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {wi
 | **翻译** | DeepL、OpenAI（或任何 OpenAI-compatible：DeepSeek / Qwen / Kimi / OpenRouter / 本地 Ollama 等）、Google Cloud Translation |
 | **Digest** | OpenAI-compatible（同上） |
 
-通过 `OPENAI_BASE_URL` 指向任意 OpenAI-compatible 端点即可换 provider，无需改代码。
+通过 `OPENAI_BASE_URL` 指向任意 OpenAI-compatible 端点即可换 provider，无需改代码。单次请求的超时是翻译 60 秒、摘要 300 秒，各重试一次；翻译超时的条目按原文投递，摘要超时下一个检查周期再试。
 
 ### 3.5 接本地大模型（Ollama / vLLM / LM Studio / LocalAI）
 
@@ -584,6 +584,8 @@ subscriptions:
 
 **discord 格式**：URL 在「频道设置 → 整合 → 创建 Webhook」里拿，和 bot token 无关。文章正文全部放在 embed 里，且 payload 固定带 `allowed_mentions: {"parse": []}` —— feed 里出现 `@everyone` 也不会真的通知任何人。标题走 embed 的 title 字段而非 markdown 链接，所以标题里的 `](` 无法伪造出可点链接。想推到子区（thread）就直接把 `?thread_id=<id>` 拼在 URL 末尾，bot 原样使用。
 
+**slack / wecom / lark 格式**：feed 文本里的提及语法同样不会生效。slack 按平台规范把 `&` `<` `>` 写成实体，`<!channel>` 只会显示成文字，不是 http(s) 的链接不渲染成链接；wecom 的 text 与 markdown 都认 `<@userid>`，bot 在 `<` 与 `@` 之间插一个零宽空格；lark 的系统通知也发 post 富文本，只有显式的 `at` 元素才会 @ 人，正文里的 `<at user_id="all">` 只是文字。wecom 的 markdown 按 4096 字节、text 按 2048 字节截断，超长不会被接收端整条拒收。
+
 **matrix 格式**：URL 指向 matrix-hookshot 的 `/webhook/<id>`。**不要给这个 webhook 配 transformation function** —— 我们发的 `text` / `html` 正是 hookshot 默认识别的键，配了 JS 转换反而会把它们覆盖掉。feed 文本在 html 侧全部转义，不依赖客户端的标签白名单。
 
 **generic 格式**（推荐给 n8n / Zapier / 自写端点）：
@@ -650,8 +652,12 @@ def verify(body: bytes, header_value: str, secret: str) -> bool:
 1. yaml 里新增的 destination / 订阅会被 **插入**
 2. yaml 里改动的 url / format / secret / headers / timeout 会被 **更新**
 3. yaml 里删除的 destination 会被 **删除**（连带其所有订阅）
-4. yaml 里第一次出现的 feed URL 会被 **自动 add_feed**（一次性网络抓取；失败则跳过并告警，不中断启动）
+4. yaml 里第一次出现的 feed URL 会被 **自动 add_feed**（一次性网络抓取，和 `/feed add` 一样支持简写与网站首页自动发现）。
+   抓取失败（源暂时不可达、返回错误）时**照样建订阅**，由投递循环按退避重试，连续失败十次自动停用并通知该目的地；
+   URL 本身不可抓（不是 http(s)、私网或回环地址的字面量）则跳过并告警。都不中断启动
 5. 不在 yaml 里的 webhook 订阅（但在 DB 里）会被 **删除**
+6. 新订阅**不会收到它建立之前发表的文章**（没有日期的也算作之前）。源在声明时还没抓取成功的，这条在它第一次抓取成功时生效，
+   所以首抓失败期间新发表的文章照样会投递
 
 所以工作流就是：改 yaml + 重启 bot。不用命令、不用 API。yaml 本身可以进 git，和订阅列表一起版本化管理。
 
@@ -661,15 +667,16 @@ def verify(body: bytes, header_value: str, secret: str) -> bool:
 |---|---|
 | 启动日志没看到 `Webhook: ✓ enabled` | `webhooks.yaml` 不在 `WEBHOOKS_CONFIG_PATH`（Docker 默认 `config/webhooks.yaml`，裸机 `./data/webhooks.yaml`）；检查文件路径和权限 |
 | `webhooks.yaml is invalid; aborting startup` | YAML 语法错或字段不符合 schema；报错信息里会点出具体位置 |
-| 某 feed URL 没被订阅但没报错 | 首次自动 add_feed 失败（404 / 解析错 / SSRF 校验拒绝）；启动日志有 `webhook_sync: skipping <url>: <error>` |
+| 某 feed URL 没被订阅但没报错 | URL 本身不可抓（非 http(s) 或私网 / 回环地址字面量）；启动日志有 `webhook_sync: skipping <url> — <原因>`。首抓失败（404 / 超时 / 解析错）的源照样会被订阅，日志是 `first fetch of <url> failed … subscribing anyway` |
 | 接收方收到 HTTP 200 但内容显示成 raw JSON | `format` 选错；比如 Slack webhook 收到 `generic` 格式会直接显示 `{"event": ...}` 字符串 |
 | 自己验签总是失败 | 见 4.5 "关键点" —— 必须用收到的原始字节，不是反序列化后的对象 |
-| 飞书 / 企业微信 URL 里含签名参数，发不出去 | 把完整 URL（含 `?key=...` 或签名参数）原样贴进 yaml；bot 不会重组 URL |
+| 企业微信 URL 里带 `?key=...` | 把完整 URL 原样贴进 yaml；bot 不会重组 URL |
+| 日志出现 `refused: wecom code …` / `refused: lark code …` | 这两家出错时也回 HTTP 200，错误码在响应体里，bot 按它判定成败。企业微信 93000 是 key 失效或机器人已被移出群；飞书 19021 是开了「签名校验」——它要求每次请求在 body 里现算 `timestamp` 与 `sign`，bot 不支持，改用「自定义关键词」或「IP 白名单」；19024 是消息里没有你设的自定义关键词 |
 | 改 yaml 后重启没变化 | 检查启动日志 `webhook_sync: N destination(s), M subscription(s)`；若数量不符，说明解析器没拿到最新文件 |
 | Discord 收到 HTTP 400 / 什么都没发出来 | 目的地填了 `format: generic`（或漏填）。Discord 原生 webhook 只认 `content` / `embeds`，收到我们的自定义 JSON 会直接 400 —— 改成 `format: discord` |
 | Matrix 房间里出现的是一整包 JSON | 该 hookshot webhook 配了 transformation function，把我们的 `text` / `html` 覆盖了；删掉转换脚本即可 |
 | 日志出现 `rate-limited; retrying in Ns` | 接收端在限流。发送会按对方给的等待时间重试一次，**不计入熔断计数**；等待超过 5 秒则跳过本轮，条目留到下一轮再发（分发是串行的，不能为一个端点卡住其他平台） |
-| 日志出现 `auto-disabled after 10 straight failures` | **目的地熔断**：连续 10 次发送失败（HTTP 非 2xx / 超时 / 连接错）后该 destination 自动停用，不再发起网络请求（对齐 feed 侧的自动禁用机制）。修好端点后热重载（`POST /api/admin/reload` 或 SIGHUP）或重启即恢复——仍在文件里声明 = 你想让它工作；保留期内未投递的积压会随即补发。任一次成功也会清零失败计数 |
+| 日志出现 `auto-disabled after 10 straight failures` | **目的地熔断**：连续 10 次发送失败（HTTP 非 2xx / 超时 / 连接错 / 企业微信与飞书响应体里的非零错误码，其中限流码 45009 / 11232 与 429 一样不计入）后该 destination 自动停用，不再发起网络请求（对齐 feed 侧的自动禁用机制）。修好端点后热重载（`POST /api/admin/reload` 或 SIGHUP）或重启即恢复——仍在文件里声明 = 你想让它工作；保留期内未投递的积压会随即补发。任一次成功也会清零失败计数 |
 
 > **未知字段现在是硬错误**：`webhooks.yaml` / `sources.yaml` 里拼错的键（如 `secert:`）过去被静默忽略（HMAC 签名就这样无声消失过），现在直接中止启动并列出合法键。升级后若启动失败，按报错清理多余键即可；部署前可用 `make checkconfig` 离线预检（§7.6）。
 
@@ -728,6 +735,8 @@ sources:
 ```
 
 每个源就是一个 feed，条目走**和 RSS 完全一样**的过滤 / 翻译 / 静默 / 日报 / 投递链路。
+新声明的源要等投递循环第一次抓取成功才有条目；那一次抓到的、发表于订阅建立之前的条目（以及没有日期的）算作存量，
+不会推送，之后的才是新文章。把源注释掉再恢复也是如此，频道已经收过的不会再推一遍。
 
 ### 4B.2 三种源类型
 
@@ -995,19 +1004,18 @@ docker compose -f docker/docker-compose.yml up -d   # 用新镜像重建容器
 ### 7.4 备份
 
 ```bash
-# SQLite 模式：先停容器再拷贝。数据库开着 WAL，运行中直接 docker cp
-# 可能拿到缺最近写入（WAL 未 checkpoint）甚至撕裂的快照。
-docker compose -f docker/docker-compose.yml stop newsflow
-docker cp newsflow-bot:/app/data/newsflow.db ./backup-$(date +%F).db
-docker compose -f docker/docker-compose.yml start newsflow
+# SQLite 模式：在线生成一份一致的单文件快照，不用停机。
+# 它连 WAL 里还没合并回主库的写入一起带上。
+docker compose -f docker/docker-compose.yml exec newsflow python -c "import sqlite3; sqlite3.connect('/app/data/newsflow.db').execute(\"VACUUM INTO '/app/data/backup.db'\")"
+docker cp newsflow-bot:/app/data/backup.db ./backup-$(date +%F).db
+docker compose -f docker/docker-compose.yml exec newsflow rm /app/data/backup.db
 
 # Postgres 模式（pg_dump 自带一致性，无需停机）
 docker compose -f docker/docker-compose.yml exec postgres pg_dump -U newsflow > backup-$(date +%F).sql
 ```
 
-> 不能接受几秒停机的话，用 SQLite 在线备份代替 `stop`+`cp`：
-> `docker compose -f docker/docker-compose.yml exec newsflow python -c "import sqlite3; sqlite3.connect('/app/data/newsflow.db').execute(\"VACUUM INTO '/app/data/backup.db'\")"`
-> 然后 `docker cp` 出 `backup.db`（记得删除容器内的副本）。
+> **只拷 `newsflow.db` 一个文件不是备份。** 数据库开着 WAL，最近提交的写入可能只在旁边的 `newsflow.db-wal` 里，停机也不会把它合并回主库。只拿主库文件恢复，最近的订阅与设置改动会丢失，已投递的条目会再推一遍。
+> 想停机拷文件，就把整个数据目录连同 `-wal` / `-shm` 一起拷走：`stop` 之后 `docker cp newsflow-bot:/app/data ./backup-$(date +%F)`，恢复时整目录放回原处。Docker 部署的数据在命名卷 `newsflow-data` 里，不在宿主的 `data/` 下。
 
 ### 7.5 健康检查详解
 
@@ -1104,7 +1112,7 @@ systemd 的 `EnvironmentFile=` 和 docker-compose 的 `env_file:` 语义不同�
 make checkconfig            # 或: python -m newsflow.checkconfig
 ```
 
-不碰网络、不碰数据库，验证三样东西：`.env` 能否通过 pydantic 校验（含行内注释污染、越界值）、两个 YAML 是否通过严格 schema（**未知字段现在是硬错误**——`secert:` 这类拼写错误从"静默失效"变成启动中止，所以改完配置先跑这个）、以及跨文件引用（sources.yaml 里 `platform: webhook` 的订阅者指向的 destination 必须真的在 webhooks.yaml 里声明过）。退出码 0 = 可部署；1 = 有错误，逐条列出。CI/部署脚本里当门禁用。
+不碰网络、不碰数据库，验证三样东西：`.env` 能否通过 pydantic 校验（含行内注释污染、越界值）、两个 YAML 是否通过严格 schema（**未知字段现在是硬错误**——`secert:` 这类拼写错误从"静默失效"变成启动中止，所以改完配置先跑这个）、以及跨文件引用（sources.yaml 里 `platform: webhook` 的订阅者指向的 destination 必须真的在 webhooks.yaml 里声明过）。另有几类只告警不报错的情况，启动日志里也会以 `Config:` 开头打出同样的内容：环境变量或 `.env` 里和某个配置项只差一个拼写的键（如 `DATABASE_URI`——它会被静默忽略，配置项保持默认值）、会让周报丢素材或让条目重推的保留期组合、开了翻译却没配 key 等。退出码 0 = 可部署；1 = 有错误，逐条列出。CI/部署脚本里当门禁用。
 
 ---
 
@@ -1122,7 +1130,7 @@ make checkconfig            # 或: python -m newsflow.checkconfig
 2. **零配置启动**。`.env` 里只填一个 `DISCORD_TOKEN` 或 `TELEGRAM_TOKEN` 就能跑起来。其余所有开关都有合理默认。
 3. **渐进式复杂度**。翻译服务、REST API、Redis 缓存、Postgres 都是可选功能 —— 通过 `pyproject.toml` 的 extras 按需安装，代码里用懒 import 保证没安装对应包时也能启动。
 4. **组件可替换**。平台适配器、翻译服务商、缓存后端都通过抽象基类 + 工厂切换，添加新的不需要改核心。
-5. **数据属于用户**。默认 SQLite 单文件，`rsync data/` 就是全量备份。可选升级到 Postgres 也是一条连接串的事。
+5. **数据属于用户**。默认 SQLite，整个 `data/`（主库连同 `-wal` 文件；Docker 下是命名卷 `newsflow-data`）就是全量备份，做法见 §7.4。可选升级到 Postgres 也是一条连接串的事。
 
 ### 8.3 不做什么（反设计）
 
@@ -1216,22 +1224,25 @@ make checkconfig            # 或: python -m newsflow.checkconfig
 
 `main.py::main()` 依次做这些事：
 
-1. 读配置（`get_settings()`）、校验至少有一个 platform token
+1. 读配置（`get_settings()`）、校验至少有一个投递平台（platform token 或 `webhooks.yaml`），打出配置告警（拼错的键、危险的保留期组合等）
 2. 建日志（structlog + JSON/console 可选）
-3. 创建 `data/` 目录
-4. 跑 alembic `upgrade head`（在 worker 线程里，避免和主 asyncio loop 冲突）
-5. 初始化 cache（memory 或 redis）
-6. 装 SIGTERM / SIGINT 信号处理
-7. **并发启动**以下任务：
-   - `start_discord_bot()`（如果启用）
-   - `start_telegram_bot()`（如果启用）
+3. 准备状态（`prepare_state()`，出错就记日志并以退出码 1 结束）：创建 `data/` 目录、清扫上次留下的心跳文件、
+   跑 alembic `upgrade head`（在 worker 线程里，避免和主 asyncio loop 冲突）、同步 `webhooks.yaml` 与 `sources.yaml`、初始化 cache（memory 或 redis）
+4. 装信号处理：SIGTERM / SIGINT 只置位一个 stop 事件，SIGHUP 热重载两份 YAML
+5. **并发启动**以下任务：
+   - `start_discord_bot()` / `start_telegram_bot()` / `start_webhook_adapter_task()`（各自启用时）
    - `start_api_server()`（如果启用）
    - `start_dispatch_loop()` —— 中央调度
    - `start_cleanup_loop()` —— 清理过期条目 / 发送记录
    - `start_platform_monitor()` —— 每 30s 检查 adapter 连通性，写 heartbeat
    - `start_digest_loop()` —— 周期性 AI 日报/周报生成与投递
+6. 等到 stop 事件，或某个任务**抛出异常**；随后由 `main()` 自己按顺序关停：先停各 adapter，再取消本进程启动的任务，
+   最后关 HTTP 客户端与数据库（这一步才把 SQLite 的 WAL 合并回主库），日志以 `Shutdown complete` 结尾。
 
-各任务是独立的 `asyncio.Task`，任何一个挂掉不影响其他。每个任务都在 `data/heartbeat/<name>` 维护自己的 heartbeat 文件，供容器 HEALTHCHECK 判定存活。
+一个任务正常返回只是它自己结束；**任何一个任务抛出异常，整个进程都会经同一条关停路径以退出码 1 退出**，
+日志里有一条 `Fatal: <任务名> failed`——例如开了 REST API 而端口已被占用。这是有意的：起不来的组件多半是配置错误，
+应该响亮地失败，交给 Docker / systemd 的重启策略与人去处理，而不是让进程带着缺一块的状态继续跑。
+每个任务都在 `data/heartbeat/<name>` 维护自己的 heartbeat 文件，供容器 HEALTHCHECK 判定存活。
 
 ### 10.3 Dispatch 数据流
 
@@ -1254,11 +1265,11 @@ dispatch_once():
    │   ├─ get_unsent_entries_for_subscription()
    │   │   （用 (feed_id, guid) NOT EXISTS 去重 + published_at 过滤）
    │   ├─ 每条 entry：
-   │   │   ├─ filter_rule 命中？ → mark_entry_sent(was_filtered=True) 跳过
-   │   │   ├─ subscription.silent? → mark_entry_sent(was_filtered=False) 跳过 send
-   │   │   ├─ 按订阅语言走翻译（两层缓存：DB cache → memory/Redis → provider）
-   │   │   ├─ adapter.send_message()（平台库内部限流）
-   │   │   └─ 成功 → mark_entry_sent(was_filtered=False) 插入 SentEntry
+   │   │   ├─ filter_rule 命中？ → mark_entry_sent(was_filtered=True) + commit，跳过
+   │   │   ├─ subscription.silent? → mark_entry_sent(was_filtered=False) + commit，跳过 send
+   │   │   ├─ 按订阅语言走翻译（两层缓存：DB cache → memory/Redis → provider），commit 译文缓存
+   │   │   ├─ adapter.send_message()（平台库内部限流；此时没有打开的写事务）
+   │   │   └─ 成功 → mark_entry_sent(was_filtered=False) 插入 SentEntry + commit
    │   │   └─ 失败 → 不标记，下轮重试
    │   └─ 每条间 smoothing sleep 0.1s
    │
@@ -1477,16 +1488,19 @@ egress 策略 / VPS 网络边界作为第二层防御。
 （unsubscribe 时仍然干净清扫该订阅的 SentEntry）。
 
 配套两处：
-- `SENT_ENTRY_RETENTION_DAYS`（默认 90，独立于 `ENTRY_RETENTION_DAYS=7`）：
-  必须远长于 entry retention，不然信号自己被定期 cleanup 删掉，又会
-  踩同样的坑
+- `SENT_ENTRY_RETENTION_DAYS`（默认 90，独立于 `ENTRY_RETENTION_DAYS=10`）：
+  必须长于 entry retention，不然信号自己被定期 cleanup 删掉，又会
+  踩同样的坑。而且它从**源最后一次还列着这条**算起，不从发送时算：每次完整抓取（200，不含 304）
+  刷新本次文档里各条的 `last_seen_at`，清理只删「最近一次完整快照里已不再列出、且最后一次被看到已超过保留期」的记录。
+  否则一个长期列着无日期条目的源，每 90 天就把它们重推一遍——无日期条目不受发布年龄闸门约束。
+  没有抓取快照的推送源（`webhook_inbound`）仍按发送时间清理
 - 启动时 alembic 迁移 (`b9c2e7a5d3f4`)：从老 `entry_id` JOIN 回填
   `(feed_id, guid)`，孤儿 SentEntry（entry_id 找不到对应 FeedEntry，
   老 CASCADE 下不该出现但万一有）会被丢弃
 
 ---
 
-### 11.15 为什么 dispatch 的事务边界是"每订阅一提交"？
+### 11.15 为什么 dispatch 的事务边界是"每条一提交"？
 
 一轮 dispatch 里有三处提交点，各自挡一种故障，**都不要合并成"轮尾一次提交"**：
 
@@ -1494,11 +1508,13 @@ egress 策略 / VPS 网络边界作为第二层防御。
    会阻塞 webhook adapter 的熔断计数——那部分跑在**自己的 session / 连接**上，于是每次发送失败都要卡满 15 秒
    busy-timeout，熔断器永远跳不了，每轮都拖死。先提交就放开了锁；feed 元数据（etag / backoff / last_fetched）
    本来也该与发送结果无关地落盘。
-2. **每个订阅提交一次，而不是一轮结束提交一次。** 消息在 adapter 返回的那一刻就已经发出去了；
-   轮尾单次提交意味着任何后期失败（`SQLITE_BUSY`、崩溃、部署重启）会回滚**整轮**的已发标记，
-   下一轮把每一条消息重发一遍。逐订阅提交把重发窗口限制在一个订阅内（≤ 每轮条数上限），
-   顺带在订阅之间释放写锁，长轮次里 slash 命令不会被饿死。
-3. **轮尾仍有一次提交**，理由同第 1 条。
+2. **每条投递提交一次。** 消息在 adapter 返回的那一刻就已经发出去了；已发标记随后的任何失败
+   （`SQLITE_BUSY`、崩溃、部署重启）只要回滚了它，下一轮就把它重发一遍——所以标记写完立刻提交，
+   重发窗口只有这一条。过滤与静默的标记同样逐条提交，翻译缓存的写入在发送**之前**提交：
+   **写事务从不跨越一次网络等待**。SQLite 只有一个写者，持着锁去等平台或翻译 API，
+   同一时刻 webhook 熔断计数、digest 回写、slash 命令的写入都要等满 15 秒 busy-timeout 后失败，
+   失败的又多是「已投递」记录，于是变成重发。
+3. **每个订阅之后与轮尾各还有一次提交**：前者落下频道消失、频道迁移、话题失效的处理结果，后者理由同第 1 条。
 
 > 提交后继续使用 ORM 对象是安全的：session factory 设了 `expire_on_commit=False`。
 
@@ -1590,7 +1606,8 @@ alembic 自己的 logger（`alembic.runtime.migration` 等）照样向根 logger
 ### 11.26 dispatch 轮次要串行化
 
 `ingest` 触发的轮次（push 源）与定时循环共用同一条路径。两轮交错会**双发**：
-两边都在对方打上已发标记之前读到了同一批未发条目。所以入口有一把锁把轮次串起来。
+两边都在对方打上已发标记之前读到了同一批未发条目。所以入口有一把锁（`Dispatcher.delivery_lock`）把轮次串起来。
+`/add` 之后的预览跑的是同一个按订阅投递的函数，也拿这把锁；digest 读素材时短暂持有它（§11.34）。
 
 ### 11.27 轮尾那次提交是给"零订阅轮"兜底的
 
@@ -1642,16 +1659,21 @@ alembic 自己的 logger（`alembic.runtime.migration` 等）照样向根 logger
 （`show_image` 仍然管平台侧的图片附件）。渲染出错、或模板渲染成空，一律回落到默认排版：
 **一个坏模板绝不能弄丢一篇文章**。
 
-### 11.34 Digest 投递拆成三段 session
+### 11.34 Digest 一次运行的锁与 session
 
-每个频道一个新 session，一个频道失败不会毒化其他频道。三段拆分是为了**不把 session 攥在 LLM 调用和平台 IO 上**——
-那两段慢，攥着连接会让 `mark_delivered` 的 UPDATE 撞上 dispatch 循环的长写事务（`SQLITE_BUSY`）。
+`DigestService.run_now` 是定时 tick 与两个 `/digest now` 的唯一入口，一次运行按下面的规矩拿锁、开 session：
 
-1. **载配置 + 生成正文**（持 session）
-2. **投递到平台**（不持 session；Discord / Telegram IO 可能好几秒）。文本上限取 **1900** 字符，
-   同时满足 Discord 的约 2000 与 Telegram 的 4096。
-3. **写投递标记**（短 session）。这一步在锁压力下仍然失败时——digest 其实**已经发到频道里了**——
-   记日志然后继续；下一 tick 的 `is_due()` 会看到过期标记、可能重发一次，那比让循环崩掉好。
+1. **每个频道一把锁，从读窗口一直持到写完投递标记**（`Dispatcher.digest_lock`）。两次运行若同时读同一个窗口，
+   同一份摘要会发两遍，慢的那次还会把更早的时间写回水位。定时运行拿到锁后重读配置、重判是否到期，
+   手动运行刚服务过的时段就不再发。
+2. **读素材的那一小段同时持有投递锁**（`Dispatcher.delivery_lock`，投递轮与 `/add` 预览共用的那把）。
+   投递标记都在这把锁里写入并提交，所以持锁读到的素材是完整的；不然一条已 flush、未提交的标记读不到，
+   水位又越过了它，这篇文章就永远进不了摘要。调 LLM 之前释放。**顺序永远是先频道锁、后投递锁**，
+   投递路径从不拿频道锁，所以不会死锁。
+3. **session 不跨 LLM 调用与平台 IO**：读配置与素材一个 session，生成与投递不持 session，
+   写投递标记一个短 session。分块大小取各 adapter 的 `digest_chunk_size`（Discord 1900、Telegram 3800）。
+   写标记失败时 digest 其实**已经发到频道里了**——记日志然后继续；下一 tick 的 `is_due()` 会看到过期标记、
+   可能重发一次，那比让循环崩掉好。
 
 **digest 目标频道消失时**：停掉 digest 配置**以及**所有仍指向该频道的活跃订阅。
 feed dispatch 路径本来也会处理它自己那部分，但这个 tick 可能跑在下一次 feed dispatch 之前，所以这里抄近路。
@@ -1985,8 +2007,8 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 
 信号处理有差异，但**不会崩**——`main.py` 注册 `SIGINT` / `SIGTERM` 时用
 `try/except NotImplementedError` 包住了（Windows 的 ProactorEventLoop 不支持
-`loop.add_signal_handler`），捕获后降级：Ctrl+C 仍然以 `KeyboardInterrupt`
-形式从 `asyncio.run()` 抛出，由 `cli()` 接住走正常关闭流程。
+`loop.add_signal_handler`）。这时 Ctrl+C 由 `asyncio.run()` 转成取消 `main()`，
+`main()` 的 `finally` 照样走完同一条有序关停。
 
 Windows 上实际缺的是两件事：
 

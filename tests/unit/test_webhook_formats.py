@@ -8,9 +8,13 @@ ship malformed payloads to third parties.
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from newsflow.adapters.base import Message
 from newsflow.adapters.webhook.formats import (
     SUPPORTED_FORMATS,
+    Refusal,
+    body_refusal,
     build_notification_payload,
     build_payload,
 )
@@ -96,6 +100,54 @@ def test_slack_header_truncated_to_150_chars():
     assert len(header_text) <= 150
 
 
+def _slack_mrkdwn_fields(payload: dict) -> list[str]:
+    """Every field Slack parses as mrkdwn: the fallback, the section and the context."""
+    return [
+        payload["text"],
+        payload["blocks"][1]["text"]["text"],
+        payload["blocks"][2]["elements"][0]["text"],
+    ]
+
+
+def test_slack_feed_text_cannot_mention():
+    msg = _make_message(
+        title="<!channel> breaking", summary="<!here> & <@U024BE7LH>", source="<!everyone>"
+    )
+    payload = json.loads(build_payload("slack", msg).body)
+
+    for text in _slack_mrkdwn_fields(payload):
+        assert "<!" not in text and "<@" not in text
+    assert payload["blocks"][1]["text"]["text"] == "&lt;!here&gt; &amp; &lt;@U024BE7LH&gt;"
+
+
+def test_slack_link_that_is_not_http_is_left_out():
+    payload = json.loads(build_payload("slack", _make_message(link="!channel")).body)
+
+    for text in _slack_mrkdwn_fields(payload):
+        assert "!channel" not in text
+
+
+def test_slack_link_cannot_close_its_own_syntax():
+    msg = _make_message(link="https://example.com/a|<!channel>")
+    payload = json.loads(build_payload("slack", msg).body)
+
+    context = payload["blocks"][2]["elements"][0]["text"]
+    assert context.endswith("<https://example.com/a%7C%3C!channel%3E|Open>")
+
+
+def test_slack_truncation_never_ends_inside_an_entity():
+    payload = json.loads(build_payload("slack", _make_message(summary="&" * 1000)).body)
+
+    section = payload["blocks"][1]["text"]["text"]
+    assert len(section) <= 2950
+    assert section.endswith("&amp;…")
+
+
+def test_slack_notification_cannot_mention():
+    payload = json.loads(build_notification_payload("slack", "<!channel> feed off").body)
+    assert payload == {"text": "&lt;!channel&gt; feed off"}
+
+
 def test_slack_empty_summary_has_placeholder():
     """Block-kit section text can't be empty; placeholder avoids API 400."""
     wire = build_payload("slack", _make_message(summary="", summary_translated=None))
@@ -155,6 +207,15 @@ def test_ntfy_drops_non_http_and_non_ascii_click():
     )
 
 
+def test_link_targets_must_be_well_formed_http_urls():
+    # A space or an invisible character makes the URL one receivers reject (Discord
+    # refuses the whole message); such a link is left out, the message still goes.
+    for link in ("https://example.com/a b", "https://example.com/\u200ba"):
+        msg = _make_message(link=link)
+        assert "Click" not in build_payload("ntfy", msg).headers
+        assert "url" not in json.loads(build_payload("discord", msg).body)["embeds"][0]
+
+
 def test_ntfy_drops_bad_attach_but_keeps_clean_one():
     wire = build_payload("ntfy", _make_message(image_url="https://example.com/a.jpg\nInjected: y"))
     assert "Attach" not in wire.headers
@@ -178,10 +239,14 @@ def test_lark_builds_post_card():
     assert hrefs == ["https://example.com/article?ref=rss&id=42"]
 
 
-def test_lark_text_notification_is_simple():
-    wire = build_notification_payload("lark", "disabled")
-    payload = json.loads(wire.body)
-    assert payload == {"msg_type": "text", "content": {"text": "disabled"}}
+def test_lark_notification_is_a_post_so_at_markup_stays_text():
+    # A text message would read <at user_id="all"> as @all; a post only mentions
+    # through an `at` element, and this one carries none.
+    text = '<at user_id="all">all</at> feed disabled'
+    payload = json.loads(build_notification_payload("lark", text).body)
+
+    assert payload["msg_type"] == "post"
+    assert payload["content"]["post"]["zh_cn"]["content"] == [[{"tag": "text", "text": text}]]
 
 
 # ─── wecom ───────────────────────────────────────────────────────────────────
@@ -197,12 +262,62 @@ def test_wecom_builds_markdown():
     assert "https://example.com/article?ref=rss&id=42" in content
 
 
-def test_wecom_summary_truncated():
-    long_summary = "x" * 5000
-    wire = build_payload("wecom", _make_message(summary=long_summary))
-    content = json.loads(wire.body)["markdown"]["content"]
-    # 1500 chars cap + header + footer + some overhead
-    assert len(content) < 2000
+def test_wecom_markdown_fits_the_byte_cap_and_keeps_the_link():
+    # The cap is 4096 bytes of UTF-8; 1,500 CJK characters alone are 4,500.
+    msg = _make_message(title="标" * 400, summary="中" * 3000)
+    content = json.loads(build_payload("wecom", msg).body)["markdown"]["content"]
+
+    assert len(content.encode()) <= 4096
+    assert content.endswith("(https://example.com/article?ref=rss&id=42)")
+
+
+def test_wecom_notification_fits_the_text_byte_cap():
+    payload = json.loads(build_notification_payload("wecom", "中" * 2000).body)
+    assert len(payload["text"]["content"].encode()) <= 2048
+
+
+def test_wecom_feed_text_cannot_mention():
+    # Text and markdown content both read <@userid> as a mention.
+    msg = _make_message(title="<@zhangsan> hi", summary="<@lisi>", source="<@wangwu>")
+    markdown = json.loads(build_payload("wecom", msg).body)["markdown"]["content"]
+    notice = json.loads(build_notification_payload("wecom", "<@zhangsan> off").body)
+
+    assert "<@" not in markdown
+    assert "<@" not in notice["text"]["content"]
+
+
+# ─── verdicts in a 2xx body ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("fmt", "body", "expected"),
+    [
+        ("wecom", {"errcode": 0, "errmsg": "ok"}, None),
+        ("wecom", {"errcode": 93000, "errmsg": "invalid webhook url"}, False),
+        ("wecom", {"errcode": 45009, "errmsg": "api freq out of limit"}, True),
+        ("lark", {"code": 0, "data": {}, "msg": "success"}, None),
+        ("lark", {"StatusCode": 0, "StatusMessage": "success"}, None),
+        (
+            "lark",
+            {"code": 19021, "msg": "sign match fail or timestamp is not within one hour"},
+            False,
+        ),
+        ("lark", {"code": 11232, "msg": "frequency limited"}, True),
+        ("slack", {"errcode": 93000}, None),
+    ],
+)
+def test_body_refusal_reads_the_receivers_code(fmt, body, expected):
+    refusal = body_refusal(fmt, json.dumps(body).encode())
+    if expected is None:
+        assert refusal is None
+    else:
+        assert isinstance(refusal, Refusal)
+        assert refusal.rate_limited is expected
+        assert str(body.get("errcode") or body.get("code")) in refusal.error
+
+
+def test_body_that_is_not_json_counts_as_accepted():
+    assert body_refusal("wecom", b"<html>ok</html>") is None
 
 
 # ─── discord ─────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import asyncio
 import logging
 import signal
 import sys
+from collections.abc import Coroutine
 from typing import Any
 
 import structlog
@@ -155,12 +156,12 @@ async def start_webhook_adapter_task(settings: Settings) -> None:
     await start_webhook()
 
 
-async def shutdown(loop: asyncio.AbstractEventLoop) -> None:
-    """Graceful shutdown handler.
+async def shutdown(services: list[asyncio.Task[None]]) -> None:
+    """Graceful shutdown, run by main() itself whatever ended the run.
 
     Order matters: platform adapters stop first (they stop polling /
     accepting commands and their start() tasks return), then the remaining
-    loops are cancelled, and the shared HTTP client and database close LAST —
+    tasks are cancelled, and the shared HTTP client and database close LAST —
     closing the engine while a dispatch round is mid-commit would turn an
     orderly stop into a burst of connection errors.
     """
@@ -189,9 +190,10 @@ async def shutdown(loop: asyncio.AbstractEventLoop) -> None:
         except Exception:
             logging.exception("Webhook adapter did not stop cleanly")
 
-    # Cancel remaining tasks (dispatch/cleanup/digest/monitor loops, the
-    # platform keep-alive wrappers) and wait for them to unwind.
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    # Only tasks this process started: the services and their spawned work (previews,
+    # notices, reloads). Libraries own their internal tasks, and cancelling uvicorn's
+    # lifespan from outside interrupts its shutdown mid-step.
+    tasks = [*services, *get_dispatcher().background_tasks()]
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -200,6 +202,27 @@ async def shutdown(loop: asyncio.AbstractEventLoop) -> None:
     await close_fetcher()
     await close_db()
     logging.info("Shutdown complete")
+
+
+async def run_until_stopped(services: list[asyncio.Task[None]], stop: asyncio.Event) -> bool:
+    """Wait until `stop` is set or a service fails. A service that returns on its own
+    just ends; the others keep running. Returns whether a service failed."""
+    stopper = asyncio.create_task(stop.wait(), name="stop-signal")
+    pending: set[asyncio.Task[Any]] = set(services)
+    try:
+        while pending:
+            done, _ = await asyncio.wait(pending | {stopper}, return_when=asyncio.FIRST_COMPLETED)
+            if stopper in done:
+                return False
+            for task in done:
+                pending.discard(task)
+                error = None if task.cancelled() else task.exception()
+                if error is not None:
+                    logging.error(f"Fatal: {task.get_name()} failed", exc_info=error)
+                    return True
+        return False
+    finally:
+        stopper.cancel()
 
 
 async def start_api_server(settings: Settings) -> None:
@@ -242,32 +265,10 @@ async def start_digest_loop() -> None:
     await dispatcher.run_digest_loop()
 
 
-async def main() -> None:
-    """Main entry point."""
-    settings = get_settings()
-
-    # Setup
-    setup_logging(settings)
+async def prepare_state(settings: Settings) -> None:
+    """Bring the data directory, schema, declarative config and cache up to date
+    before any service starts. An invalid YAML file exits the process here."""
     logger = logging.getLogger(__name__)
-
-    # Validate configuration
-    if not settings.validate_minimal_config():
-        logger.error(
-            "No delivery platform configured. Set DISCORD_TOKEN or TELEGRAM_TOKEN, "
-            "or provide a webhooks.yaml for a webhook-only deployment."
-        )
-        sys.exit(1)
-
-    logger.info("=" * 50)
-    logger.info("  NewsFlow Bot Starting...")
-    logger.info("=" * 50)
-    logger.info(f"  Discord:     {'✓ enabled' if settings.discord_enabled else '✗ disabled'}")
-    logger.info(f"  Telegram:    {'✓ enabled' if settings.telegram_enabled else '✗ disabled'}")
-    logger.info(f"  Webhook:     {'✓ enabled' if settings.webhooks_enabled else '✗ disabled'}")
-    logger.info(f"  Translation: {'✓ enabled' if settings.can_translate() else '✗ disabled'}")
-    logger.info(f"  REST API:    {'✓ enabled' if settings.api_enabled else '✗ disabled'}")
-    logger.info(f"  Fetch Interval: {settings.fetch_interval_minutes} minutes")
-    logger.info("=" * 50)
 
     # Ensure data directory exists
     ensure_data_dir(settings)
@@ -318,20 +319,53 @@ async def main() -> None:
         init_cache("memory")
         logger.info("Memory cache initialized")
 
-    # loop.add_signal_handler is unimplemented on Windows' ProactorEventLoop; Ctrl+C
-    # still surfaces as KeyboardInterrupt and is caught in cli(). `_shutdown_tasks`
-    # holds strong refs — the loop only weak-refs bare create_task results.
+
+async def main() -> None:
+    """Main entry point."""
+    settings = get_settings()
+
+    # Setup
+    setup_logging(settings)
+    logger = logging.getLogger(__name__)
+
+    # Validate configuration
+    if not settings.validate_minimal_config():
+        logger.error(
+            "No delivery platform configured. Set DISCORD_TOKEN or TELEGRAM_TOKEN, "
+            "or provide a webhooks.yaml for a webhook-only deployment."
+        )
+        sys.exit(1)
+
+    for warning in settings.config_warnings():
+        logger.warning(f"Config: {warning}")
+
+    logger.info("=" * 50)
+    logger.info("  NewsFlow Bot Starting...")
+    logger.info("=" * 50)
+    logger.info(f"  Discord:     {'✓ enabled' if settings.discord_enabled else '✗ disabled'}")
+    logger.info(f"  Telegram:    {'✓ enabled' if settings.telegram_enabled else '✗ disabled'}")
+    logger.info(f"  Webhook:     {'✓ enabled' if settings.webhooks_enabled else '✗ disabled'}")
+    logger.info(f"  Translation: {'✓ enabled' if settings.can_translate() else '✗ disabled'}")
+    logger.info(f"  REST API:    {'✓ enabled' if settings.api_enabled else '✗ disabled'}")
+    logger.info(f"  Fetch Interval: {settings.fetch_interval_minutes} minutes")
+    logger.info("=" * 50)
+
+    # Inside the try, a database or file error at startup reaches the configured
+    # log (JSON included) instead of escaping as a bare traceback on stderr.
+    try:
+        await prepare_state(settings)
+    except Exception:
+        logger.exception("Startup failed")
+        sys.exit(1)
+
+    # A signal only asks main() to stop; main() then shuts down in order itself.
+    # add_signal_handler is unimplemented on Windows' ProactorEventLoop: there
+    # asyncio.run turns Ctrl+C into cancelling main(), and the finally below still runs.
     loop = asyncio.get_running_loop()
-    _shutdown_tasks: set[asyncio.Task[Any]] = set()
-
-    def _trigger_shutdown() -> None:
-        task = asyncio.create_task(shutdown(loop), name="shutdown")
-        _shutdown_tasks.add(task)
-        task.add_done_callback(_shutdown_tasks.discard)
-
+    stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _trigger_shutdown)
+            loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
             logger.debug(f"Signal {sig.name} handler not supported on this platform")
 
@@ -350,48 +384,34 @@ async def main() -> None:
         except NotImplementedError:
             logger.debug("SIGHUP handler not supported on this platform")
 
-    # Start all services
+    services: list[tuple[str, Coroutine[Any, Any, None]]] = []
+    if settings.discord_enabled:
+        services.append(("discord", start_discord_bot(settings)))
+    if settings.telegram_enabled:
+        services.append(("telegram", start_telegram_bot(settings)))
+    if settings.webhooks_enabled:
+        services.append(("webhook", start_webhook_adapter_task(settings)))
+    if settings.api_enabled:
+        services.append(("api", start_api_server(settings)))
+    if not services:
+        logger.error("No services to start!")
+        return
+
+    # The unified dispatch loop, cleanup, per-platform heartbeats and digests run for all.
+    services.append(("dispatch", start_dispatch_loop(settings)))
+    services.append(("cleanup", start_cleanup_loop()))
+    services.append(("platform-monitor", start_platform_monitor()))
+    services.append(("digest", start_digest_loop()))
+
+    logger.info("All services starting...")
+    tasks = [asyncio.create_task(coro, name=name) for name, coro in services]
+    failed = False
     try:
-        tasks = []
-
-        if settings.discord_enabled:
-            tasks.append(start_discord_bot(settings))
-
-        if settings.telegram_enabled:
-            tasks.append(start_telegram_bot(settings))
-
-        if settings.webhooks_enabled:
-            tasks.append(start_webhook_adapter_task(settings))
-
-        if settings.api_enabled:
-            tasks.append(start_api_server(settings))
-
-        if not tasks:
-            logger.error("No services to start!")
-            return
-
-        # Add the unified dispatch loop (runs for all platforms)
-        tasks.append(start_dispatch_loop(settings))
-
-        # Add the cleanup loop (deletes old entries/sent records)
-        tasks.append(start_cleanup_loop())
-
-        # Add the platform monitor (per-platform heartbeats for HEALTHCHECK)
-        tasks.append(start_platform_monitor())
-
-        # Add the digest loop (periodic AI-generated summaries)
-        tasks.append(start_digest_loop())
-
-        logger.info("All services starting...")
-
-        # Run all services concurrently
-        await asyncio.gather(*tasks)
-
-    except asyncio.CancelledError:
-        logger.info("Main tasks cancelled")
-    except Exception as e:
-        logger.exception(f"Fatal error: {e}")
-        raise
+        failed = await run_until_stopped(tasks, stop)
+    finally:
+        await shutdown(tasks)
+    if failed:
+        sys.exit(1)
 
 
 def cli() -> None:

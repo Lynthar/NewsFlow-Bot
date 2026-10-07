@@ -5,11 +5,17 @@ sources and individual subscribers; and the safety guarantee that RSS feeds and
 non-owned subscriptions are never touched.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select
 
+from newsflow.core import source_fetcher as sf
+from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import SentEntry, Subscription
+from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services.feed_service import FeedService
 from newsflow.services.source_sync import (
     SourceCfg,
     SourceConfigError,
@@ -414,3 +420,64 @@ sources:
     )
     with pytest.raises(SourceConfigError, match="silent"):
         parse_sources_yaml(path)
+
+
+# ── what a declared source delivers first ────────────────────────────────────
+
+
+class _Serving:
+    """A json_api source serving a fixed list of entries."""
+
+    def __init__(self, entries: list[dict]) -> None:
+        self.entries = entries
+
+    async def fetch(self, req):
+        return FetchResult(url=req.url, success=True, entries=self.entries)
+
+
+def _served(declared_at: datetime) -> list[dict]:
+    def item(guid: str, published: datetime | None) -> dict:
+        return {"guid": guid, "title": guid, "link": f"https://x/{guid}", "published_at": published}
+
+    return [
+        item("old", declared_at - timedelta(days=1)),
+        item("undated", None),
+        item("new", declared_at + timedelta(minutes=5)),
+    ]
+
+
+async def _first_poll(session, monkeypatch, entries: list[dict]) -> list[str]:
+    """Fetch every source once; return what the subscription would receive."""
+    monkeypatch.setitem(sf._REGISTRY, "json_api", _Serving(entries))
+    await FeedService(session).fetch_all_feeds()
+    await session.commit()
+    [sub] = await _subs(session)
+    unsent = await SubscriptionRepository(session).get_unsent_entries_for_subscription(sub.id)
+    return [e.guid for e in unsent]
+
+
+async def test_new_source_delivers_only_what_follows_its_declaration(session, monkeypatch):
+    """A new source has no entries when it is declared, so nothing could be seeded
+    then; its whole first poll used to go out as new articles."""
+    declared_at = datetime.now(UTC)
+    await _reconcile(session, [_src()])
+    await session.commit()
+
+    assert await _first_poll(session, monkeypatch, _served(declared_at)) == ["new"]
+
+
+async def test_source_removed_then_restored_does_not_repush(session, monkeypatch):
+    declared_at = datetime.now(UTC)
+    await _reconcile(session, [_src()])
+    await session.commit()
+    await _first_poll(session, monkeypatch, _served(declared_at))
+
+    await _reconcile(session, [])  # commented out: the feed and its history go
+    await session.commit()
+    await _reconcile(session, [_src()])  # and back
+    await session.commit()
+
+    entries = _served(declared_at)
+    for e in entries:
+        e["published_at"] = e["published_at"] and e["published_at"] - timedelta(hours=1)
+    assert await _first_poll(session, monkeypatch, entries) == []

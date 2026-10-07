@@ -16,9 +16,12 @@ just burns one failed API call per dispatch cycle per sub.
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from sqlalchemy import select
+from telegram.error import BadRequest, Forbidden
 
 from newsflow.adapters.base import ChannelGoneError
+from newsflow.adapters.telegram.bot import TelegramAdapter
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
@@ -497,3 +500,32 @@ async def test_channel_gone_error_carries_channel_id():
     e2 = ChannelGoneError("CHAN-456")
     assert e2.channel_id == "CHAN-456"
     assert e2.reason == ""
+
+
+# ===== Telegram: which Bot API errors mean the chat is gone =====
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        Forbidden("Forbidden: bot was kicked from the supergroup chat"),
+        Forbidden("Forbidden: bot was blocked by the user"),
+        Forbidden("Forbidden: bot is not a member of the channel chat"),
+        Forbidden("Forbidden: user is deactivated"),
+        Forbidden("Forbidden: the group chat was deleted"),
+        BadRequest("Chat not found"),
+    ],
+)
+def test_telegram_errors_for_a_gone_chat(error):
+    assert TelegramAdapter._is_chat_gone(error) is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        Forbidden("Forbidden: bot can't initiate conversation with a user"),
+        BadRequest("Bad Request: can't parse entities"),
+    ],
+)
+def test_telegram_errors_that_leave_the_chat_alive(error):
+    assert TelegramAdapter._is_chat_gone(error) is False

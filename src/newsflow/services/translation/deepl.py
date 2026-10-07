@@ -19,7 +19,9 @@ DEEPL_LANGUAGES = {
     "da": "DA",  # Danish
     "de": "DE",  # German
     "el": "EL",  # Greek
-    "en": "EN",  # English (unspecified)
+    # DeepL's SDK refuses the variant-less EN and PT before sending, so the bare codes
+    # map to the most widely used variant.
+    "en": "EN-US",  # English
     "en-gb": "EN-GB",  # British English
     "en-us": "EN-US",  # American English
     "es": "ES",  # Spanish
@@ -36,7 +38,7 @@ DEEPL_LANGUAGES = {
     "nb": "NB",  # Norwegian Bokmål
     "nl": "NL",  # Dutch
     "pl": "PL",  # Polish
-    "pt": "PT",  # Portuguese (unspecified)
+    "pt": "PT-BR",  # Portuguese
     "pt-br": "PT-BR",  # Brazilian Portuguese
     "pt-pt": "PT-PT",  # European Portuguese
     "ro": "RO",  # Romanian
@@ -46,9 +48,14 @@ DEEPL_LANGUAGES = {
     "sv": "SV",  # Swedish
     "tr": "TR",  # Turkish
     "uk": "UK",  # Ukrainian
-    "zh": "ZH",  # Chinese (simplified)
-    "zh-cn": "ZH",  # Chinese Simplified
-    "zh-hans": "ZH",  # Chinese Simplified
+    "zh": "ZH-HANS",  # Chinese (simplified)
+    "zh-cn": "ZH-HANS",
+    "zh-sg": "ZH-HANS",
+    "zh-hans": "ZH-HANS",
+    "zh-tw": "ZH-HANT",  # Chinese (traditional); DeepL has no region codes for it
+    "zh-hk": "ZH-HANT",
+    "zh-mo": "ZH-HANT",
+    "zh-hant": "ZH-HANT",
 }
 
 

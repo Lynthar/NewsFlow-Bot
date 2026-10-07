@@ -59,17 +59,7 @@ def _check(errors: list[str], warnings: list[str], infos: list[str]) -> None:
             "webhooks.yaml) — startup would abort"
         )
 
-    if settings.translation_enabled and not settings.can_translate():
-        warnings.append(
-            f"translation_enabled but provider {settings.translation_provider!r} "
-            "has no API key — entries will be delivered untranslated"
-        )
-
-    if settings.api_enabled and not settings.api_key:
-        warnings.append(
-            "api_enabled without API_KEY — write endpoints and /api/ingest "
-            "are fail-closed (503), push sources won't work"
-        )
+    warnings.extend(settings.config_warnings())
 
     _check_webhooks_yaml(settings, errors, infos)
     _check_sources_yaml(settings, errors, infos)

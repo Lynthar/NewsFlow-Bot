@@ -234,3 +234,19 @@ def test_digest_factory_passes_custom_prompt_from_settings(configure):
     assert provider is not None
     assert provider.system_prompt_template == "Editor. {window} in {lang}."
     reset_summarizer()
+
+
+async def test_digest_failure_reports_the_error_class_not_the_endpoint_text():
+    # `/digest now` shows this in the chat; an endpoint's message can name internal hosts.
+    p = OpenAIDigestProvider(api_key="x", model="m")
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = AsyncMock(
+        side_effect=ConnectionError("cannot reach http://10.0.0.5:11434/v1")
+    )
+    p._client = fake_client
+    article = DigestArticle(title="T", summary="S", link="https://x", source="X", published_at=None)
+
+    result = await p.generate_digest([article], language="en", time_window_desc="past day")
+
+    assert result.success is False
+    assert result.error == "ConnectionError"

@@ -57,6 +57,9 @@ class Feed(Base):
     # Fetch tracking
     last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_successful_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The last fetch that returned the whole document (not a 304). SentEntry cleanup
+    # reads an entry as gone from the source only if this snapshot no longer lists it.
+    last_full_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Exponential backoff: while set and in the future, the dispatcher skips
     # this feed. Cleared on successful fetch; pushed further on each error.

@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 _TLS_MODES = frozenset({"verify", "insecure"})
 
+# Bounds every socket read, not just the connect: a server that accepts and then goes
+# silent would otherwise hold the worker thread, and the dispatch round, forever.
+_SOCKET_TIMEOUT_S = 30
+
 # imap-tools hands back this value when the Date header is missing or unparseable.
 _NO_DATE = datetime(1900, 1, 1)
 
@@ -133,7 +137,7 @@ class EmailSourceFetcher:
         if tls == "insecure":
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
-        with mailbox_cls(host, port, ssl_context=context).login(
+        with mailbox_cls(host, port, timeout=_SOCKET_TIMEOUT_S, ssl_context=context).login(
             user, password, initial_folder=mailbox
         ) as mb:
             return list(mb.fetch(reverse=True, limit=limit, mark_seen=False, bulk=True))

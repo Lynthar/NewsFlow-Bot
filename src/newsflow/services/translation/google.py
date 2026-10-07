@@ -73,9 +73,12 @@ class GoogleProvider(TranslationProvider):
 
             loop = asyncio.get_event_loop()
 
+            # Plain text in, plain text out: the default "html" format hands quotes and
+            # ampersands back as entities, which then reach the user verbatim.
             kwargs = {
                 "values": text,
                 "target_language": target,
+                "format_": "text",
             }
             if source_lang:
                 kwargs["source_language"] = self.normalize_language_code(source_lang)

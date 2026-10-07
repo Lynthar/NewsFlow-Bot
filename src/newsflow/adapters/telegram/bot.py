@@ -36,6 +36,7 @@ from newsflow.adapters.base import (
     ChannelMigratedError,
     Message,
     TopicGoneError,
+    is_http_url,
 )
 from newsflow.adapters.views import (
     IMPORT_RESULT_TITLE,
@@ -1056,9 +1057,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             chat_id,
             summarizer,
             datetime.now(UTC),
-            # A manual run must not consume the schedule slot on an empty
-            # window, or it eats the digest the user was going to receive.
-            mark_empty_delivered=False,
+            scheduled=False,
         )
         if outcome.status == "no_adapter":
             await msg.reply_text("Telegram adapter not registered yet — try again.")
@@ -1067,7 +1066,9 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif outcome.status == "no_articles":
             await msg.reply_text("No articles in the current window — nothing to summarize.")
         elif outcome.status == "generation_failed":
-            await msg.reply_text(f"❌ Digest generation failed: {outcome.error}")
+            await msg.reply_text(
+                f"❌ Digest generation failed ({outcome.error}). Details are in the bot log."
+            )
         elif outcome.status == "delivery_failed":
             await msg.reply_text("❌ Digest generated but delivery failed.")
         elif outcome.mark_failed:
@@ -2410,12 +2411,20 @@ class TelegramAdapter(BaseAdapter):
         """Stop the Telegram bot."""
         global _adapter
 
+        # Each step only if its start got that far: a failed or half-finished start
+        # leaves PTB raising RuntimeError on stop(), and shutdown() must still run.
         if self.app:
-            updater = self.app.updater
-            if updater is not None:
-                await updater.stop()
-            await self.app.stop()
-            await self.app.shutdown()
+            try:
+                updater = self.app.updater
+                if updater is not None and updater.running:
+                    try:
+                        await updater.stop()
+                    except Exception:
+                        logger.warning("Telegram polling ended with an error", exc_info=True)
+                if self.app.running:
+                    await self.app.stop()
+            finally:
+                await self.app.shutdown()
 
         _adapter = None
         logger.info("Telegram bot stopped")
@@ -2438,12 +2447,13 @@ class TelegramAdapter(BaseAdapter):
         if isinstance(e, Forbidden):
             # Standard Bot API phrasings for a permanently gone channel: kicked from the
             # supergroup / blocked by the user / not a member of the channel chat /
-            # user is deactivated.
+            # user is deactivated / the group chat was deleted.
             return (
                 "was kicked" in msg
                 or "was blocked" in msg
                 or "is not a member" in msg
                 or "is deactivated" in msg
+                or "chat was deleted" in msg
             )
         return False
 
@@ -2766,11 +2776,10 @@ class TelegramAdapter(BaseAdapter):
 
         # Link needs HTML-escape too: RSS URLs often contain `&` in query
         # strings, which Telegram's HTML parser rejects as an invalid entity
-        # and fails the whole message send.
-        footer = [
-            f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>',
-            f"📰 {self._escape_html(message.source)}",
-        ]
+        # and fails the whole message send. Only http(s): a tg:// link can mention a user.
+        footer = [f"📰 {self._escape_html(message.source)}"]
+        if is_http_url(message.link):
+            footer.insert(0, f'🔗 <a href="{self._escape_html(message.link)}">Read more</a>')
         if message.published_at:
             footer.append(f"🕐 {message.published_at.strftime('%Y-%m-%d %H:%M')}")
 

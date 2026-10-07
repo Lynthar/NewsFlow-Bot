@@ -58,6 +58,21 @@ def test_rejects_private_ip_literals(url):
         validate_feed_url(url)
 
 
+@pytest.mark.parametrize(
+    "host",
+    ["127.1", "0x7f.0.0.1", "2130706433", "0x7f000001", "10.1", "0xa9fea9fe", "0"],
+)
+def test_rejects_shorthand_ip_literals(host):
+    # ipaddress rejects these spellings, but the resolver the fetch goes through
+    # reads each one as a loopback, private, link-local or unspecified address.
+    with pytest.raises(InvalidFeedURLError):
+        validate_feed_url(f"http://{host}/feed")
+
+
+def test_accepts_shorthand_for_a_public_address():
+    validate_feed_url("http://1.1/feed")
+
+
 def test_rejects_empty_and_whitespace():
     with pytest.raises(InvalidFeedURLError):
         validate_feed_url("")

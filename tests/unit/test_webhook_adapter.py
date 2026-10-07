@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import logging
+import time
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
@@ -17,7 +22,10 @@ import pytest_asyncio
 
 from newsflow.adapters.base import Message
 from newsflow.adapters.webhook.bot import WebhookAdapter, _retry_after_seconds
+from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.webhook import WebhookDestination
+from newsflow.services.dispatcher import Dispatcher
+from tests import seed
 
 
 @pytest_asyncio.fixture
@@ -49,6 +57,10 @@ class _FakeContent:
 
     async def read(self, n: int = -1) -> bytes:
         return self._body[:n] if n >= 0 else self._body
+
+    async def iter_chunked(self, size: int):
+        for i in range(0, len(self._body), size):
+            yield self._body[i : i + size]
 
 
 class _FakeSession:
@@ -452,3 +464,109 @@ async def test_rate_limit_does_not_clear_earlier_failures(session, monkeypatch):
 
     assert dest.error_count == 7
     assert dest.last_error == "HTTP 500"
+
+
+# ─── receivers that answer 200 to a refused message ──────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("fmt", "body"),
+    [
+        ("wecom", {"errcode": 93000, "errmsg": "invalid webhook url"}),
+        ("lark", {"code": 19021, "msg": "sign match fail"}),
+    ],
+)
+async def test_refusal_in_a_200_body_is_a_failed_send(session, fmt, body):
+    dest = await _persisted_dest(session, format=fmt)
+    adapter = _make_adapter(_FakeSession(status=200, body=json.dumps(body).encode()))
+    adapter._destinations = {"brk": dest}
+
+    assert await adapter.send_message("brk", _message()) is False
+    assert dest.error_count == 1
+    assert str(body.get("errcode") or body.get("code")) in (dest.last_error or "")
+
+
+async def test_rate_limit_in_a_200_body_defers_without_touching_the_breaker(session, monkeypatch):
+    slept = _patch_sleep(monkeypatch)
+    dest = await _persisted_dest(session, format="wecom", error_count=3, last_error="HTTP 500")
+    fake = _FakeSession(status=200, body=b'{"errcode":45009,"errmsg":"api freq out of limit"}')
+    adapter = _make_adapter(fake)
+    adapter._destinations = {"brk": dest}
+
+    assert await adapter.send_message("brk", _message()) is False
+    # WeCom's window is a minute: retrying a second later is only refused again.
+    assert len(fake.calls) == 1
+    assert slept == []
+    assert dest.error_count == 3
+
+
+async def test_accepted_200_body_is_a_success(session):
+    dest = await _persisted_dest(session, format="wecom", error_count=3, last_error="x")
+    adapter = _make_adapter(_FakeSession(status=200, body=b'{"errcode":0,"errmsg":"ok"}'))
+    adapter._destinations = {"brk": dest}
+
+    assert await adapter.send_message("brk", _message()) is True
+    assert dest.error_count == 0
+
+
+# ─── credentials in the URL stay out of logs ─────────────────────────────────
+
+
+async def test_userinfo_in_the_url_is_not_logged(caplog):
+    adapter = _make_adapter(_FakeSession(status=500, body=b"boom"))
+    adapter._destinations = {"x": _dest(name="x", url="https://user:s3cret@hooks.example.com/x")}
+
+    with caplog.at_level(logging.INFO, logger="newsflow.adapters.webhook.bot"):
+        assert await adapter.send_message("x", _message()) is False
+
+    assert "hooks.example.com" in caplog.text
+    assert "s3cret" not in caplog.text
+
+
+async def test_aiohttp_error_quoting_the_url_is_not_logged_or_stored(session, caplog):
+    url = "https://hooks.example.com/services/T0/B0/TOKEN123"
+    dest = await _persisted_dest(session, url=url)
+    adapter = _make_adapter(_FakeSession(raise_exc=aiohttp.InvalidURL(url)))
+    adapter._destinations = {"brk": dest}
+
+    with caplog.at_level(logging.INFO, logger="newsflow.adapters.webhook.bot"):
+        assert await adapter.send_message("brk", _message()) is False
+
+    assert "TOKEN123" not in caplog.text
+    assert dest.last_error and "TOKEN123" not in dest.last_error
+
+
+# ─── accounting while a dispatch round is delivering ─────────────────────────
+
+
+async def test_failure_after_a_delivered_entry_is_recorded_without_waiting(
+    db, session, monkeypatch
+):
+    """The breaker writes in its own session. Had the round still held the write lock
+    from the first entry's sent-mark while sending the second, that write would wait out
+    the 15 s busy timeout, fail, and the failure would never count."""
+    dest = await _persisted_dest(session)
+    sub = await seed.subscription(
+        db, platform="webhook", channel_id=dest.name, url="https://f.test/rss", translate=False
+    )
+    for i in range(2):
+        published = datetime.now(UTC) - timedelta(hours=2 - i)
+        await seed.entry(db, sub.feed_id, guid=f"g{i}", published_at=published)
+    fetcher = MagicMock()
+    fetcher.fetch_multiple = AsyncMock(
+        return_value=[FetchResult(url=sub.feed.url, success=True, entries=[], not_modified=True)]
+    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
+    adapter = _make_adapter(_FakeSession(statuses=[200, 500]))
+    adapter._destinations = {dest.name: dest}
+    dispatcher = Dispatcher()
+    dispatcher.register_adapter("webhook", adapter)
+
+    started = time.monotonic()
+    result = await dispatcher.dispatch_once()
+
+    assert time.monotonic() - started < 5
+    assert result.messages_sent == 1
+    async with db() as fresh:
+        row = await fresh.get(WebhookDestination, dest.id)
+    assert row is not None and row.error_count == 1

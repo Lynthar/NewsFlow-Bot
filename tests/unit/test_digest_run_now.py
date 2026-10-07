@@ -2,6 +2,7 @@
 now handlers: whether an empty window consumes the slot, where the chunk budget comes from,
 what each failure reports. Real database and dispatcher; the adapter and the LLM are mocked."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -75,26 +76,26 @@ async def _state(db):
     return delivered, row.last_pinned_message_id
 
 
-async def _run(dispatcher, summarizer=None, *, mark_empty_delivered: bool):
+async def _run(dispatcher, summarizer=None, *, scheduled: bool):
     return await DigestService.run_now(
         dispatcher,
         "discord",
         CHANNEL,
         summarizer or _summarizer(DigestResult(success=True, text="body")),
         NOW,
-        mark_empty_delivered=mark_empty_delivered,
+        scheduled=scheduled,
     )
 
 
 async def test_missing_adapter_reports_instead_of_generating(db):
     await _configured(db)
-    outcome = await _run(_dispatcher(None), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(None), scheduled=True)
     assert outcome.status == "no_adapter"
     assert await _state(db) == (None, "pin-old")
 
 
 async def test_missing_config_reports_no_config(db):
-    outcome = await _run(_dispatcher(_adapter()), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(_adapter()), scheduled=True)
     assert outcome.status == "no_config"
 
 
@@ -102,14 +103,14 @@ async def test_scheduled_run_consumes_the_slot_on_an_empty_window(db):
     """is_due would re-fire the same slot on every tick until the hour
     passes, so a scheduled empty run still records a delivery."""
     await _configured(db)
-    outcome = await _run(_dispatcher(_adapter()), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(_adapter()), scheduled=True)
     assert outcome.status == "no_articles"
     assert await _state(db) == (NOW, "pin-old")
 
 
 async def test_manual_run_leaves_the_slot_alone_on_an_empty_window(db):
     await _configured(db)
-    outcome = await _run(_dispatcher(_adapter()), mark_empty_delivered=False)
+    outcome = await _run(_dispatcher(_adapter()), scheduled=False)
     assert outcome.status == "no_articles"
     assert await _state(db) == (None, "pin-old")
 
@@ -120,7 +121,7 @@ async def test_generation_failure_carries_the_error_back(db):
     outcome = await _run(
         _dispatcher(_adapter()),
         _summarizer(DigestResult(success=False, error="provider down")),
-        mark_empty_delivered=True,
+        scheduled=True,
     )
     assert (outcome.status, outcome.error) == ("generation_failed", "provider down")
     assert await _state(db) == (None, "pin-old")
@@ -132,7 +133,7 @@ async def test_chunk_budget_comes_from_the_adapter_not_the_call_site(db, configu
     await _delivered_article(db)
     adapter = _adapter(chunk_size=40)
 
-    outcome = await _run(_dispatcher(adapter), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(adapter), scheduled=True)
 
     first = adapter.send_digest_text_pinned.await_args.args[1]
     rest = [call.args[1] for call in adapter.send_digest_text.await_args_list]
@@ -146,7 +147,7 @@ async def test_chunk_budget_comes_from_the_adapter_not_the_call_site(db, configu
 async def test_failed_delivery_does_not_record_one(db):
     await _configured(db)
     await _delivered_article(db)
-    outcome = await _run(_dispatcher(_adapter(pinned=(False, None))), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(_adapter(pinned=(False, None))), scheduled=True)
     assert outcome.status == "delivery_failed"
     assert await _state(db) == (None, "pin-old")
 
@@ -156,7 +157,7 @@ async def test_delivered_records_the_pin_and_reports_the_chunk_count(db):
     await _delivered_article(db)
     adapter = _adapter()
 
-    outcome = await _run(_dispatcher(adapter), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(adapter), scheduled=True)
 
     assert (outcome.status, outcome.chunks, outcome.mark_failed) == ("delivered", 1, False)
     assert await _state(db) == (NOW, "pin-new")
@@ -172,6 +173,70 @@ async def test_a_failed_delivery_record_is_reported_not_raised(db, monkeypatch):
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr(AsyncSession, "commit", locked)  # the UPDATE after delivery fails
-    outcome = await _run(_dispatcher(_adapter()), mark_empty_delivered=True)
+    outcome = await _run(_dispatcher(_adapter()), scheduled=True)
 
     assert (outcome.status, outcome.mark_failed) == ("delivered", True)
+
+
+# ─── runs that overlap ───────────────────────────────────────────────────────
+
+
+async def test_overlapping_runs_for_one_channel_deliver_once(db):
+    """A manual run is still waiting on the LLM when the scheduled one starts. They
+    used to read the same window, both deliver it, and the slower one wrote its older
+    time back. Now the second waits, finds the slot served, and stops."""
+    await _configured(db)
+    await _delivered_article(db)
+    adapter = _adapter()
+    dispatcher = _dispatcher(adapter)
+    generating = asyncio.Event()
+    release = asyncio.Event()
+
+    async def generate_digest(**kwargs):
+        if not generating.is_set():
+            generating.set()
+            await release.wait()
+        return DigestResult(success=True, text="body")
+
+    summarizer = MagicMock()
+    summarizer.generate_digest = AsyncMock(side_effect=generate_digest)
+
+    manual = asyncio.create_task(_run(dispatcher, summarizer, scheduled=False))
+    await generating.wait()
+    scheduled = asyncio.create_task(_run(dispatcher, summarizer, scheduled=True))
+    await asyncio.sleep(0.05)
+    release.set()
+    outcomes = await asyncio.gather(manual, scheduled)
+
+    assert [o.status for o in outcomes] == ["delivered", "not_due"]
+    assert adapter.send_digest_text_pinned.await_count == 1
+    assert (await _state(db))[0] == NOW
+
+
+async def test_digest_waits_for_a_delivery_mark_still_being_written(db):
+    """A round has flushed a sent-mark but not committed it. Reading the window then
+    would miss the article, and the window would move past it for good."""
+    await _configured(db)
+    sub = await seed.subscription(db, platform="discord", channel_id=CHANNEL, user_id="u")
+    entry = await seed.entry(db, sub.feed_id, guid="g1", title="Hello", link="https://ex.com/1")
+    dispatcher = _dispatcher(_adapter())
+    summarizer = _summarizer(DigestResult(success=True, text="body"))
+
+    async with dispatcher.delivery_lock, db() as round_session:
+        round_session.add(
+            SentEntry(
+                subscription_id=sub.id,
+                feed_id=entry.feed_id,
+                guid=entry.guid,
+                sent_at=NOW - timedelta(minutes=1),
+            )
+        )
+        await round_session.flush()
+        digest = asyncio.create_task(_run(dispatcher, summarizer, scheduled=True))
+        await asyncio.sleep(0.05)
+        await round_session.commit()
+    outcome = await digest
+
+    assert outcome.status == "delivered"
+    articles = summarizer.generate_digest.await_args.kwargs["articles"]
+    assert [a.title for a in articles] == ["Hello"]

@@ -2,7 +2,9 @@
 Feed repository for database operations.
 """
 
+import hashlib
 import logging
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -10,7 +12,9 @@ from typing import Any
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from newsflow.models.digest import WEEKLY_WINDOW
 from newsflow.models.feed import Feed, FeedEntry
+from newsflow.models.subscription import SentEntry
 from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
@@ -22,9 +26,41 @@ _ENTRY_TITLE_CAP, _ENTRY_URL_CAP, _ENTRY_AUTHOR_CAP = 1024, 2048, 256
 _FEED_TITLE_CAP, _FEED_HEADER_CAP, _FEED_URL_CAP = 512, 256, 2048
 
 
-def _cap(value: str | None, limit: int) -> str | None:
-    """None-safe truncation for optional text fields."""
-    return value[:limit] if value is not None else None
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _mend_surrogates(text: str) -> str:
+    """Rejoin a surrogate pair split into two code points and mark a lone half with
+    U+FFFD: no encoding can store a lone one, so its INSERT fails the feed's batch."""
+    if not _SURROGATE.search(text):
+        return text
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
+def _storable(value: str | None, limit: int | None = None) -> str | None:
+    """Feed text as every backend stores it: surrogates mended, NUL dropped (Postgres
+    rejects it), cut to the column width."""
+    if value is None:
+        return None
+    text = _mend_surrogates(value).replace("\x00", "")
+    return text if limit is None else text[:limit]
+
+
+# A guid's stored key stays within this many UTF-8 bytes, which also keeps the
+# (feed_id, guid) index entries under Postgres's btree limit of about 2.7 KB.
+_GUID_KEY_MAX_BYTES = 2048
+
+
+def _guid_key(guid: str) -> str:
+    """How a guid is stored and matched: as is when it fits, else a cut prefix plus a hash
+    of the whole, so guids sharing a long prefix stay apart. NUL is kept: SQLite rows may
+    hold one already, and changing a stored key re-sends its entry."""
+    raw = _mend_surrogates(guid).encode()
+    if len(raw) <= _GUID_KEY_MAX_BYTES:
+        return raw.decode()
+    digest = hashlib.sha256(raw).hexdigest()
+    prefix = raw[: _GUID_KEY_MAX_BYTES - len(digest) - 1].decode(errors="ignore")
+    return f"{prefix}#{digest}"
 
 
 def _clamp_future_date(published_at: datetime | None, now: datetime) -> datetime | None:
@@ -91,9 +127,9 @@ class FeedRepository:
         Postgres and the feed can never be added."""
         feed = Feed(
             url=url,
-            title=_cap(title, _FEED_TITLE_CAP),
+            title=_storable(title, _FEED_TITLE_CAP),
             description=description,  # Text column — no cap
-            site_url=_cap(site_url, _FEED_URL_CAP),
+            site_url=_storable(site_url, _FEED_URL_CAP),
             source_type=source_type,
             config=config,
         )
@@ -139,15 +175,30 @@ class FeedRepository:
             "next_retry_at": None,
         }
         if title:
-            update_data["title"] = title[:_FEED_TITLE_CAP]
+            update_data["title"] = _storable(title, _FEED_TITLE_CAP)
         if description:
-            update_data["description"] = description  # Text column — no cap
+            update_data["description"] = _storable(description)  # Text column — no cap
         if etag:
-            update_data["etag"] = etag[:_FEED_HEADER_CAP]
+            update_data["etag"] = _storable(etag, _FEED_HEADER_CAP)
         if last_modified:
-            update_data["last_modified"] = last_modified[:_FEED_HEADER_CAP]
+            update_data["last_modified"] = _storable(last_modified, _FEED_HEADER_CAP)
 
         await self.session.execute(update(Feed).where(Feed.id == feed_id).values(**update_data))
+
+    async def record_full_fetch(self, feed_id: int, guids: Sequence[str]) -> None:
+        """Note a fetch that returned the whole document: when, and that every sent
+        record among `guids` is still listed at the source."""
+        now = datetime.now(UTC)
+        await self.session.execute(
+            update(Feed).where(Feed.id == feed_id).values(last_full_fetch_at=now)
+        )
+        keys = list({_guid_key(guid) for guid in guids})
+        if keys:
+            await self.session.execute(
+                update(SentEntry)
+                .where(SentEntry.feed_id == feed_id, SentEntry.guid.in_(keys))
+                .values(last_seen_at=now)
+            )
 
     async def mark_feed_error(
         self,
@@ -211,10 +262,8 @@ class FeedRepository:
         if not entries_data:
             return []
 
-        # Truncate guid to its column length up front so the existence check
-        # matches previously-stored (also-truncated) rows — otherwise a
-        # >2048-char guid would miss the check and then collide on INSERT.
-        guids = [data["guid"][:_ENTRY_URL_CAP] for data in entries_data]
+        # Key the existence check exactly as rows are stored.
+        guids = [_guid_key(data["guid"]) for data in entries_data]
         result = await self.session.execute(
             select(FeedEntry.guid).where(
                 FeedEntry.feed_id == feed_id,
@@ -229,8 +278,7 @@ class FeedRepository:
         now = datetime.now(UTC)
         seen: set[str] = set()
         new_entries: list[FeedEntry] = []
-        for data in entries_data:
-            guid = data["guid"][:_ENTRY_URL_CAP]
+        for data, guid in zip(entries_data, guids):
             if guid in existing_guids or guid in seen:
                 continue
             seen.add(guid)
@@ -238,13 +286,13 @@ class FeedRepository:
                 FeedEntry(
                     feed_id=feed_id,
                     guid=guid,
-                    title=data["title"][:_ENTRY_TITLE_CAP],
-                    link=data["link"][:_ENTRY_URL_CAP],
-                    summary=data.get("summary"),
-                    content=data.get("content"),
-                    author=_cap(data.get("author"), _ENTRY_AUTHOR_CAP),
+                    title=_storable(data["title"], _ENTRY_TITLE_CAP),
+                    link=_storable(data["link"], _ENTRY_URL_CAP),
+                    summary=_storable(data.get("summary")),
+                    content=_storable(data.get("content")),
+                    author=_storable(data.get("author"), _ENTRY_AUTHOR_CAP),
                     published_at=_clamp_future_date(data.get("published_at"), now),
-                    image_url=_cap(data.get("image_url"), _ENTRY_URL_CAP),
+                    image_url=_storable(data.get("image_url"), _ENTRY_URL_CAP),
                 )
             )
 
@@ -275,14 +323,28 @@ class FeedRepository:
         )
 
     async def cleanup_old_entries(self, days: int = 7) -> int:
-        """
-        Delete entries older than specified days.
+        """Delete entries stored more than `days` ago, except those a channel processed
+        within a digest window: a digest selects by when an entry was processed, and
+        one processed late (a paused subscription resumed) would lose its body first.
 
         Returns:
             Number of deleted entries
         """
-        cutoff = datetime.now(UTC) - timedelta(days=days)
-        result = await self.session.execute(delete(FeedEntry).where(FeedEntry.created_at < cutoff))
+        now = datetime.now(UTC)
+        digest_material = (
+            select(FeedEntry.id)
+            .join(
+                SentEntry,
+                (SentEntry.feed_id == FeedEntry.feed_id) & (SentEntry.guid == FeedEntry.guid),
+            )
+            .where(SentEntry.sent_at > now - WEEKLY_WINDOW, SentEntry.seeded.is_(False))
+        )
+        result = await self.session.execute(
+            delete(FeedEntry).where(
+                FeedEntry.created_at < now - timedelta(days=days),
+                FeedEntry.id.not_in(digest_material),
+            )
+        )
         return rowcount(result)
 
     async def count_entries(self, feed_id: int) -> int:

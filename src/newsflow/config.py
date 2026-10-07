@@ -5,11 +5,14 @@ Self-hosted mode: Only need DISCORD_TOKEN or TELEGRAM_TOKEN to start.
 All other settings have sensible defaults.
 """
 
+import os
+from difflib import get_close_matches
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, ValidationInfo, field_validator
+from dotenv import dotenv_values
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -115,8 +118,9 @@ class Settings(BaseSettings):
     # and the on/off switch: remove it to disable webhook delivery entirely.
     webhooks_config_path: Path = Path("./data/webhooks.yaml")
 
-    # Declarative non-RSS sources (JSON-API, IMAP email). Same file-presence
-    # opt-in as webhooks: create the file to enable, remove it to disable.
+    # Declarative non-RSS sources (JSON-API, IMAP email): the file existing turns the
+    # sync on. Removing it only stops the sync — synced sources keep running; an
+    # empty `sources: {}` is what retires them.
     sources_config_path: Path = Path("./data/sources.yaml")
 
     # Logging
@@ -202,9 +206,11 @@ class Settings(BaseSettings):
             if s.startswith("["):
                 import json
 
-                return json.loads(s)
-            return [part.strip() for part in s.split(",") if part.strip()]
-        return v
+                v = json.loads(s)
+            else:
+                return [part.strip() for part in s.split(",") if part.strip()]
+        # Telegram ids are numbers, so a JSON list naturally holds ints.
+        return [str(item) for item in v] if isinstance(v, list) else v
 
     @field_validator("feed_max_concurrent")
     @classmethod
@@ -266,6 +272,64 @@ class Settings(BaseSettings):
             raise ValueError("sent_entry_retention_days must be at least 1")
         return v
 
+    @model_validator(mode="after")
+    def validate_retention_order(self) -> Self:
+        if self.sent_entry_retention_days <= self.entry_retention_days:
+            raise ValueError(
+                "sent_entry_retention_days must be greater than entry_retention_days: "
+                "cleanup would drop the record that an entry was sent while the entry "
+                "is still there, and it would be delivered again"
+            )
+        return self
+
+    def config_warnings(self) -> list[str]:
+        """Settings that load but likely don't do what was meant. Startup logs these;
+        checkconfig reports them. Neither refuses to run over one."""
+        warnings = [
+            f"{key} is not a setting and is ignored — did you mean {name}?"
+            for key, name in self._misspelled_keys()
+        ]
+        if self.entry_retention_days <= 7:
+            warnings.append(
+                f"entry_retention_days={self.entry_retention_days} does not outlast the "
+                "weekly digest's 7-day window; its oldest articles are cleaned up first"
+            )
+        age_gate = self.max_entry_publish_age_days
+        if age_gate and self.sent_entry_retention_days <= age_gate:
+            warnings.append(
+                "sent_entry_retention_days does not exceed max_entry_publish_age_days: an "
+                "entry a feed keeps serving is delivered again once its sent record expires"
+            )
+        if self.translation_enabled and not self.can_translate():
+            warnings.append(
+                f"translation_enabled but provider {self.translation_provider!r} "
+                "has no API key — entries will be delivered untranslated"
+            )
+        if self.api_enabled and not self.api_key:
+            warnings.append(
+                "api_enabled without API_KEY — write endpoints and /api/ingest "
+                "are fail-closed (503), push sources won't work"
+            )
+        return warnings
+
+    def _misspelled_keys(self) -> list[tuple[str, str]]:
+        """(key, setting) for environment and .env keys one typo away from a setting.
+        Unknown keys are ignored on load, and other programs' variables are legitimate,
+        so only a near miss is worth reporting."""
+        names = list(type(self).model_fields)
+        keys = set(os.environ)
+        env_file = self.model_config.get("env_file")
+        if isinstance(env_file, str | Path) and Path(env_file).is_file():
+            keys.update(dotenv_values(env_file))
+        found = []
+        for key in sorted(keys):
+            if key.lower() in names:
+                continue
+            match = get_close_matches(key.lower(), names, n=1, cutoff=0.85)
+            if match:
+                found.append((key, match[0].upper()))
+        return found
+
     def validate_minimal_config(self) -> bool:
         """At least one delivery platform must be configured. A chat-platform
         token counts, and so does a webhooks.yaml on disk — a headless
@@ -299,7 +363,3 @@ def get_settings() -> Settings:
         settings = get_settings()
     """
     return Settings()
-
-
-# Convenience export
-settings = get_settings()

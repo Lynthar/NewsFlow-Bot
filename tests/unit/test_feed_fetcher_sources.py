@@ -58,6 +58,21 @@ def test_parse_json_feed_maps_items():
     assert entries[1]["content"] == "<p>hi</p>"
 
 
+def test_parse_json_feed_turns_scalar_fields_into_text():
+    # An unquoted number in a template's front matter arrives as a JSON number.
+    body = json.dumps(
+        {
+            "version": "https://jsonfeed.org/version/1.1",
+            "items": [{"id": 7, "url": 42, "title": 2024, "image": ["x.png"]}],
+        }
+    )
+    res = _f()._parse_json_feed(body, "application/feed+json", "https://ex.com/feed.json")
+    assert res is not None
+    [entry] = res[0]
+    assert (entry["guid"], entry["link"], entry["title"]) == ("7", "42", "2024")
+    assert entry["image_url"] is None
+
+
 def test_parse_json_feed_sniffs_without_content_type():
     # A server that mislabels the content-type still works via the sniff.
     body = '{"version":"https://jsonfeed.org/version/1.1","items":[{"id":"x","url":"https://e/x"}]}'

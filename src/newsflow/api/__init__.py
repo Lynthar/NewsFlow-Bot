@@ -7,6 +7,7 @@ Provides endpoints for:
 - Statistics
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -126,8 +127,26 @@ async def run_api_server() -> None:
         # None skips uvicorn's default dictConfig, whose plain-text handlers with
         # propagate=False would interleave non-JSON lines into a json log stream.
         log_config=None,
+        # A client holding a connection open must not hold up the process's shutdown.
+        timeout_graceful_shutdown=5,
     )
     server = uvicorn.Server(config)
 
+    async def serve() -> None:
+        try:
+            await server.serve()
+        except SystemExit as e:
+            # uvicorn exits the process when it cannot bind. SystemExit raised in a task
+            # leaves the event loop at once, skipping the shutdown; this one is a failure.
+            raise RuntimeError(f"API server exited (code {e.code})") from None
+
     logger.info(f"Starting API server on {settings.api_host}:{settings.api_port}")
-    await server.serve()
+    serving = asyncio.ensure_future(serve())
+    try:
+        await asyncio.shield(serving)
+    except asyncio.CancelledError:
+        # Cancelled means the process is shutting down: let uvicorn run its own
+        # shutdown rather than tearing its lifespan mid-step, which logs an error.
+        server.should_exit = True
+        await serving
+        raise

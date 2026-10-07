@@ -9,6 +9,8 @@ staying untouched when no template is set.
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from tests import seed
 
 # ---------------------------------------------------------------- telegram
@@ -142,3 +144,32 @@ async def test_discord_no_template_keeps_embed_layout():
     assert "content" not in call.kwargs
     assert call.kwargs["embed"].title == "T"
     assert call.kwargs["embed"].url == "https://x.test/a"
+
+
+# Discord refuses the whole message over an image that isn't an absolute http(s)
+# URL, so such an image would fail the entry on every retry.
+_UNUSABLE_IMAGES = ["/img/cover.jpg", "//cdn.x.test/c.jpg", "data:image/png;base64,AAAA"]
+
+
+@pytest.mark.parametrize("image_url", _UNUSABLE_IMAGES)
+async def test_discord_embed_leaves_out_an_image_discord_refuses(image_url):
+    adapter, channel = seed.discord_adapter()
+
+    assert await adapter.send_message("42", seed.message(image_url=image_url)) is True
+    assert channel.send.await_args.kwargs["embed"].image.url is None
+
+
+@pytest.mark.parametrize("image_url", _UNUSABLE_IMAGES)
+async def test_discord_template_leaves_out_an_image_discord_refuses(image_url):
+    adapter, channel = seed.discord_adapter()
+    message = seed.message(template_text="text", image_url=image_url)
+
+    assert await adapter.send_message("42", message) is True
+    assert "embed" not in channel.send.await_args.kwargs
+
+
+async def test_discord_embed_drops_a_link_discord_would_reject():
+    adapter, channel = seed.discord_adapter()
+
+    assert await adapter.send_message("42", seed.message(link="https://x.test/a b")) is True
+    assert channel.send.await_args.kwargs["embed"].url is None

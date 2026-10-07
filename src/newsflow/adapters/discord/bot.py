@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message
+from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message, is_http_url
 from newsflow.adapters.views import (
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     DISCORD_EMBED_FIELD_VALUE_LIMIT,
@@ -1555,9 +1555,7 @@ class DigestCommands(commands.Cog):
             str(interaction.channel_id),
             summarizer,
             datetime.now(UTC),
-            # A manual run must not consume the schedule slot on an empty
-            # window, or it eats the digest the user was going to receive.
-            mark_empty_delivered=False,
+            scheduled=False,
         )
 
         if outcome.status == "no_adapter":
@@ -1567,7 +1565,7 @@ class DigestCommands(commands.Cog):
         elif outcome.status == "no_articles":
             reply = "No articles in the current window — nothing to summarize."
         elif outcome.status == "generation_failed":
-            reply = f"❌ Digest generation failed: {outcome.error}"
+            reply = f"❌ Digest generation failed ({outcome.error}). Details are in the bot log."
         elif outcome.status == "delivery_failed":
             reply = "❌ Digest generated but delivery failed."
         else:
@@ -1643,7 +1641,7 @@ class DiscordAdapter(BaseAdapter):
                 if len(content) > 2000:
                     content = content[:1999] + "…"
                 allowed = _mention_allowance(mention) if mention else discord.AllowedMentions.none()
-                if message.image_url:
+                if is_http_url(message.image_url):
                     image_embed = discord.Embed()
                     image_embed.set_image(url=message.image_url)
                     await channel.send(content=content, embed=image_embed, allowed_mentions=allowed)
@@ -1829,7 +1827,7 @@ class DiscordAdapter(BaseAdapter):
         # description: the title field is not markdown-parsed, so "](", cannot inject a
         # clickable link. Capped at 256; url set only for a real http(s) link.
         title = message.display_title[:256] or "(untitled)"
-        url = message.link if message.link.startswith(("http://", "https://")) else None
+        url = message.link if is_http_url(message.link) else None
         embed = discord.Embed(
             title=title,
             url=url,
@@ -1852,8 +1850,7 @@ class DiscordAdapter(BaseAdapter):
         footer_text = f"Source: {message.source}"
         embed.set_footer(text=footer_text)
 
-        # Add image if available
-        if message.image_url:
+        if is_http_url(message.image_url):
             embed.set_image(url=message.image_url)
 
         return embed

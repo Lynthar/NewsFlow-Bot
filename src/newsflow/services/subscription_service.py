@@ -922,6 +922,10 @@ class SubscriptionService:
                 guild_id=guild_id,
                 message_thread_id=message_thread_id,
             )
+            # Each feed is committed before the next one is fetched: one write transaction
+            # across up to 200 fetches would hold SQLite's lock for minutes, and a dispatch
+            # round failing to record what it sent in that time sends it again.
+            await self.session.commit()
             if sub_result.success:
                 if sub_result.is_new:
                     result.added.append(entry.url)

@@ -49,6 +49,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    if connection.dialect.name == "sqlite":
+        # Batch mode rebuilds a table by DROP + rename; with foreign keys on, the DROP
+        # cascades and empties every child table. SQLite ignores the pragma inside a
+        # transaction, so it is committed before alembic opens one.
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.commit()
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
@@ -63,6 +69,7 @@ async def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        hide_parameters=not get_settings().db_echo,
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

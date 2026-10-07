@@ -82,6 +82,13 @@ def test_quote_in_link_is_escaped_in_href():
     assert 'href="https://example.com/a&quot;b"' in text
 
 
+def test_link_that_is_not_http_gets_no_href():
+    # Telegram renders a tg://user link as a mention of that user.
+    text = _adapter()._format_message(_message(link="tg://user?id=123456"))
+    assert "href" not in text
+    assert "tg://" not in text
+
+
 # ===== show_image → link preview =====
 
 

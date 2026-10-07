@@ -127,6 +127,12 @@ def test_recent_entry_parts_drops_an_over_long_link():
     assert recent_entry_parts(short)[1] == "https://ex.com/a"
 
 
+def test_recent_entry_parts_drops_a_link_that_is_not_http():
+    entry = _worst_case_entry()
+    entry.link = "tg://user?id=123456"
+    assert recent_entry_parts(entry)[1] is None
+
+
 def test_sub_state_key_and_text_come_from_one_branch():
     sub = _worst_case_sub()
     sub.is_active = False

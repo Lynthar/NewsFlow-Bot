@@ -17,7 +17,7 @@ committed is visible to the assertions, exactly as in production.
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,28 +138,26 @@ async def test_crash_mid_round_keeps_earlier_subscriptions_sent_marks(db, monkey
 
 
 async def test_commit_failure_for_one_subscription_does_not_abort_round(db, monkeypatch):
-    """The per-sub commit after the first subscription fails (SQLITE_BUSY-style);
-    the recovery path must roll back its batch and still deliver the other two
-    in the SAME round. The rollback expires every cached ORM instance, so
-    the loop must re-fetch rows instead of touching expired ones — doing
-    the latter raises MissingGreenlet and aborts the rest of the round."""
+    """The commit recording the first message sent this round fails (SQLITE_BUSY-style);
+    the recovery path must roll back and still deliver the other two in the SAME round.
+    The rollback expires every cached ORM instance, so the loop must re-fetch rows
+    instead of touching expired ones — doing the latter raises MissingGreenlet and
+    aborts the rest of the round."""
     subs = {sub.platform_channel_id: sub for sub in [await _subscribed(db, n) for n in "abc"]}
     monkeypatch.setattr(
         "newsflow.services.feed_service.get_fetcher",
         lambda: _not_modified(*(sub.feed.url for sub in subs.values())),
     )
 
-    # Commit #1 is the fetch-writes commit before the sub loop; commit #2 is
-    # the per-sub commit after the first subscription — that is the one made
-    # to fail. Raising without touching the real commit leaves that batch's
-    # flushed marks in an open transaction, which the recovery must clean up.
+    # Raising without touching the real commit leaves the flushed mark in an open
+    # transaction, which the recovery must clean up.
     real_commit = AsyncSession.commit
-    commits = 0
+    fail_next_commit = False
 
     async def flaky_commit(self):
-        nonlocal commits
-        commits += 1
-        if commits == 2:
+        nonlocal fail_next_commit
+        if fail_next_commit:
+            fail_next_commit = False
             raise OperationalError("stmt", None, Exception("database is locked"))
         return await real_commit(self)
 
@@ -168,6 +166,8 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(db, monk
     sent_channels: list[str] = []
 
     async def _send(channel_id, message):
+        nonlocal fail_next_commit
+        fail_next_commit = not sent_channels
         sent_channels.append(channel_id)
         return True
 
@@ -181,11 +181,82 @@ async def test_commit_failure_for_one_subscription_does_not_abort_round(db, monk
     assert sorted(sent_channels) == ["chan-a", "chan-b", "chan-c"]
 
     # The first subscription's mark was rolled back with the failed commit
-    # (bounded replay next cycle); the other two were committed by their own
-    # per-sub commits.
+    # (it replays next cycle); the other two were committed.
     first = subs[sent_channels[0]]
     async with db() as session:
         marks = list(await session.scalars(select(SentEntry)))
     assert sorted(mark.subscription_id for mark in marks) == sorted(
         sub.id for sub in subs.values() if sub.id != first.id
     )
+
+
+async def test_failed_sent_mark_skips_only_its_own_subscription(db, monkeypatch):
+    """A sent-mark whose flush fails (here: another writer committed the same key while
+    the message was out) poisons the session. The round must roll back that batch and
+    still deliver the subscriptions after it, with no round-level error."""
+    subs = [await _subscribed(db, name) for name in "abc"]
+    monkeypatch.setattr(
+        "newsflow.services.feed_service.get_fetcher",
+        lambda: _not_modified(*(sub.feed.url for sub in subs)),
+    )
+    first = subs[0]
+
+    async def send(channel_id, message):
+        if channel_id == first.platform_channel_id:
+            async with db() as other:
+                other.add(SentEntry(subscription_id=first.id, feed_id=first.feed_id, guid="g-a"))
+                await other.commit()
+        return True
+
+    dispatcher = Dispatcher()
+    dispatcher.register_adapter("discord", _discord_adapter(send))
+    result = await dispatcher.dispatch_once()
+
+    assert result.errors == 0
+    async with db() as session:
+        marked = {mark.subscription_id for mark in await session.scalars(select(SentEntry))}
+    assert marked == {sub.id for sub in subs}
+
+
+async def test_a_feed_whose_entries_fail_to_store_does_not_stop_the_round(db, monkeypatch):
+    """One feed's entries fail their INSERT (a trigger stands in for any data the
+    database rejects). Only that feed rolls back and records the error; the other
+    feed's entry is stored and delivered in the same round."""
+    bad, good = [
+        await seed.subscription(
+            db,
+            platform="discord",
+            channel_id=name,
+            url=f"https://{name}.test/rss",
+            translate=False,
+            feed_fields={"last_successful_fetch_at": datetime.now(UTC)},
+        )
+        for name in ("bad", "good")
+    ]
+    async with db() as session:
+        await session.execute(
+            text(
+                "CREATE TRIGGER reject BEFORE INSERT ON feed_entries WHEN NEW.title = 'poison' "
+                "BEGIN SELECT RAISE(ABORT, 'rejected'); END"
+            )
+        )
+        await session.commit()
+
+    def fetched(sub, title: str) -> FetchResult:
+        entry = {"guid": title, "title": title, "link": f"https://x.test/{title}"}
+        return FetchResult(url=sub.feed.url, success=True, entries=[entry])
+
+    fetcher = MagicMock()
+    fetcher.fetch_multiple = AsyncMock(return_value=[fetched(bad, "poison"), fetched(good, "fine")])
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
+    adapter = _discord_adapter()
+    dispatcher = Dispatcher()
+    dispatcher.register_adapter("discord", adapter)
+
+    result = await dispatcher.dispatch_once()
+
+    assert result.errors == 0
+    assert [call.args[0] for call in adapter.send_message.await_args_list] == ["good"]
+    async with db() as session:
+        bad_feed = await session.get(Feed, bad.feed_id)
+    assert bad_feed is not None and bad_feed.error_count == 1

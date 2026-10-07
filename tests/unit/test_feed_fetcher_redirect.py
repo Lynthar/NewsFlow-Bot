@@ -1,8 +1,14 @@
 """FeedFetcher follows redirects itself and re-validates every hop against the SSRF allow-list,
 so a public feed cannot 302 it into a private address; a fake aiohttp session keyed by URL shows
-which hosts are (and are not) contacted. fetch_bytes_capped, used for OPML, shares that walk."""
+which hosts are (and are not) contacted. fetch_bytes_capped, used for OPML, shares that walk.
+The body that comes back is parsed as data and never opened as a URL or a file."""
 
 from __future__ import annotations
+
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
 from multidict import CIMultiDict
@@ -42,7 +48,7 @@ class _FakeResp:
         status: int,
         headers: dict | None = None,
         body: bytes = b"",
-        charset: str = "utf-8",
+        charset: str | None = "utf-8",
         reason: str = "OK",
         content_type: str = "application/xml",
     ) -> None:
@@ -236,3 +242,81 @@ async def test_fetch_bytes_capped_raises_on_http_error():
 
     with pytest.raises(FeedFetchError, match="HTTP 404"):
         await f.fetch_bytes_capped(pub)
+
+
+# ── The body is data ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def loopback_feed() -> Iterator[tuple[str, list[str]]]:
+    """A real feed on 127.0.0.1, which validate_feed_url refuses. Yields its URL and the
+    paths it was asked for."""
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/rss+xml")
+            self.end_headers()
+            self.wfile.write(_VALID_RSS)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/feed", hits
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+async def test_body_naming_a_url_is_not_fetched(loopback_feed):
+    target, hits = loopback_feed
+    pub = "https://example.com/feed"
+    f = _fetcher({pub: _FakeResp(200, body=target.encode())})
+
+    result = await f.fetch_feed(pub)
+
+    assert result.entries == []
+    assert hits == []
+
+
+@pytest.mark.parametrize("as_uri", [False, True], ids=["path", "file-uri"])
+async def test_body_naming_a_local_file_is_not_opened(tmp_path: Path, as_uri: bool):
+    planted = tmp_path / "planted.xml"
+    planted.write_bytes(_VALID_RSS)
+    body = (planted.as_uri() if as_uri else str(planted)).encode()
+    pub = "https://example.com/feed"
+    f = _fetcher({pub: _FakeResp(200, body=body)})
+
+    result = await f.fetch_feed(pub)
+
+    assert result.entries == []
+
+
+_GBK_ITEM = "<item><title>中文标题</title><link>https://example.com/1</link><guid>g1</guid></item>"
+
+
+@pytest.mark.parametrize(
+    ("prolog", "content_type", "charset"),
+    [
+        ('<?xml version="1.0" encoding="gbk"?>', None, None),
+        ('<?xml version="1.0"?>', "application/rss+xml; charset=gbk", "gbk"),
+    ],
+    ids=["xml-declaration", "http-header"],
+)
+async def test_non_utf8_feed_decodes_from_its_declared_charset(
+    prolog: str, content_type: str | None, charset: str | None
+):
+    body = f'{prolog}<rss version="2.0"><channel><title>T</title>{_GBK_ITEM}</channel></rss>'
+    headers = {"Content-Type": content_type} if content_type else {}
+    pub = "https://example.com/feed"
+    f = _fetcher({pub: _FakeResp(200, headers, body=body.encode("gbk"), charset=charset)})
+
+    result = await f.fetch_feed(pub)
+
+    assert [e["title"] for e in result.entries] == ["中文标题"]

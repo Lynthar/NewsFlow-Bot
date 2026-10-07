@@ -21,17 +21,22 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-import yaml
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.adapters.webhook.formats import SUPPORTED_FORMATS
+from newsflow.core.source_shortcuts import expand_source_shortcut
+from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
 from newsflow.models.base import get_session_factory
-from newsflow.models.subscription import Subscription
+from newsflow.models.feed import Feed
 from newsflow.models.webhook import WebhookDestination
-from newsflow.repositories.subscription_repository import SubscriptionRepository
-from newsflow.services._yamlcfg import reject_unknown_keys, require_bool, yaml_keys
+from newsflow.services._owned_subscriptions import (
+    DeclaredSubscription,
+    reconcile_owned_subscriptions,
+)
+from newsflow.services._yamlcfg import load_yaml, reject_unknown_keys, require_bool, yaml_keys
 from newsflow.services.feed_service import FeedService
 
 logger = logging.getLogger(__name__)
@@ -87,15 +92,7 @@ _DESTINATION_KEYS = yaml_keys(WebhookConfigDestination) - {"name"}  # `name` is 
 def parse_webhooks_yaml(path: Path) -> WebhookConfig:
     """Load and validate webhooks.yaml. Raises WebhookConfigError on any
     structural problem so the operator sees it at boot, not hours later."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise WebhookConfigError(f"couldn't read {path}: {e}") from e
-
-    try:
-        raw = yaml.safe_load(text) or {}
-    except yaml.YAMLError as e:
-        raise WebhookConfigError(f"malformed YAML in {path}: {e}") from e
+    raw = load_yaml(WebhookConfigError, path)
 
     if not isinstance(raw, dict):
         raise WebhookConfigError(
@@ -128,6 +125,9 @@ def _parse_destinations(
         url = cfg.get("url")
         if not url or not isinstance(url, str):
             raise WebhookConfigError(f"destination {name!r}: missing or non-string `url`")
+        # The message leaves the URL out: these carry their token in the path or query.
+        if urlsplit(url).scheme not in ("http", "https"):
+            raise WebhookConfigError(f"destination {name!r}: `url` must be http:// or https://")
 
         fmt = str(cfg.get("format", "generic"))
         if fmt not in SUPPORTED_FORMATS:
@@ -233,7 +233,23 @@ async def sync_webhooks(path: Path) -> None:
     session_factory = get_session_factory()
     async with session_factory() as session:
         await _sync_destinations(session, config)
-        await _sync_subscriptions(session, config)
+        await session.commit()
+        feed_ids = await _resolve_feeds(session, config)
+        declared = [
+            DeclaredSubscription(
+                platform="webhook",
+                channel_id=dest_name,
+                feed_id=feed_ids[url],
+                settings={
+                    "translate": config.destinations[dest_name].translate,
+                    "target_language": config.destinations[dest_name].language,
+                },
+            )
+            for dest_name, urls in config.subscriptions.items()
+            for url in urls
+            if url in feed_ids
+        ]
+        await reconcile_owned_subscriptions(session, _OWNER, declared, "webhook_sync")
         await session.commit()
 
 
@@ -270,107 +286,53 @@ async def _sync_destinations(session: AsyncSession, config: WebhookConfig) -> No
                 row.last_error = None
                 logger.info(f"webhook_sync: re-enabled destination {name!r}")
 
-    # Drop destinations that left the YAML plus our subscriptions to them (they
-    # reference the destination by name, not FK, so deletion is explicit).
-    # Rows owned by sources.yaml are source_sync's to manage.
+    # Drop destinations that left the YAML. Our subscriptions to them are no longer
+    # declared, so the reconcile removes them; sources.yaml's rows are its own.
     for name in set(existing) - set(config.destinations):
-        await session.execute(
-            delete(Subscription).where(
-                Subscription.platform == "webhook",
-                Subscription.platform_user_id == _OWNER,
-                Subscription.platform_channel_id == name,
-            )
-        )
         await session.delete(existing[name])
         logger.info(f"webhook_sync: removed destination {name!r}")
 
     await session.flush()
 
 
-async def _sync_subscriptions(session: AsyncSession, config: WebhookConfig) -> None:
+async def _resolve_feeds(session: AsyncSession, config: WebhookConfig) -> dict[str, int]:
+    """The feed id for every URL the file subscribes to, adding new feeds with a fetch.
+    Each URL is committed before the next one is fetched: a write transaction held
+    across the network blocks every other writer, a dispatch round's sent-marks first."""
     feed_service = FeedService(session)
-    sub_repo = SubscriptionRepository(session)
+    feed_ids: dict[str, int] = {}
+    for url in dict.fromkeys(u for urls in config.subscriptions.values() for u in urls):
+        feed = await feed_service.get_feed_by_url(url)
+        if feed is None:
+            feed = await _add_feed(feed_service, url)
+        elif not feed.is_active:
+            # Still declared in the file = the operator wants it working.
+            # Revive an auto-disabled feed on restart (the deactivation
+            # notice promises exactly this for YAML-declared feeds).
+            feed.reactivate()
+            logger.info(f"webhook_sync: reactivated auto-disabled feed {url!r}")
+        if feed is not None:
+            feed_ids[url] = feed.id
+        await session.commit()
+    return feed_ids
 
-    desired: set[tuple[str, int]] = set()  # (destination_name, feed_id)
 
-    for dest_name, feed_urls in config.subscriptions.items():
-        dest_cfg = config.destinations[dest_name]
-        for url in feed_urls:
-            feed = await feed_service.get_feed_by_url(url)
-            if feed is None:
-                # New feed — add via the usual path so it gets fetched, parsed,
-                # and seeded with initial entries like any other feed.
-                logger.info(f"webhook_sync: fetching new feed {url!r} for {dest_name!r}")
-                add_result = await feed_service.add_feed(url)
-                if not add_result.success or add_result.feed is None:
-                    logger.warning(f"webhook_sync: skipping {url!r} — {add_result.message}")
-                    continue
-                feed = add_result.feed
-            elif not feed.is_active:
-                # Still declared in the file = the operator wants it working.
-                # Revive an auto-disabled feed on restart (the deactivation
-                # notice promises exactly this for YAML-declared feeds).
-                feed.reactivate()
-                logger.info(f"webhook_sync: reactivated auto-disabled feed {url!r}")
-
-            desired.add((dest_name, feed.id))
-
-            existing = await sub_repo.get_subscription(
-                platform="webhook",
-                channel_id=dest_name,
-                feed_id=feed.id,
-            )
-            if existing is None:
-                sub = Subscription(
-                    platform="webhook",
-                    # platform_user_id is NOT NULL but webhook has no human
-                    # user; the marker says "owned by webhooks.yaml".
-                    platform_user_id=_OWNER,
-                    platform_channel_id=dest_name,
-                    feed_id=feed.id,
-                    is_active=True,
-                    translate=dest_cfg.translate,
-                    target_language=dest_cfg.language,
-                )
-                session.add(sub)
-                await session.flush()
-                # Don't flood the webhook with the feed's entire backlog on
-                # first sync. Let the next dispatch cycle deliver from zero
-                # new entries onward (same policy as regular /feed add).
-                await sub_repo.seed_sent_entries(sub.id, feed.id, keep_latest=0)
-                logger.info(f"webhook_sync: subscribed {dest_name!r} → {url!r}")
-            elif existing.platform_user_id != _OWNER:
-                # This (destination, feed) pair is also declared in sources.yaml, which owns the
-                # row — leave it untouched rather than rewriting its settings or adding a
-                # duplicate that double-delivers.
-                logger.warning(
-                    f"webhook_sync: subscription {dest_name!r} → "
-                    f"feed_id={feed.id} is owned by "
-                    f"{existing.platform_user_id!r}, not webhooks.yaml; "
-                    f"leaving its settings untouched"
-                )
-            else:
-                # Keep translate / language in sync with the YAML defaults so
-                # operators can flip them by editing the file and restarting.
-                existing.translate = dest_cfg.translate
-                existing.target_language = dest_cfg.language
-                if not existing.is_active:
-                    existing.is_active = True
-
-    # Drop our webhook subscriptions that left the YAML. The owner filter is
-    # load-bearing: without it every startup deletes the subscriptions sources.yaml
-    # owns (and their SentEntry history) just for source_sync to recreate them.
-    result = await session.execute(
-        select(Subscription).where(
-            Subscription.platform == "webhook",
-            Subscription.platform_user_id == _OWNER,
-        )
+async def _add_feed(feed_service: FeedService, url: str) -> Feed | None:
+    """A new feed for `url`, as `/feed add` adds one (shortcuts, page discovery). A
+    first fetch that fails still adds it, unfetched: the dispatch loop retries it, and
+    its first successful fetch seeds only what predates the subscription."""
+    logger.info(f"webhook_sync: fetching new feed {url!r}")
+    result = await feed_service.add_feed(url)
+    if result.success and result.feed is not None:
+        return result.feed
+    target = expand_source_shortcut(url)
+    try:
+        validate_feed_url(target)
+    except InvalidFeedURLError as e:
+        logger.warning(f"webhook_sync: skipping {url!r} — {e}")
+        return None
+    logger.warning(
+        f"webhook_sync: first fetch of {url!r} failed ({result.message}); "
+        "subscribing anyway, the dispatch loop will retry it"
     )
-    for sub in result.scalars().all():
-        if (sub.platform_channel_id, sub.feed_id) not in desired:
-            logger.info(
-                f"webhook_sync: unsubscribing {sub.platform_channel_id!r} → feed_id={sub.feed_id}"
-            )
-            await session.delete(sub)
-
-    await session.flush()
+    return await feed_service.repo.create_feed(url=target)

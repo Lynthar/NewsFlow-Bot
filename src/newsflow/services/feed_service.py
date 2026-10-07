@@ -20,6 +20,7 @@ from newsflow.core.source_fetcher import (
 from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.repositories.feed_repository import FeedRepository
+from newsflow.repositories.subscription_repository import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,21 @@ class FeedService:
             return existing
         return await self.repo.create_feed(url=url, source_type=source_type, config=config)
 
+    async def _store(self, feed: Feed, result: FetchResult) -> FetchFeedResult:
+        """Apply `result` in a savepoint: data this feed's writes choke on rolls back only
+        this feed and is recorded as its fetch error, instead of poisoning the session all
+        feeds share and rolling back the whole round, this feed's error count included."""
+        feed_id, feed_url = feed.id, feed.url  # the rollback expires `feed`
+        try:
+            async with self.session.begin_nested():
+                return await self._apply_fetch_result(feed, result)
+        except Exception as e:
+            logger.exception(f"Error storing fetch result for {feed_url}: {e}")
+            await self.repo.mark_feed_error(
+                feed_id, str(e), base_delay_seconds=self._backoff_base_seconds
+            )
+            return FetchFeedResult(success=False, feed=feed, message=f"Error: {str(e)}")
+
     async def _apply_fetch_result(self, feed: Feed, result: FetchResult) -> FetchFeedResult:
         """Write a FetchResult to the DB. No network I/O — safe to call
         sequentially over a batch of already-fetched results."""
@@ -262,6 +278,7 @@ class FeedService:
             await self.repo.update_feed_metadata(feed.id)
             return FetchFeedResult(success=True, feed=feed, message="Not modified")
 
+        first_success = feed.last_successful_fetch_at is None
         await self.repo.update_feed_metadata(
             feed_id=feed.id,
             title=result.feed_title,
@@ -270,8 +287,13 @@ class FeedService:
             last_modified=result.last_modified,
         )
 
+        await self.repo.record_full_fetch(feed.id, [entry["guid"] for entry in result.entries])
         if result.entries:
             new_entries = await self.repo.create_entries_bulk(feed.id, result.entries)
+            if first_success and new_entries:
+                # A feed declared in YAML is subscribed before it is ever fetched, so its
+                # subscriptions could not be seeded then; what predates them is backlog.
+                await SubscriptionRepository(self.session).seed_predating_entries(feed.id)
             logger.info(f"Feed {feed.url}: {len(new_entries)} new entries")
             return FetchFeedResult(
                 success=True,
@@ -309,13 +331,13 @@ class FeedService:
                 )
             else:
                 result = await self._fetch_non_rss_source(feed)
-            return await self._apply_fetch_result(feed, result)
         except Exception as e:
             logger.exception(f"Error fetching feed {feed.url}: {e}")
             await self.repo.mark_feed_error(
                 feed.id, str(e), base_delay_seconds=self._backoff_base_seconds
             )
             return FetchFeedResult(success=False, feed=feed, message=f"Error: {str(e)}")
+        return await self._store(feed, result)
 
     async def fetch_all_feeds(self) -> list[FetchFeedResult]:
         """
@@ -364,23 +386,7 @@ class FeedService:
         for feed in feeds:  # apply in the original feed order
             if feed.id not in results_by_id:
                 continue  # push source — not polled; entries arrive via the API
-            fr = results_by_id[feed.id]
-            try:
-                results.append(await self._apply_fetch_result(feed, fr))
-            except Exception as e:
-                logger.exception(f"Error applying fetch result for {feed.url}: {e}")
-                await self.repo.mark_feed_error(
-                    feed.id,
-                    str(e),
-                    base_delay_seconds=self._backoff_base_seconds,
-                )
-                results.append(
-                    FetchFeedResult(
-                        success=False,
-                        feed=feed,
-                        message=f"Error: {str(e)}",
-                    )
-                )
+            results.append(await self._store(feed, results_by_id[feed.id]))
 
         return results
 

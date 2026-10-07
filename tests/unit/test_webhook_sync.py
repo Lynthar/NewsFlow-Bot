@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from newsflow.core.feed_fetcher import FetchResult
+from newsflow.core.feed_fetcher import FeedFetcher, FetchResult
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import Subscription
 from newsflow.models.webhook import WebhookDestination
+from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services.feed_service import FeedService
 from newsflow.services.webhook_sync import (
     WebhookConfigError,
     parse_webhooks_yaml,
@@ -185,6 +189,24 @@ def test_parse_rejects_malformed_yaml(tmp_path):
     path = _write(tmp_path, "destinations:\n  a: [unterminated")
     with pytest.raises(WebhookConfigError, match="malformed YAML"):
         parse_webhooks_yaml(path)
+
+
+def test_malformed_yaml_error_does_not_quote_the_secret(tmp_path):
+    # PyYAML quotes the source around the error when it parses a str; the error
+    # here sits on the secret's own line.
+    path = _write(tmp_path, 'destinations:\n  a:\n    url: https://e.com/a\n    secret: "s3cret\n')
+    with pytest.raises(WebhookConfigError, match="malformed YAML") as exc:
+        parse_webhooks_yaml(path)
+    assert "s3cret" not in str(exc.value)
+    assert "line 4" in str(exc.value)
+
+
+@pytest.mark.parametrize("url", ["ftp://e.com/hook", "hooks.example.com/T0/TOKEN"])
+def test_parse_rejects_a_url_that_is_not_http_and_does_not_echo_it(tmp_path, url):
+    path = _write(tmp_path, f"destinations:\n  a:\n    url: {url}\n")
+    with pytest.raises(WebhookConfigError, match="http") as exc:
+        parse_webhooks_yaml(path)
+    assert url not in str(exc.value)
 
 
 def test_parse_allows_empty_subscriptions(tmp_path):
@@ -401,48 +423,65 @@ subscriptions:
     assert len(remaining) == 1
 
 
-async def test_sync_skips_feed_that_fails_to_add(session, monkeypatch, tmp_path):
-    """A feed URL that 404s shouldn't fail the whole sync — just skip it."""
-
-    failing_fetcher = AsyncMock()
-    failing_fetcher.fetch_feed = AsyncMock(
-        return_value=FetchResult(
-            url="",
-            success=False,
-            entries=[],
-            etag=None,
-            last_modified=None,
-            error="HTTP 404",
-        )
+async def test_feed_whose_first_fetch_fails_is_subscribed_and_seeded_later(
+    session, monkeypatch, tmp_path
+):
+    """The source is down when the file is synced. The subscription is created anyway
+    and the dispatch loop retries the feed; when it first answers, only what was
+    published before the subscription counts as backlog. Skipping the feed used to
+    leave no subscription until the next restart, which then seeded everything
+    published meanwhile."""
+    fetcher = AsyncMock()
+    fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(url="", success=False, entries=[], error="HTTP 503")
     )
-    monkeypatch.setattr(
-        "newsflow.services.feed_service.get_fetcher",
-        lambda: failing_fetcher,
-    )
-
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
     path = _write(
         tmp_path,
-        """
-destinations:
-  a:
-    url: https://example.com/a
-subscriptions:
-  a:
-    - https://dead.example.com/rss
-""",
+        "destinations:\n  a:\n    url: https://example.com/a\n"
+        "subscriptions:\n  a:\n    - https://down.example.com/rss\n",
+    )
+    synced_at = datetime.now(UTC)
+    await sync_webhooks(path)
+
+    [sub] = (await session.execute(select(Subscription))).scalars().all()
+    feed = await session.get(Feed, sub.feed_id)
+    assert feed is not None and feed.last_successful_fetch_at is None
+
+    def item(guid: str, published: datetime | None) -> dict:
+        return {"guid": guid, "title": guid, "link": f"https://x/{guid}", "published_at": published}
+
+    fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(
+            url=feed.url,
+            success=True,
+            entries=[
+                item("before", synced_at - timedelta(days=1)),
+                item("undated", None),
+                item("after", synced_at + timedelta(minutes=5)),
+            ],
+        )
+    )
+    await FeedService(session).fetch_and_store(feed)
+    await session.commit()
+
+    unsent = await SubscriptionRepository(session).get_unsent_entries_for_subscription(sub.id)
+    assert [e.guid for e in unsent] == ["after"]
+
+
+async def test_sync_skips_a_feed_url_it_may_not_fetch(session, monkeypatch, tmp_path):
+    """A URL the fetcher refuses outright is a configuration error, not an outage:
+    nothing would ever succeed, so nothing is created."""
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: FeedFetcher())
+    path = _write(
+        tmp_path,
+        "destinations:\n  a:\n    url: https://example.com/a\n"
+        "subscriptions:\n  a:\n    - http://10.0.0.5/rss\n",
     )
     await sync_webhooks(path)
 
-    # Destination gets created, subscription does not.
-    assert len((await session.execute(select(WebhookDestination))).scalars().all()) == 1
-    assert (
-        len(
-            (await session.execute(select(Subscription).where(Subscription.platform == "webhook")))
-            .scalars()
-            .all()
-        )
-        == 0
-    )
+    assert (await session.execute(select(Feed))).scalars().all() == []
+    assert (await session.execute(select(Subscription))).scalars().all() == []
 
 
 async def test_sync_reactivates_auto_disabled_feed(session, monkeypatch, tmp_path):
@@ -534,3 +573,19 @@ destinations:
     )
     with pytest.raises(WebhookConfigError, match="header names"):
         parse_webhooks_yaml(path)
+
+
+async def test_db_error_text_does_not_carry_bound_secrets(session):
+    # Any write failure (a lock timeout, a full disk) reaches the logs as the
+    # exception's text; a unique clash is the easy one to provoke.
+    def dest() -> WebhookDestination:
+        return WebhookDestination(name="a", url="https://e.com/TOKEN1", secret="s3cret")
+
+    session.add(dest())
+    await session.commit()
+    session.add(dest())
+    with pytest.raises(IntegrityError) as exc:
+        await session.commit()
+
+    assert "s3cret" not in str(exc.value)
+    assert "TOKEN1" not in str(exc.value)

@@ -28,6 +28,7 @@ async def test_remove_then_readd_does_not_crash_on_orphan_sent_entries(session):
     """Subscription delete must cascade SentEntry, otherwise re-subscribe
     trips the UNIQUE (subscription_id, feed_id, guid) constraint."""
     svc = SubscriptionService(session)
+    svc.feed_service.fetcher = AsyncMock()
     svc.feed_service.fetcher.fetch_feed = AsyncMock(
         return_value=FetchResult(
             url="https://example.com/feed",
@@ -49,12 +50,11 @@ async def test_remove_then_readd_does_not_crash_on_orphan_sent_entries(session):
     assert r1.success and r1.is_new
     sub1_id = r1.subscription.id
 
-    # Seeded 2 of 3 (one kept for preview).
+    # Seeded 2 of 3 (one kept for preview). Ids, not instances: the database cascade
+    # below is invisible to the session, and re-subscribing reuses the rowids.
     sent = (
-        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub1_id)))
-        .scalars()
-        .all()
-    )
+        await session.scalars(select(SentEntry.id).where(SentEntry.subscription_id == sub1_id))
+    ).all()
     assert len(sent) == 2
 
     # Unsubscribe.
@@ -68,10 +68,8 @@ async def test_remove_then_readd_does_not_crash_on_orphan_sent_entries(session):
 
     # FK cascade should have cleared the SentEntry rows.
     orphans = (
-        (await session.execute(select(SentEntry).where(SentEntry.subscription_id == sub1_id)))
-        .scalars()
-        .all()
-    )
+        await session.scalars(select(SentEntry.id).where(SentEntry.subscription_id == sub1_id))
+    ).all()
     assert orphans == [], "FK cascade did not fire — stale SentEntry rows remain"
 
     # Re-subscribe: must not raise IntegrityError.

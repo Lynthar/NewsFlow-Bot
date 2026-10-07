@@ -8,12 +8,15 @@ Only `schedule='weekly'` uses `delivery_weekday`; for `'daily'` it's ignored.
 All times are UTC — timezone support is a later-round concern.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import Boolean, DateTime, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from newsflow.models.base import Base
+
+# The longest window a digest reads: a weekly digest covers the 7 days before it.
+WEEKLY_WINDOW = timedelta(days=7)
 
 
 class ChannelDigest(Base):

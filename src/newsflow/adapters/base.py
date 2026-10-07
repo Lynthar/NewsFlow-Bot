@@ -7,6 +7,7 @@ All platform adapters (Discord, Telegram, etc.) should inherit from this.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TypeGuard
 
 
 class ChannelGoneError(Exception):
@@ -82,6 +83,19 @@ class TopicGoneError(Exception):
         self.channel_id = channel_id
         self.thread_id = thread_id
         self.reason = reason
+
+
+def is_http_url(value: str | None) -> TypeGuard[str]:
+    """Whether feed-supplied `value` can be a link or image target in a message.
+
+    Discord rejects anything but an absolute http(s) URL (a relative or ``data:`` image
+    included) and refuses the whole message, so a bad value would fail every retry.
+    """
+    return (
+        value is not None
+        and value.startswith(("http://", "https://"))
+        and all(c.isprintable() and not c.isspace() for c in value)
+    )
 
 
 @dataclass

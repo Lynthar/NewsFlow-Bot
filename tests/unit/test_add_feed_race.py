@@ -36,6 +36,7 @@ async def test_add_feed_integrity_error_returns_existing(session):
 
     svc.repo.get_feed_by_url = fake_get
 
+    svc.fetcher = AsyncMock()
     svc.fetcher.fetch_feed = AsyncMock(
         return_value=FetchResult(
             url="https://example.com/feed",
@@ -57,6 +58,7 @@ async def test_add_feed_integrity_error_returns_existing(session):
 async def test_add_feed_first_time_normal_path(session):
     """Sanity: the non-race path still works normally."""
     svc = FeedService(session)
+    svc.fetcher = AsyncMock()
     svc.fetcher.fetch_feed = AsyncMock(
         return_value=FetchResult(
             url="https://example.com/feed",

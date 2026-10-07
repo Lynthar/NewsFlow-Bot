@@ -117,6 +117,11 @@ class SentEntry(Base):
         default=lambda: datetime.now(__import__("datetime").timezone.utc),
     )
 
+    # The last full fetch whose document still listed this entry (None: not since it
+    # was sent). Cleanup keeps the row while the source lists the entry: dropping it
+    # then would deliver the entry again, an undated one past every age gate.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # True if this row exists because the entry matched the subscription's
     # filter_rule out (i.e. was NOT actually delivered). Still written so the
     # dispatch loop doesn't keep re-evaluating the same entry every cycle.

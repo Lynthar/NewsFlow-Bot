@@ -72,7 +72,9 @@ class OpenAIDigestProvider(SummarizationProvider):
                     "openai package is required. Install with: "
                     "pip install 'newsflow-bot[translation-openai]'"
                 ) from e
-            kwargs: dict[str, Any] = {"api_key": self.api_key}
+            # Bounded, unlike the SDK's 600 s × 3 attempts, yet room for a slow local
+            # model to write a full digest; a failed run is retried on the next tick.
+            kwargs: dict[str, Any] = {"api_key": self.api_key, "timeout": 300, "max_retries": 1}
             if self.base_url:
                 kwargs["base_url"] = self.base_url
             self._client = AsyncOpenAI(**kwargs)
@@ -142,4 +144,6 @@ class OpenAIDigestProvider(SummarizationProvider):
             return DigestResult(success=True, text=text)
         except Exception as e:
             logger.exception(f"OpenAI digest generation failed: {e}")
-            return DigestResult(success=False, error=str(e))
+            # The class name only: `/digest now` shows this in the chat, and the
+            # endpoint's own text can name internal hosts. The log above has it all.
+            return DigestResult(success=False, error=type(e).__name__)

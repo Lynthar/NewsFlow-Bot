@@ -105,7 +105,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 模板是带 `{占位符}` 的 Markdown 文本，**完全接管消息正文**（未设模板的订阅零变化）。占位符：`{title}` `{summary}`（生效值——有译文用译文，否则原文）、`{original_title}` `{translated_title}` `{original_summary}` `{translated_summary}`（双语排版用）、`{url}`（别名 `{link}`）、`{source}` `{published}` `{image_url}`、`{mention}`（本订阅配置的提及对象，见下方提及小节；未配置时为空）。规则：
 
-- **Markdown 子集**：`**粗体**`、`[文字](链接)`，两端同一语法（Discord 原生渲染；Telegram 转成 HTML，实体被拒时自动降级纯文本，链接预览保持开启）。
+- **Markdown 子集**：`**粗体**`、`[文字](链接)`，两端同一语法（Discord 原生渲染；Telegram 转成 HTML，实体被拒时自动降级纯文本，链接预览保持开启，预览卡固定取条目自身的链接）。
 - **换行**：Discord 的选项输入框是单行的，用 `\n` 表示换行；Telegram 端 `/template` 可直接写多行，`\n` 也认。`{{` `}}` 输出字面花括号。
 - **空值行折叠**：某一行的占位符**全部**解析为空时整行删除（`🖼 {image_url}` 在无图条目上不会留下悬空的 🖼）；行内有任一占位符非空则保留。
 - **校验**：设置时拒绝词形未知的占位符（如拼错的 `{tittle}`）并列出合法集；已存模板在投递时对未知占位符原样放行（不因此丢文章）。模板本体 ≤1000 字符；渲染结果按平台上限截断（Discord 2000 / Telegram 4096）。
@@ -1160,7 +1160,7 @@ make checkconfig            # 或: python -m newsflow.checkconfig
 | HTML 清洗 | **BeautifulSoup4** + **lxml** | 处理 summary/content 里的富文本 |
 | 调度 | 纯 **asyncio loop**（不用 APScheduler） | `asyncio.sleep(interval)` 驱动，逻辑清晰、无额外线程 |
 | Discord | **discord.py** 2.3+ | 官方推荐 slash commands；内部自带 HTTP 桶限流 |
-| Telegram | **python-telegram-bot** 20.7+，启用 `rate-limiter` extra | 使用 `AIORateLimiter` 处理 30/s 全局、1/s 每 chat、20/min 每 group 限流 |
+| Telegram | **python-telegram-bot** 22.8+，启用 `rate-limiter` extra | 使用 `AIORateLimiter` 处理 30/s 全局、1/s 每 chat、20/min 每 group 限流 |
 | 可选 API | **FastAPI** + **Uvicorn** | 健康检查 + REST 管理接口 |
 | 翻译 | DeepL / OpenAI-compatible / Google Cloud Translation | 抽象 `TranslationProvider`，工厂按 `TRANSLATION_PROVIDER` 切换 |
 | 缓存 | 内存 LRU（默认） / Redis（可选） | `CacheBackend` 抽象；Redis 适合未来多实例，但本仓库定位单实例 |
@@ -1364,7 +1364,7 @@ alembic 发现啥都没做，但会把当前 revision 记录到 `alembic_version
 - `discord.py` 在 HTTPClient 层面自动跟踪每个 bucket 的 rate limit header
   并在 429 时 `await` 等待。调用方（我们）直接 `await channel.send(...)`
   就行。
-- `python-telegram-bot` v20 需要显式 `ApplicationBuilder().rate_limiter(AIORateLimiter())`
+- `python-telegram-bot` 自 v20 起需要显式 `ApplicationBuilder().rate_limiter(AIORateLimiter())`
   才启用限流，默认裸调 API 不限速，容易被 429。
 
 所以 `adapters/telegram/bot.py` 里启用 `AIORateLimiter`，`adapters/discord/bot.py`

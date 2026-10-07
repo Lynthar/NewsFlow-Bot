@@ -143,7 +143,7 @@ class Message:
     thread_id: int | None = None
 
     # Subscription show_image flag. Discord ignores it (the dispatcher already blanked
-    # image_url); Telegram maps False to disable_web_page_preview. Distinct from
+    # image_url); Telegram maps False to a disabled link preview. Distinct from
     # image_url is None — a link preview grows from the page even without metadata.
     show_image: bool = True
 

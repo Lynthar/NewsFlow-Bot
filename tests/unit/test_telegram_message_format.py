@@ -6,12 +6,10 @@ so a max-field entry rendered 11k+ chars — a deterministic "message is too
 long" BadRequest that the dispatcher would retry every cycle forever.
 """
 
-import sys
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import telegram
 from telegram.error import BadRequest, TimedOut
 
 from newsflow.adapters.base import Message, UndeliverableError
@@ -95,25 +93,47 @@ def test_link_that_is_not_http_gets_no_href():
 # ===== show_image → link preview =====
 
 
+def _preview(adapter):
+    return adapter.app.bot.send_message.await_args.kwargs["link_preview_options"]
+
+
 async def test_show_image_false_disables_link_preview():
     adapter = _adapter()
     ok = await adapter.send_message("123", _message(show_image=False))
     assert ok is True
-    assert adapter.app.bot.send_message.await_args.kwargs["disable_web_page_preview"] is True
+    assert _preview(adapter).is_disabled is True
 
 
-async def test_show_image_default_keeps_link_preview():
+async def test_link_preview_shows_the_entry_not_a_url_in_its_summary():
+    # The summary precedes the Read-more link, so Telegram's default would preview this URL.
     adapter = _adapter()
-    ok = await adapter.send_message("123", _message())
+    ok = await adapter.send_message("123", _message(summary="via https://other.example/x"))
     assert ok is True
-    assert adapter.app.bot.send_message.await_args.kwargs["disable_web_page_preview"] is False
+    assert not _preview(adapter).is_disabled
+    assert _preview(adapter).url == "https://example.com/a"
+
+
+async def test_link_preview_is_not_pinned_to_a_non_http_link():
+    adapter = _adapter()
+    ok = await adapter.send_message("123", _message(link="tg://user?id=123456"))
+    assert ok is True
+    assert _preview(adapter).url is None
 
 
 async def test_template_path_honors_show_image():
     adapter = _adapter()
     ok = await adapter.send_message("123", _message(template_text="**T** body", show_image=False))
     assert ok is True
-    assert adapter.app.bot.send_message.await_args.kwargs["disable_web_page_preview"] is True
+    assert _preview(adapter).is_disabled is True
+
+
+async def test_template_path_previews_the_entry_link():
+    adapter = _adapter()
+    ok = await adapter.send_message(
+        "123", _message(template_text="see https://other.example first")
+    )
+    assert ok is True
+    assert _preview(adapter).url == "https://example.com/a"
 
 
 # ===== entity-rejection fallback =====
@@ -162,10 +182,11 @@ def test_plain_fallback_always_fits_cap():
     assert len(adapter._format_message_plain(msg)) <= 4096
 
 
-@pytest.mark.skipif(
-    sys.version_info >= (3, 13) and telegram.__version_info__ < (21,),
-    reason="python-telegram-bot below 21 cannot build an Application on Python 3.13",
-)
+def test_application_builds_on_this_python():
+    # Never stub build_application here: this is what shows each CI Python can start the bot.
+    assert build_application("123:abc").bot.token == "123:abc"
+
+
 def test_bot_requests_wait_long_enough_for_a_slow_send():
     # PTB's 5 s default gave up on sends Telegram had accepted; each was posted twice.
     assert build_application("123:abc").bot.request.read_timeout == 25.0

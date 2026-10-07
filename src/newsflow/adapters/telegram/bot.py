@@ -16,6 +16,7 @@ from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     Update,
 )
 from telegram import Message as TelegramMessage
@@ -449,6 +450,15 @@ def _is_thread_gone(e: Exception) -> bool:
     from telegram.error import BadRequest
 
     return isinstance(e, BadRequest) and "message thread not found" in str(e).lower()
+
+
+def _entry_preview(message: Message) -> LinkPreviewOptions:
+    """The entry's link preview, pinned to its own link. Telegram otherwise previews the
+    first URL in the text, and a URL quoted in the summary comes before the Read-more link.
+    show_image=False turns it off: the preview card is Telegram's only image surface."""
+    if not message.show_image:
+        return LinkPreviewOptions(is_disabled=True)
+    return LinkPreviewOptions(url=message.link if is_http_url(message.link) else None)
 
 
 def _format_sub_line(sub: Subscription) -> str:
@@ -2514,25 +2524,20 @@ class TelegramAdapter(BaseAdapter):
     async def _send_entry(self, channel_id: str, message: Message) -> None:
         """Post `message` in its full layout: the custom template, else the HTML layout."""
         assert self.app is not None
+        preview = _entry_preview(message)
         if message.template_text is not None:
             await self._send_template_message(
-                channel_id,
-                message.template_text,
-                message.thread_id,
-                show_preview=message.show_image,
+                channel_id, message.template_text, message.thread_id, preview=preview
             )
             return
         from telegram.error import BadRequest
 
-        # show_image=False maps to "no link preview": Telegram has no separate image
-        # attachment — the preview card IS the image surface (/setdisplay <url> image off).
-        disable_preview = not message.show_image
         try:
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=self._format_message(message),
                 parse_mode="HTML",
-                disable_web_page_preview=disable_preview,
+                link_preview_options=preview,
                 message_thread_id=message.thread_id,
             )
         except BadRequest as e:
@@ -2546,7 +2551,7 @@ class TelegramAdapter(BaseAdapter):
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=self._format_message_plain(message),
-                disable_web_page_preview=disable_preview,
+                link_preview_options=preview,
                 message_thread_id=message.thread_id,
             )
 
@@ -2730,18 +2735,15 @@ class TelegramAdapter(BaseAdapter):
         template_text: str,
         thread_id: int | None = None,
         *,
-        show_preview: bool = True,
+        preview: LinkPreviewOptions,
     ) -> None:
         """Send a template-rendered entry: Markdown → Telegram HTML with a
-        plain-text fallback when Telegram rejects the entities. Link
-        previews stay ON by default, matching the default entry layout;
-        show_image=False turns them off just like the default layout does.
-        Raises on chat-level failures so send_message's gone/migrated/topic
-        handling applies unchanged."""
+        plain-text fallback when Telegram rejects the entities. Raises on
+        chat-level failures so send_message's gone/migrated/topic handling
+        applies unchanged."""
         assert self.app is not None
         from telegram.error import BadRequest
 
-        disable_preview = not show_preview
         text = template_text
         if len(text) > 3500:
             text = text[:3499] + "…"
@@ -2752,7 +2754,7 @@ class TelegramAdapter(BaseAdapter):
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=text,
-                disable_web_page_preview=disable_preview,
+                link_preview_options=preview,
                 message_thread_id=thread_id,
             )
             return
@@ -2761,7 +2763,7 @@ class TelegramAdapter(BaseAdapter):
                 chat_id=int(channel_id),
                 text=html,
                 parse_mode="HTML",
-                disable_web_page_preview=disable_preview,
+                link_preview_options=preview,
                 message_thread_id=thread_id,
             )
         except BadRequest as e:
@@ -2774,7 +2776,7 @@ class TelegramAdapter(BaseAdapter):
             await self.app.bot.send_message(
                 chat_id=int(channel_id),
                 text=text,
-                disable_web_page_preview=disable_preview,
+                link_preview_options=preview,
                 message_thread_id=thread_id,
             )
 

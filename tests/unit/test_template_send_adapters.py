@@ -31,7 +31,7 @@ async def test_telegram_template_sends_converted_html():
     assert "<b>Hi</b>" in kwargs["text"]
     assert '<a href="https://e.io/?a=1&amp;b=2">x</a>' in kwargs["text"]
     # Entry messages keep link previews on, matching the default layout.
-    assert kwargs["disable_web_page_preview"] is False
+    assert not kwargs["link_preview_options"].is_disabled
 
 
 async def test_telegram_no_template_uses_default_layout():

@@ -17,7 +17,7 @@ python = "^3.11"
 # work runs on the dispatcher's own asyncio loops), so the job-queue extra —
 # and the apscheduler it pulls in — stays out. The builder passes
 # .job_queue(None) explicitly.
-python-telegram-bot = { extras = ["rate-limiter"], version = "^20.7" }
+python-telegram-bot = { extras = ["rate-limiter"], version = "^22.8" }
 
 # RSS parsing
 feedparser = "^6.0.0"

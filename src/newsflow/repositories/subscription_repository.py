@@ -3,7 +3,7 @@ Subscription repository for database operations.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -249,15 +249,23 @@ class SubscriptionRepository:
             )
 
     async def update_channel_subscriptions(
-        self, platform: str, channel_id: str, *, feed_id: int | None = None, **values: Any
+        self,
+        platform: str,
+        channel_id: str,
+        *,
+        feed_id: int | None = None,
+        skip_owners: Collection[str] = (),
+        **values: Any,
     ) -> int:
         """Set columns on every subscription of a channel, paused ones included, or only
-        on its subscription to `feed_id`. Returns how many rows matched."""
+        on its subscription to `feed_id`; rows whose platform_user_id is in `skip_owners`
+        are left alone. Returns how many rows matched."""
         if not values:
             return 0
         stmt = update(Subscription).where(
             Subscription.platform == platform,
             Subscription.platform_channel_id == channel_id,
+            Subscription.platform_user_id.not_in(skip_owners),
         )
         if feed_id is not None:
             stmt = stmt.where(Subscription.feed_id == feed_id)
@@ -296,15 +304,17 @@ class SubscriptionRepository:
         platform: str,
         channel_id: str,
         silent: bool,
+        skip_owners: Collection[str] = (),
     ) -> int:
-        """Bulk-toggle silent on every subscription in a channel. Returns
-        the number of rows whose state actually flipped (rows already in
-        the target state are not counted, thanks to the != predicate)."""
+        """Bulk-toggle silent on every subscription in a channel except those whose
+        platform_user_id is in `skip_owners`. Returns the number of rows whose state
+        actually flipped (rows already in the target state are not counted)."""
         result = await self.session.execute(
             update(Subscription)
             .where(
                 Subscription.platform == platform,
                 Subscription.platform_channel_id == channel_id,
+                Subscription.platform_user_id.not_in(skip_owners),
                 Subscription.silent != silent,
             )
             .values(silent=silent)

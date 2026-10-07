@@ -28,6 +28,7 @@ from newsflow.models.subscription import Subscription
 from newsflow.repositories.channel_settings_repository import ChannelSettingsRepository
 from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.repositories.subscription_repository import SubscriptionRepository
+from newsflow.services._owned_subscriptions import DECLARING_FILES
 from newsflow.services.feed_service import FeedService
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,15 @@ class OpmlImportResult:
     @property
     def total(self) -> int:
         return len(self.added) + len(self.already_subscribed) + len(self.failed)
+
+
+def _declared_refusal(sub: Subscription, feed: Feed) -> str | None:
+    """Why `sub` cannot be paused, removed or re-set here, when a YAML file declares it:
+    the next sync would undo the change, so it is made in the file or not at all."""
+    source = DECLARING_FILES.get(sub.platform_user_id)
+    if source is None:
+        return None
+    return f"{feed.title or feed.url} is declared in {source}; change it there"
 
 
 class SubscriptionService:
@@ -257,7 +267,11 @@ class SubscriptionService:
                 message="Feed not found",
             )
 
-        # Delete subscription
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
+        )
+        if sub and (refusal := _declared_refusal(sub, feed)):
+            return UnsubscribeResult(success=False, message=refusal)
         deleted = await self.sub_repo.delete_subscription(
             platform=platform,
             channel_id=channel_id,
@@ -288,11 +302,14 @@ class SubscriptionService:
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(success=False, message="Feed not found")
-        updated = await self.sub_repo.update_channel_subscriptions(
-            platform, channel_id, feed_id=feed.id, is_active=False
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
         )
-        if not updated:
+        if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
+        if refusal := _declared_refusal(sub, feed):
+            return SubscriptionActionResult(success=False, message=refusal)
+        await self.sub_repo.update_subscription(sub.id, is_active=False)
         logger.info(f"Paused: {platform}/{channel_id} × {feed_url}")
         return SubscriptionActionResult(success=True, message=f"Paused {feed.title or feed_url}")
 
@@ -433,15 +450,6 @@ class SubscriptionService:
         id — a URL doesn't fit in Telegram's 64-byte callback payload."""
         return await self.sub_repo.get_subscription_by_id(subscription_id)
 
-    async def get_subscription_feeds(
-        self,
-        platform: str,
-        channel_id: str,
-    ) -> list[Feed]:
-        """Get all feeds for a channel's subscriptions."""
-        subs = await self.sub_repo.get_channel_subscriptions(platform, channel_id)
-        return [sub.feed for sub in subs if sub.feed]
-
     async def update_settings(
         self,
         platform: str,
@@ -464,7 +472,9 @@ class SubscriptionService:
         # Paused subscriptions get the new settings too — otherwise a channel
         # language change silently skips them and they resume with stale
         # settings later.
-        return await self.sub_repo.update_channel_subscriptions(platform, channel_id, **values)
+        return await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, skip_owners=DECLARING_FILES.keys(), **values
+        )
 
     async def set_feed_language(
         self,
@@ -488,6 +498,8 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
+        if refusal := _declared_refusal(sub, feed):
+            return SubscriptionActionResult(success=False, message=refusal)
         await self.sub_repo.update_subscription(sub.id, target_language=language)
         return SubscriptionActionResult(
             success=True,
@@ -789,11 +801,14 @@ class SubscriptionService:
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(success=False, message="Feed not found")
-        updated = await self.sub_repo.update_channel_subscriptions(
-            platform, channel_id, feed_id=feed.id, silent=silent
+        sub = await self.sub_repo.get_subscription(
+            platform=platform, channel_id=channel_id, feed_id=feed.id
         )
-        if not updated:
+        if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
+        if refusal := _declared_refusal(sub, feed):
+            return SubscriptionActionResult(success=False, message=refusal)
+        await self.sub_repo.update_subscription(sub.id, silent=silent)
         state = "on" if silent else "off"
         logger.info(f"Silent {state}: {platform}/{channel_id} × {feed_url}")
         return SubscriptionActionResult(
@@ -813,7 +828,10 @@ class SubscriptionService:
         Reports how many rows actually changed; zero is fine."""
         await self.channel_settings_repo.upsert(platform, channel_id, default_silent=silent)
         flipped = await self.sub_repo.set_channel_silent(
-            platform=platform, channel_id=channel_id, silent=silent
+            platform=platform,
+            channel_id=channel_id,
+            silent=silent,
+            skip_owners=DECLARING_FILES.keys(),
         )
         state = "on" if silent else "off"
         logger.info(f"Channel silent {state}: {platform}/{channel_id} ({flipped} flipped)")
@@ -846,6 +864,8 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
+        if refusal := _declared_refusal(sub, feed):
+            return SubscriptionActionResult(success=False, message=refusal)
         await self.sub_repo.update_subscription(sub.id, translate=enabled)
         state = "enabled" if enabled else "disabled"
         return SubscriptionActionResult(
@@ -922,21 +942,3 @@ class SubscriptionService:
             f"{len(result.failed)} failed"
         )
         return result
-
-    async def get_unsent_entries(
-        self,
-        subscription_id: int,
-        limit: int = 10,
-    ) -> Sequence[FeedEntry]:
-        """Get entries that haven't been sent to this subscription."""
-        return await self.sub_repo.get_unsent_entries_for_subscription(subscription_id, limit)
-
-    async def get_all_active_subscriptions(self) -> Sequence[Subscription]:
-        """Get all active subscriptions."""
-        return await self.sub_repo.get_all_active_subscriptions()
-
-    async def cleanup_old_sent_entries(self, days: int = 7) -> int:
-        """Cleanup old sent entry records."""
-        count = await self.sub_repo.cleanup_old_sent_entries(days)
-        logger.info(f"Cleaned up {count} old sent entry records")
-        return count

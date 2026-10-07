@@ -752,3 +752,59 @@ async def test_resume_all_no_digest_note_when_absent(session):
 
     assert result.success is True
     assert "digest" not in result.message
+
+
+# ===== subscriptions a YAML file declares =====
+
+
+async def _declared_and_own(session) -> tuple[Subscription, Subscription]:
+    """In one channel: a subscription sources.yaml declares and one a user added."""
+    declared_feed = Feed(url="https://example.com/declared", title="Declared")
+    own_feed = Feed(url="https://example.com/own", title="Own")
+    session.add_all([declared_feed, own_feed])
+    await session.flush()
+    declared = Subscription(
+        platform="discord",
+        platform_user_id="source-yaml",
+        platform_channel_id="c1",
+        feed_id=declared_feed.id,
+        target_language="zh-CN",
+    )
+    own = Subscription(
+        platform="discord", platform_user_id="u1", platform_channel_id="c1", feed_id=own_feed.id
+    )
+    session.add_all([declared, own])
+    await session.flush()
+    return declared, own
+
+
+async def test_a_declared_subscription_is_changed_only_in_its_file(session):
+    # A sync would undo each of these: re-create, re-enable, restore the file's settings.
+    declared, _ = await _declared_and_own(session)
+    svc = SubscriptionService(session)
+    url = "https://example.com/declared"
+
+    results = [
+        await svc.pause_subscription("discord", "c1", url),
+        await svc.unsubscribe("discord", "c1", url),
+        await svc.set_feed_silent("discord", "c1", url, silent=True),
+        await svc.set_feed_language("discord", "c1", url, "en"),
+        await svc.set_feed_translate("discord", "c1", url, enabled=False),
+    ]
+
+    assert all(not r.success and "declared in sources.yaml" in r.message for r in results)
+    await session.refresh(declared)
+    assert (declared.is_active, declared.silent, declared.target_language) == (True, False, "zh-CN")
+
+
+async def test_channel_wide_settings_leave_declared_subscriptions_as_declared(session):
+    declared, own = await _declared_and_own(session)
+    svc = SubscriptionService(session)
+
+    assert await svc.update_settings("discord", "c1", target_language="en") == 1
+    await svc.set_channel_silent("discord", "c1", silent=True)
+
+    await session.refresh(declared)
+    await session.refresh(own)
+    assert (declared.target_language, declared.silent) == ("zh-CN", False)
+    assert (own.target_language, own.silent) == ("en", True)

@@ -34,6 +34,7 @@ from newsflow.models.base import get_session_factory
 from newsflow.models.feed import Feed
 from newsflow.models.webhook import WebhookDestination
 from newsflow.services._owned_subscriptions import (
+    WEBHOOKS_OWNER,
     DeclaredSubscription,
     reconcile_owned_subscriptions,
 )
@@ -55,10 +56,9 @@ logger = logging.getLogger(__name__)
 # The webhook model docstring promises this stays "small"; enforce it here.
 _MAX_WEBHOOK_TIMEOUT_S = 60
 
-# platform_user_id marker for rows this sync owns. sources.yaml also creates
-# platform="webhook" rows (owner "source-yaml"), so every mutation below must
-# filter on it or the two syncs delete each other on startup.
-_OWNER = "yaml"
+# sources.yaml also creates platform="webhook" rows (owner "source-yaml"), so every
+# mutation below must filter on this marker or the two syncs delete each other on startup.
+_OWNER = WEBHOOKS_OWNER
 
 
 class WebhookConfigError(ValueError):

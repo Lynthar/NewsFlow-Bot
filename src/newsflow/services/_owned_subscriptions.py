@@ -17,6 +17,12 @@ from newsflow.repositories.subscription_repository import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
+# The platform_user_id marking each sync's rows, and the file that declares them. A
+# change made anywhere else to what a file sets is undone by the next sync.
+WEBHOOKS_OWNER = "yaml"
+SOURCES_OWNER = "source-yaml"
+DECLARING_FILES = {WEBHOOKS_OWNER: "webhooks.yaml", SOURCES_OWNER: "sources.yaml"}
+
 
 @dataclass(frozen=True)
 class DeclaredSubscription:

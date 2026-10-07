@@ -64,6 +64,7 @@ from newsflow.core.message_template import (
     normalize_template,
     validate_template,
 )
+from newsflow.core.opml import MAX_OPML_BYTES, MAX_OPML_MB
 from newsflow.core.telegram_markdown import markdown_to_telegram_html
 from newsflow.core.timeutil import relative_time
 from newsflow.core.timezones import parse_timezone
@@ -1857,7 +1858,7 @@ async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # streaming size cap; reading the body here with read(n) would truncate a
     # chunked OPML silently and import only part of it.
     try:
-        raw = await get_fetcher().fetch_bytes_capped(url, cap=1024 * 1024)
+        raw = await get_fetcher().fetch_bytes_capped(url, cap=MAX_OPML_BYTES)
     except InvalidFeedURLError as e:
         await msg.reply_text(f"❌ Rejected URL: {e}")
         return
@@ -1897,8 +1898,8 @@ async def import_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     name = (doc.file_name or "").lower()
     if not name.endswith((".opml", ".xml")):
         return
-    if doc.file_size and doc.file_size > 1024 * 1024:
-        await msg.reply_text("❌ OPML file too large (1 MB cap)")
+    if doc.file_size and doc.file_size > MAX_OPML_BYTES:
+        await msg.reply_text(f"❌ OPML file too large ({MAX_OPML_MB} MB cap)")
         return
 
     try:
@@ -2389,10 +2390,6 @@ class TelegramAdapter(BaseAdapter):
     def __init__(self, token: str) -> None:
         self.token = token
         self.app: Application[Any, Any, Any, Any, Any, Any] | None = None
-
-    @property
-    def platform_name(self) -> str:
-        return "telegram"
 
     def is_connected(self) -> bool:
         """Application running + updater polling. PTB auto-reconnects on

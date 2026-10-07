@@ -38,6 +38,10 @@ class OpmlParseError(ValueError):
 # reader exports workable.
 MAX_OPML_FEEDS = 200
 
+# Largest OPML document accepted, uploaded or fetched; reader exports are far smaller.
+MAX_OPML_BYTES = 1024 * 1024
+MAX_OPML_MB = MAX_OPML_BYTES // (1024 * 1024)
+
 
 def parse_opml(content: str) -> list[OpmlEntry]:
     """Extract all RSS outlines (ones with an xmlUrl attribute) from OPML."""

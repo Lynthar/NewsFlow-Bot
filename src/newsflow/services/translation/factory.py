@@ -7,7 +7,7 @@ Creates the appropriate translation provider based on configuration.
 import logging
 
 from newsflow.config import get_settings
-from newsflow.services.cache import CacheBackend, get_cache
+from newsflow.services.cache import get_cache
 from newsflow.services.translation.base import (
     TranslationProvider,
     TranslationService,
@@ -63,24 +63,13 @@ def create_translation_provider() -> TranslationProvider | None:
     return None
 
 
-def create_translation_service(
-    cache: CacheBackend | None = None,
-) -> TranslationService | None:
-    """
-    Create a translation service with optional caching.
-
-    Args:
-        cache: Optional cache backend. If None, uses global cache.
-
-    Returns:
-        TranslationService instance or None if translation is disabled.
-    """
+def create_translation_service() -> TranslationService | None:
+    """The translation service on the global cache, or None when translation is off."""
     provider = create_translation_provider()
     if not provider:
         return None
 
-    # Use provided cache or global cache
-    cache_backend = cache or get_cache()
+    cache_backend = get_cache()
 
     # Honor the user's configured TTL — the service used to silently fall back to
     # base.py's default regardless of .env.

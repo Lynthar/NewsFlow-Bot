@@ -2,7 +2,6 @@
 SQLAlchemy base configuration and database utilities.
 """
 
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -130,24 +129,6 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
             autoflush=False,
         )
     return _async_session_factory
-
-
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Dependency for getting database sessions.
-
-    Usage:
-        async with get_session() as session:
-            # use session
-    """
-    factory = get_session_factory()
-    async with factory() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
 
 
 async def init_db() -> None:

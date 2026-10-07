@@ -43,6 +43,7 @@ from newsflow.core.message_template import (
     normalize_template,
     validate_template,
 )
+from newsflow.core.opml import MAX_OPML_BYTES, MAX_OPML_MB
 from newsflow.core.timeutil import relative_time
 from newsflow.core.timezones import parse_timezone
 from newsflow.models.base import get_session_factory
@@ -131,7 +132,7 @@ def _build_import_embed(result: OpmlImportResult) -> discord.Embed:
             fail_lines.append(footer)
         value = "\n".join(fail_lines)
         embed.add_field(
-            name="Failures", value=value[:DISCORD_EMBED_FIELD_VALUE_LIMIT], inline=False
+            name="Failures", value=clip(value, DISCORD_EMBED_FIELD_VALUE_LIMIT), inline=False
         )
     return embed
 
@@ -1052,8 +1053,10 @@ class FeedCommands(commands.Cog):
                 ephemeral=True,
             )
             return
-        if file.size and file.size > 1024 * 1024:
-            await interaction.followup.send("⚠️ OPML file too large (1 MB cap).", ephemeral=True)
+        if file.size and file.size > MAX_OPML_BYTES:
+            await interaction.followup.send(
+                f"⚠️ OPML file too large ({MAX_OPML_MB} MB cap).", ephemeral=True
+            )
             return
 
         try:
@@ -1591,26 +1594,14 @@ class DigestCommands(commands.Cog):
 class DiscordAdapter(BaseAdapter):
     """Discord adapter implementation."""
 
-    def __init__(self, bot_or_token: NewsFlowBot | str) -> None:
-        if isinstance(bot_or_token, NewsFlowBot):
-            self.bot = bot_or_token
-            self.token = None
-        else:
-            self.token = bot_or_token
-            self.bot = NewsFlowBot()
-
-    @property
-    def platform_name(self) -> str:
-        return "discord"
+    def __init__(self, bot: NewsFlowBot) -> None:
+        self.bot = bot
 
     async def start(self) -> None:
-        """Start the Discord bot."""
-        if self.token:
-            await self.bot.start(self.token)
+        """Nothing to do: start_discord and stop_discord run the bot's lifecycle."""
 
     async def stop(self) -> None:
-        """Stop the Discord bot."""
-        await self.bot.close()
+        """Nothing to do: start_discord and stop_discord run the bot's lifecycle."""
 
     def is_connected(self) -> bool:
         """Ready + not closed. discord.py handles auto-reconnect internally

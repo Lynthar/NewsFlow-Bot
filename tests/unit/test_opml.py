@@ -1,8 +1,12 @@
-"""Tests for OPML parse/build round-trip and edge cases."""
+"""Tests for OPML parse/build round-trip, edge cases and the upload size cap."""
+
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from newsflow.adapters.telegram.bot import import_document
 from newsflow.core.opml import (
+    MAX_OPML_BYTES,
     OpmlEntry,
     OpmlParseError,
     build_opml,
@@ -145,3 +149,17 @@ def test_import_at_feed_ceiling_is_accepted():
     )
     doc = f'<opml version="2.0"><body>{outlines}</body></opml>'
     assert len(parse_opml(doc)) == MAX_OPML_FEEDS
+
+
+async def test_an_oversized_upload_is_refused_before_it_is_downloaded():
+    update = MagicMock()
+    update.effective_chat.type = "private"
+    update.message.reply_text = AsyncMock()
+    update.message.document.file_name = "feeds.opml"
+    update.message.document.file_size = MAX_OPML_BYTES + 1
+    update.message.document.get_file = AsyncMock()
+
+    await import_document(update, MagicMock())
+
+    assert "too large (1 MB cap)" in update.message.reply_text.call_args.args[0]
+    update.message.document.get_file.assert_not_awaited()

@@ -142,7 +142,7 @@ def import_failure_rows(result: OpmlImportResult) -> tuple[list[tuple[str, str]]
     """The first IMPORT_FAILURES_SHOWN (url, reason) pairs, each cut to width, and
     a footer counting the rest — None when every failure made the list."""
     shown = [
-        (url[:IMPORT_URL_LIMIT], reason[:IMPORT_REASON_LIMIT])
+        (clip(url, IMPORT_URL_LIMIT), clip(reason, IMPORT_REASON_LIMIT))
         for url, reason in result.failed[:IMPORT_FAILURES_SHOWN]
     ]
     left_out = len(result.failed) - len(shown)

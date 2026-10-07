@@ -274,8 +274,8 @@ async def test_telegram_import_summary_lists_ten_failures_escaped_and_clipped(db
         return html.escape(text, quote=False)
 
     assert lines[6] == (
-        f"• <code>{escape(LONG_URL[:IMPORT_URL_LIMIT])}</code>: "
-        f"{escape(LONG_REASON[:IMPORT_REASON_LIMIT])}"
+        f"• <code>{escape(clip(LONG_URL, IMPORT_URL_LIMIT))}</code>: "
+        f"{escape(clip(LONG_REASON, IMPORT_REASON_LIMIT))}"
     )
     assert "<not found>" not in lines[6]
     assert sum(ln.startswith("• ") for ln in lines) == 10
@@ -289,6 +289,8 @@ def test_discord_import_embed_lists_ten_failures_clipped():
     assert embed.description == "✅ Added: **2**\n⏭️ Already subscribed: **1**\n❌ Failed: **12**"
     assert [f.name for f in embed.fields] == ["Failures"]
     lines = embed.fields[0].value.split("\n")
-    assert lines[0] == (f"• `{LONG_URL[:IMPORT_URL_LIMIT]}` — {LONG_REASON[:IMPORT_REASON_LIMIT]}")
+    assert lines[0] == (
+        f"• `{clip(LONG_URL, IMPORT_URL_LIMIT)}` — {clip(LONG_REASON, IMPORT_REASON_LIMIT)}"
+    )
     assert sum(ln.startswith("• ") for ln in lines) == 10
     assert lines[-1] == "…and 2 more"

@@ -31,6 +31,9 @@ ENV/
 # effect of running `uv run` in the project dir and shouldn't be tracked)
 uv.lock
 
+# mutmut's working copy (pyproject [tool.mutmut])
+mutants/
+
 # IDE
 .idea/
 .vscode/

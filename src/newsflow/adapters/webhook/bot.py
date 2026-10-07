@@ -105,10 +105,6 @@ class WebhookAdapter(BaseAdapter):
         # immediately and main.py's gather never runs the aiohttp session cleanup.
         self._stop_event: asyncio.Event | None = None
 
-    @property
-    def platform_name(self) -> str:
-        return "webhook"
-
     def is_connected(self) -> bool:
         """Webhook has no persistent connection; 'connected' just means the
         aiohttp session is live and we've loaded destinations at least once."""

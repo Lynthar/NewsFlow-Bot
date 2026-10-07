@@ -744,6 +744,8 @@ sources:
 新声明的源要等投递循环第一次抓取成功才有条目；那一次抓到的、发表于订阅建立之前的条目（以及没有日期的）算作存量，
 不会推送，之后的才是新文章。把源注释掉再恢复也是如此，频道已经收过的不会再推一遍。
 
+**这些订阅只能在 YAML 里改**（webhooks.yaml 的订阅同理）：每次启动和热重载都会把它们恢复成文件里写的样子，所以在聊天命令、`/manage` 面板或 REST API 里暂停、移除，或改它的语言、翻译、静默，会直接被拒绝并提示去哪份文件改；频道级的语言、翻译、静默设置会跳过它们。模板、提及、话题、过滤和显示设置文件里不管，照常可改。
+
 ### 4B.2 三种源类型
 
 > 下面各源类型标注的 extra 仅**裸机运行**时需要手动装；Docker 镜像已内置全部 extra（`[all]`），开箱即用。
@@ -899,11 +901,11 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 | `GET` | `/live` | 存活探针（K8s 友好） |
 | `GET` | `/metrics` | **Prometheus 指标**：调度轮次/发送量/错误计数器（`newsflow_send_errors_total` 逐条计发送失败）、`newsflow_entries_undeliverable_total`（平台反复拒收而放弃的条目）、`newsflow_entries_dropped_unsent_total`（排队期间过期被清理的条目）+ feed/订阅/destination/digest 数量 gauge（文本格式，零依赖手写渲染） |
 | `GET` | `/api/feeds` | 列全部 feed |
-| `POST` | `/api/feeds` | 添加 feed |
+| `POST` | `/api/feeds` | 添加 feed；`url` 也收聊天命令里的简写（`gh:owner/repo`、`pypi:包名` 等） |
 | `GET` | `/api/feeds/{id}` | 单 feed 详情 |
 | `DELETE` | `/api/feeds/{id}` | 删 feed |
 | `POST` | `/api/feeds/{id}/refresh` | 强制刷新 |
-| `POST` | `/api/feeds/test` | 测试 URL |
+| `POST` | `/api/feeds/test` | 测试 URL，同样收简写 |
 | `GET` | `/api/stats` | 总体统计 |
 | `GET` | `/api/stats/feeds` | 每个 feed 的统计 |
 | `GET` | `/api/subscriptions?platform=&channel=` | **列一个频道的全部订阅**（含暂停；返回 id 供下面的操作端点用） |
@@ -2004,7 +2006,7 @@ poetry run pytest tests/unit/test_feed_service.py::test_apply_fetch_result_store
 步骤在代码里体现为：
 
 1. 建 `src/newsflow/adapters/<platform>/bot.py`
-2. 实现 `BaseAdapter` 抽象类（见 `adapters/base.py`）：`platform_name` / `start` / `stop` / `send_message` / `send_text`
+2. 实现 `BaseAdapter` 抽象类（见 `adapters/base.py`）：`start` / `stop` / `send_message` / `send_text`
 3. 在 `Settings` 里加 `<platform>_token` 字段 + `<platform>_enabled` 属性
 4. `main.py` 里加 `start_<platform>_bot()` 函数（模仿 `start_discord_bot`），`main()` 里按开关追加任务
 5. `Dispatcher.__init__` 里把平台加入 `_expected_platforms`（这样 `wait_for_adapters` 会等它）

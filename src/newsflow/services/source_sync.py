@@ -27,6 +27,7 @@ from newsflow.models.base import get_session_factory
 from newsflow.models.feed import Feed
 from newsflow.models.subscription import Subscription
 from newsflow.services._owned_subscriptions import (
+    SOURCES_OWNER,
     DeclaredSubscription,
     reconcile_owned_subscriptions,
 )
@@ -42,8 +43,7 @@ from newsflow.services.feed_service import FeedService, SourceFeedConflictError
 
 logger = logging.getLogger(__name__)
 
-# Subscription.platform_user_id marker identifying rows this sync owns.
-_OWNER = "source-yaml"
+_OWNER = SOURCES_OWNER
 _SUB_PLATFORMS = frozenset({"discord", "telegram", "webhook"})
 
 

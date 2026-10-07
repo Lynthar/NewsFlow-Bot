@@ -10,6 +10,7 @@ pytest.importorskip("fastapi")  # needs the api extra
 pytest.importorskip("httpx")  # drives the app over ASGI; not an api-extra dependency
 
 import httpx  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 from newsflow.api import create_app  # noqa: E402
 from newsflow.api.routes.feeds import refresh_feed  # noqa: E402
@@ -146,3 +147,50 @@ async def test_feed_list_get_and_delete(db, configure):
     assert (await _call(configure, "DELETE", f"/api/feeds/{feed_id}")).status_code == 200
     assert (await _call(configure, "GET", f"/api/feeds/{feed_id}")).status_code == 404
     assert (await _call(configure, "DELETE", f"/api/feeds/{feed_id}")).status_code == 404
+
+
+async def test_creating_a_feed_accepts_the_bots_shortcuts(db, configure, monkeypatch):
+    expanded = "https://github.com/owner/repo/releases.atom"
+    fetcher = MagicMock()
+    fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(
+            url=expanded,
+            success=True,
+            entries=[{"guid": "v1", "title": "v1", "link": "https://github.com/owner/repo/v1"}],
+        )
+    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
+    configure(api_key="secret")
+    transport = httpx.ASGITransport(app=create_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://api") as client:
+        response = await client.post(
+            "/api/feeds", json={"url": "gh:owner/repo"}, headers={"Authorization": "Bearer secret"}
+        )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["url"] == expanded
+    fetcher.fetch_feed.assert_awaited_once_with(expanded)
+
+
+async def test_a_failed_refresh_survives_the_request_rollback(session, monkeypatch):
+    feed = Feed(url="https://example.com/down", title="t", is_active=True)
+    session.add(feed)
+    await session.commit()
+    fetcher = MagicMock()
+    fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(
+            url=feed.url, success=False, entries=[], error="HTTP 503", status=503
+        )
+    )
+    monkeypatch.setattr("newsflow.services.feed_service.get_fetcher", lambda: fetcher)
+    # A write already in the transaction nests the store's savepoint on SQLite as on
+    # Postgres; otherwise releasing it commits and no rollback could reach the failure.
+    feed.title = "down"
+    await session.flush()
+
+    with pytest.raises(HTTPException):
+        await refresh_feed(feed.id, db=session, _=None)
+    await session.rollback()  # what get_db does with the 502
+
+    await session.refresh(feed)
+    assert (feed.error_count, feed.last_error) == (1, "HTTP 503")

@@ -151,3 +151,12 @@ testpaths = ["tests"]
 # discord.py imports the stdlib audioop, deprecated on 3.12 and gone on 3.13 (where
 # it pulls in audioop-lts instead); nothing here can act on that warning.
 filterwarnings = ["ignore:'audioop' is deprecated:DeprecationWarning:discord.player"]
+
+# Mutation testing, run on demand and not a gate: `pip install mutmut`, then
+# `mutmut run --max-children 4` (about 35 minutes). It works in the ignored mutants/.
+[tool.mutmut]
+source_paths = ["src"]
+# test_yamlcfg reads the samples from the repository root.
+also_copy = ["samples"]
+# Without --no-warn-unused-ignores mypy flags mutmut's trampolines and the run aborts.
+type_check_command = ["mypy", "src", "--output", "json", "--no-warn-unused-ignores"]

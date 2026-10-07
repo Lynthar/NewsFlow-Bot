@@ -207,12 +207,6 @@ class BaseAdapter(ABC):
     # adapter is what keeps a scheduled digest and a manual one chunked alike.
     digest_chunk_size: int = 1900
 
-    @property
-    @abstractmethod
-    def platform_name(self) -> str:
-        """Return the platform name (e.g., 'discord', 'telegram')."""
-        pass
-
     @abstractmethod
     async def start(self) -> None:
         """
@@ -331,14 +325,6 @@ class BaseAdapter(ABC):
         unimplemented adapters don't accidentally claim success.
         """
         return False
-
-    async def on_ready(self) -> None:
-        """Called when the adapter is ready and connected."""
-        pass
-
-    async def on_error(self, error: Exception) -> None:
-        """Called when an error occurs."""
-        pass
 
     def is_connected(self) -> bool:
         """Whether this adapter currently has a live connection to its

@@ -22,13 +22,7 @@ router = APIRouter()
 
 
 class FeedCreate(BaseModel):
-    """Request model for creating a feed."""
-
-    url: HttpUrl
-
-
-class FeedTestRequest(BaseModel):
-    """Request model for testing a feed; accepts the bots' source shortcuts."""
+    """Request model for creating a feed; accepts the bots' source shortcuts."""
 
     url: HttpUrl
 
@@ -36,6 +30,10 @@ class FeedTestRequest(BaseModel):
     @classmethod
     def _expand_shortcut(cls, value: object) -> object:
         return expand_source_shortcut(value) if isinstance(value, str) else value
+
+
+class FeedTestRequest(FeedCreate):
+    """Request model for testing a feed; accepts the bots' source shortcuts."""
 
 
 class FeedResponse(BaseModel):
@@ -211,6 +209,9 @@ async def refresh_feed(
     result = await service.fetch_and_store(feed)
 
     if not result.success:
+        # Keep the recorded failure: get_db rolls back on the 502, and on a tenth failure
+        # the feed-disabled notice has already gone out.
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to refresh feed: {result.message}",

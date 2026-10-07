@@ -6,6 +6,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -287,8 +288,8 @@ class SubscriptionService:
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(success=False, message="Feed not found")
-        updated = await self.sub_repo.deactivate_subscription(
-            platform=platform, channel_id=channel_id, feed_id=feed.id
+        updated = await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, feed_id=feed.id, is_active=False
         )
         if not updated:
             return SubscriptionActionResult(success=False, message="Subscription not found")
@@ -306,8 +307,8 @@ class SubscriptionService:
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(success=False, message="Feed not found")
-        updated = await self.sub_repo.activate_subscription(
-            platform=platform, channel_id=channel_id, feed_id=feed.id
+        updated = await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, feed_id=feed.id, is_active=True
         )
         if not updated:
             return SubscriptionActionResult(success=False, message="Subscription not found")
@@ -445,51 +446,25 @@ class SubscriptionService:
         self,
         platform: str,
         channel_id: str,
-        feed_url: str | None = None,
         translate: bool | None = None,
         target_language: str | None = None,
     ) -> int:
-        """
-        Update subscription settings; returns how many subscriptions were
-        updated.
-
-        If feed_url is None this is channel-wide: the preference is ALSO
-        persisted as the channel default (ChannelSettings) so future
-        subscriptions inherit it — which makes running this in a channel
-        with zero subscriptions meaningful rather than an error.
-        """
-        if feed_url:
-            feed_url = expand_source_shortcut(feed_url)
-        else:
-            # Channel-wide call → record the preference for future /adds.
-            fields: dict[str, object] = {}
-            if translate is not None:
-                fields["default_translate"] = translate
-            if target_language is not None:
-                fields["default_language"] = target_language
-            if fields:
-                await self.channel_settings_repo.upsert(platform, channel_id, **fields)
-
+        """Set translation on every subscription in the channel and returns how many there
+        are; None leaves a setting unchanged. The preference is also stored as the channel
+        default so later subscriptions inherit it, even when the channel has none yet."""
+        values: dict[str, Any] = {}
+        defaults: dict[str, object] = {}
+        if translate is not None:
+            values["translate"] = defaults["default_translate"] = translate
+        if target_language is not None:
+            values["target_language"] = defaults["default_language"] = target_language
+        if not values:
+            return 0
+        await self.channel_settings_repo.upsert(platform, channel_id, **defaults)
         # Paused subscriptions get the new settings too — otherwise a channel
         # language change silently skips them and they resume with stale
         # settings later.
-        subs = await self.sub_repo.get_channel_subscriptions(
-            platform, channel_id, include_inactive=True
-        )
-
-        updated = 0
-        for sub in subs:
-            if feed_url and sub.feed.url != feed_url:
-                continue
-
-            await self.sub_repo.update_subscription_settings(
-                subscription_id=sub.id,
-                translate=translate,
-                target_language=target_language,
-            )
-            updated += 1
-
-        return updated
+        return await self.sub_repo.update_channel_subscriptions(platform, channel_id, **values)
 
     async def set_feed_language(
         self,
@@ -500,7 +475,7 @@ class SubscriptionService:
     ) -> SubscriptionActionResult:
         """Set the translation target language for a single subscription.
 
-        Unlike update_settings(feed_url=None), which acts channel-wide,
+        Unlike update_settings, which acts channel-wide,
         this is explicitly one-feed: different feeds in the same channel
         can have different target languages.
         """
@@ -513,9 +488,7 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
-        await self.sub_repo.update_subscription_settings(
-            subscription_id=sub.id, target_language=language
-        )
+        await self.sub_repo.update_subscription(sub.id, target_language=language)
         return SubscriptionActionResult(
             success=True,
             message=f"Language set to {language} for {feed.title or feed_url}",
@@ -540,8 +513,9 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
-        await self.sub_repo.update_subscription_settings(
-            subscription_id=sub.id, show_summary=show_summary, show_image=show_image
+        display = {"show_summary": show_summary, "show_image": show_image}
+        await self.sub_repo.update_subscription(
+            sub.id, **{k: v for k, v in display.items() if v is not None}
         )
         parts = []
         if show_summary is not None:
@@ -586,9 +560,7 @@ class SubscriptionService:
             include_regex=include_regex,
             exclude_regex=exclude_regex,
         )
-        await self.sub_repo.set_subscription_filter(
-            subscription_id=sub.id, filter_rule=rule.to_json()
-        )
+        await self.sub_repo.update_subscription(sub.id, filter_rule=rule.to_json())
 
         if rule.is_empty():
             msg = f"Filter cleared for {feed.title or feed_url}"
@@ -661,7 +633,7 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
-        await self.sub_repo.set_subscription_template(sub.id, template)
+        await self.sub_repo.update_subscription(sub.id, message_template=template)
         action = "set" if template else "cleared"
         return SubscriptionActionResult(
             success=True,
@@ -677,7 +649,9 @@ class SubscriptionService:
         """Bulk-apply/clear a template on every subscription in the channel
         (paused included). Returns the number of subscriptions updated —
         new subscriptions do NOT inherit it (no channel-level default)."""
-        return await self.sub_repo.set_channel_template(platform, channel_id, template)
+        return await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, message_template=template
+        )
 
     async def set_feed_mention(
         self,
@@ -700,7 +674,7 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
-        await self.sub_repo.set_subscription_mention(sub.id, mention)
+        await self.sub_repo.update_subscription(sub.id, mention=mention)
         action = "set" if mention else "cleared"
         return SubscriptionActionResult(
             success=True,
@@ -715,7 +689,9 @@ class SubscriptionService:
     ) -> int:
         """Bulk-apply/clear a mention on every subscription in the channel
         (paused included). Returns the number updated."""
-        return await self.sub_repo.set_channel_mention(platform, channel_id, mention)
+        return await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, mention=mention
+        )
 
     async def set_feed_thread(
         self,
@@ -735,7 +711,7 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
-        await self.sub_repo.set_subscription_thread(sub.id, thread_id)
+        await self.sub_repo.update_subscription(sub.id, message_thread_id=thread_id)
         where = "this topic" if thread_id else "the default topic (General)"
         return SubscriptionActionResult(
             success=True,
@@ -750,7 +726,9 @@ class SubscriptionService:
     ) -> int:
         """Bulk-point every subscription in the channel at a forum topic
         (paused included). Returns the number updated."""
-        return await self.sub_repo.set_channel_thread(platform, channel_id, thread_id)
+        return await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, message_thread_id=thread_id
+        )
 
     @staticmethod
     def build_template_preview(
@@ -811,11 +789,8 @@ class SubscriptionService:
         feed = await self.feed_repo.get_feed_by_url(feed_url)
         if not feed:
             return SubscriptionActionResult(success=False, message="Feed not found")
-        updated = await self.sub_repo.set_silent(
-            platform=platform,
-            channel_id=channel_id,
-            feed_id=feed.id,
-            silent=silent,
+        updated = await self.sub_repo.update_channel_subscriptions(
+            platform, channel_id, feed_id=feed.id, silent=silent
         )
         if not updated:
             return SubscriptionActionResult(success=False, message="Subscription not found")
@@ -871,7 +846,7 @@ class SubscriptionService:
         )
         if not sub:
             return SubscriptionActionResult(success=False, message="Subscription not found")
-        await self.sub_repo.update_subscription_settings(subscription_id=sub.id, translate=enabled)
+        await self.sub_repo.update_subscription(sub.id, translate=enabled)
         state = "enabled" if enabled else "disabled"
         return SubscriptionActionResult(
             success=True,

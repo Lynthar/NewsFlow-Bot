@@ -4,12 +4,13 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.core.content_processor import clean_html, get_source_name
+from newsflow.core.timezones import local_schedule_to_utc
 from newsflow.models.base import get_session_factory
 from newsflow.models.digest import WEEKLY_WINDOW, ChannelDigest
 from newsflow.repositories.digest_repository import ChannelDigestRepository
@@ -223,17 +224,51 @@ async def _record_delivery(
     return False
 
 
+async def get_digest_config(
+    session: AsyncSession, platform: str, channel_id: str
+) -> ChannelDigest | None:
+    return await ChannelDigestRepository(session).get(platform, channel_id)
+
+
 async def enable_digest(
-    session: AsyncSession, platform: str, channel_id: str, guild_id: str | None, **fields: Any
+    session: AsyncSession,
+    platform: str,
+    channel_id: str,
+    guild_id: str | None,
+    *,
+    schedule: str,
+    local_hour: int,
+    local_weekday: int | None,
+    tz: tzinfo,
+    **fields: Any,
 ) -> ChannelDigest:
-    """Enable or reconfigure a channel's digest. The current slot counts as served, so the
-    first delivery is the next slot: enabling never fires one at once."""
+    """Enable or reconfigure a channel's digest; `fields` not given keep their stored value.
+    The local schedule becomes UTC once, here, so a later DST change shifts local delivery.
+    The current slot counts as served: enabling never fires a delivery at once."""
+    utc_hour, utc_weekday = local_schedule_to_utc(local_hour, local_weekday, tz)
     config = await ChannelDigestRepository(session).upsert(
-        platform, channel_id, guild_id, enabled=True, **fields
+        platform,
+        channel_id,
+        guild_id,
+        enabled=True,
+        schedule=schedule,
+        delivery_hour_utc=utc_hour,
+        delivery_weekday=utc_weekday,
+        **fields,
     )
     config.last_slot_at = _most_recent_slot(config, datetime.now(UTC))
     await session.flush()
     return config
+
+
+async def disable_digest(session: AsyncSession, platform: str, channel_id: str) -> bool:
+    """Turn a channel's digest off, keeping its settings. False when none is configured."""
+    config = await ChannelDigestRepository(session).get(platform, channel_id)
+    if config is None:
+        return False
+    config.enabled = False
+    await session.flush()
+    return True
 
 
 class DigestService:

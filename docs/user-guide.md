@@ -235,8 +235,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | 命令 | 说明 |
 |---|---|
 | `/digest show` | 显示当前配置 |
-| `/digest enable daily <hour> [lang] [tz]` | 启用日报。`hour` 按 `tz` 解释；`tz` 收 `Asia/Shanghai` / `+8` / `utc`（缺省 UTC），两个尾参顺序随意 |
-| `/digest enable weekly <weekday> <hour> [lang] [tz]` | 启用周报（weekday 支持 `mon…sun` 或 `0…6`，同样按 `tz` 解释） |
+| `/digest enable daily <hour> [lang] [tz] [options]` | 启用日报。`hour` 按 `tz` 解释；`tz` 收 `Asia/Shanghai` / `+8` / `utc`（缺省 UTC），两个尾参顺序随意。options 是 `max_articles=<1-200>`（缺省 50）与 `include_filtered=on\|off`（缺省 off），位置随意；不写的项保留当前值 |
+| `/digest enable weekly <weekday> <hour> [lang] [tz] [options]` | 启用周报（weekday 支持 `mon…sun` 或 `0…6`，同样按 `tz` 解释；options 同上） |
 | `/digest disable` | 关闭 |
 | `/digest now` | 立即生成一份预览（不置顶、不计入投递记录，定时 digest 照常到达） |
 
@@ -772,6 +772,8 @@ sources:
       #                                         # 未设置则该源响亮失败
 ```
 
+条目数组按 RSS 的惯例当作**新→旧**排列入库。接口若是旧→新返回、又不带 `published`，无日期条目的投递顺序会反过来。
+
 **`email_imap`** — 轮询 IMAP 邮箱，把每封邮件变成条目（适合**无 RSS 的 newsletter**）。需装 `source-email` extra（`make install-all` 或 `pip install -e '.[source-email]'`，即 imap-tools）。
 
 ```yaml
@@ -815,7 +817,7 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
   -d '{"entries":[{"id":"build-42","title":"Build #42 passed","url":"https://ci/42"}]}'
 ```
 
-每个 entry 字段：`id`（去重键，缺失则内容 hash）、`title`、`link`/`url`、`summary`、`content`、`author`、`image`、`published_at`。重复 `id` 自动幂等去重。n8n / Zapier / CI / GitHub webhook 都能接。
+每个 entry 字段：`id`（去重键，缺失则内容 hash）、`title`、`link`/`url`、`summary`、`content`、`author`、`image`、`published_at`。重复 `id` 自动幂等去重。一次推多条时按数组顺序入库，**请按旧→新排列**：没有 `published_at` 的条目只能靠这个顺序决定先发哪条。n8n / Zapier / CI / GitHub webhook 都能接。
 
 ### 4B.3 与 §四 出站 webhook 的区别
 
@@ -1118,7 +1120,13 @@ systemd 的 `EnvironmentFile=` 和 docker-compose 的 `env_file:` 语义不同�
 make checkconfig            # 或: python -m newsflow.checkconfig
 ```
 
-不碰网络、不碰数据库，验证三样东西：`.env` 能否通过 pydantic 校验（含行内注释污染、越界值）、两个 YAML 是否通过严格 schema（**未知字段现在是硬错误**——`secert:` 这类拼写错误从"静默失效"变成启动中止，所以改完配置先跑这个）、以及跨文件引用（sources.yaml 里 `platform: webhook` 的订阅者指向的 destination 必须真的在 webhooks.yaml 里声明过）。另有几类只告警不报错的情况，启动日志里也会以 `Config:` 开头打出同样的内容：环境变量或 `.env` 里和某个配置项只差一个拼写的键（如 `DATABASE_URI`——它会被静默忽略，配置项保持默认值）、会让周报丢素材或让条目重推的保留期组合、开了翻译却没配 key 等。退出码 0 = 可部署；1 = 有错误，逐条列出。CI/部署脚本里当门禁用。
+Docker 部署要在容器里跑：宿主上跑读的是宿主的默认路径，看不到挂进容器的 `./config/` 与 compose 注入的环境变量，配置有错也会报 OK。
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm --no-deps newsflow python -m newsflow.checkconfig
+```
+
+不碰网络、不碰数据库，验证三样东西：`.env` 能否通过 pydantic 校验（含行内注释污染、越界值）、两个 YAML 是否通过严格 schema（**未知字段现在是硬错误**——`secert:` 这类拼写错误从"静默失效"变成启动中止，所以改完配置先跑这个）、以及跨文件引用（sources.yaml 里 `platform: webhook` 的订阅者指向的 destination 必须真的在 webhooks.yaml 里声明过，启动与热重载同样拒绝）。两个 YAML 里会入库的值还按存储列宽校验，`language` 必须是语言码、会规范成命令里的写法（`zh-cn` → `zh-CN`）。另有几类只告警不报错的情况，启动日志里也会以 `Config:` 开头打出同样的内容：环境变量或 `.env` 里和某个配置项只差一个拼写的键（如 `DATABASE_URI`——它会被静默忽略，配置项保持默认值）、会让周报丢素材或让条目重推的保留期组合、开了翻译却没配 key 等。退出码 0 = 可部署；1 = 有错误，逐条列出。CI/部署脚本里当门禁用。
 
 ---
 
@@ -1572,7 +1580,7 @@ egress 策略 / VPS 网络边界作为第二层防御。
 
 两个理由。**时序**：最新的文章应该落在聊天记录底部，而不是压在更旧的上面。
 **积压公平**：待发多于每轮上限时，最新优先会让每轮的新条目永久挤掉更早的，直到它们被保留期静默清掉；
-最旧优先则是跨轮把积压排空。无日期的条目排在最前（无法判断新旧，宁可发也不要饿死），`id` 用来打破并列、保证确定性。
+最旧优先则是跨轮把积压排空。无日期的条目排在最前（无法判断新旧，宁可发也不要饿死），彼此之间按 `id`：源按新→旧列出，抓取入库时倒过来存，`id` 就跟着发布先后走，无日期条目同样旧的先发，新订阅的预览取到的是最新一条（入站推送按推送顺序存，见 §4B.2）。
 
 **上限只数真正发出去的消息**：每个订阅每轮最多尝试发送 10 条（`SENDS_PER_ROUND`），被过滤、被静默的条目不占名额，
 单轮最多读 200 条（`ROUND_LOOKAHEAD`）限住工作量。过去过滤与静默也占名额，「高产源 + 关键词」「静默 + 日报」这两种
@@ -2190,7 +2198,7 @@ NewsFlow-Bot/
 │   │   ├── cache.py                  # 内存 / Redis 抽象
 │   │   ├── translation/              # 翻译 provider + 工厂
 │   │   ├── summarization/            # Digest LLM provider + 工厂
-│   │   └── _openai_compat.py         # OpenAI SDK 兼容垫片
+│   │   └── llm.py                    # 翻译与 digest 共用的 LLM 客户端、prompt 填充、语言名
 │   ├── adapters/                 # 平台 I/O
 │   │   ├── base.py               # BaseAdapter + Message + Channel 异常契约
 │   │   ├── discord/bot.py        # /feed, /settings, /digest 命令

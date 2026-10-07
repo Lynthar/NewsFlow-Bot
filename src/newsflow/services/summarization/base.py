@@ -26,29 +26,6 @@ class DigestResult:
     error: str | None = None
 
 
-# Common human-readable language names for prompts. Keep minimal — provider
-# sub-classes can override with wider lookups if needed.
-LANGUAGE_NAMES = {
-    "zh": "Simplified Chinese",
-    "zh-cn": "Simplified Chinese",
-    "zh-CN": "Simplified Chinese",
-    "zh-hans": "Simplified Chinese",
-    "zh-tw": "Traditional Chinese",
-    "zh-TW": "Traditional Chinese",
-    "en": "English",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "fr": "French",
-    "de": "German",
-    "es": "Spanish",
-    "ru": "Russian",
-}
-
-
-def language_name(code: str) -> str:
-    return LANGUAGE_NAMES.get(code, LANGUAGE_NAMES.get(code.lower(), code))
-
-
 class SummarizationProvider(ABC):
     """Generates a narrative digest from a batch of articles."""
 

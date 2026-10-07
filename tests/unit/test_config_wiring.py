@@ -199,6 +199,13 @@ def test_sent_record_retention_under_the_publish_age_gate_is_warned():
     assert any("max_entry_publish_age_days" in w for w in settings.config_warnings())
 
 
+def test_redis_cache_without_a_url_is_warned(configure):
+    warnings = configure(telegram_token="x", cache_backend="redis").config_warnings()
+    assert any("REDIS_URL" in w for w in warnings)
+    redis = configure(telegram_token="x", cache_backend="redis", redis_url="redis://r:6379/0")
+    assert redis.config_warnings() == []
+
+
 def test_defaults_raise_no_warning(configure):
     assert configure(telegram_token="x").config_warnings() == []
 

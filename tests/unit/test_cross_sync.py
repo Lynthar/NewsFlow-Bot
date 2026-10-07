@@ -13,12 +13,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.models.webhook import WebhookDestination
-from newsflow.services.source_sync import SourceCfg, SubscriberCfg, _reconcile
+from newsflow.services.source_sync import (
+    SourceCfg,
+    SourceConfigError,
+    SubscriberCfg,
+    _reconcile,
+    sync_sources,
+)
 from newsflow.services.webhook_sync import sync_webhooks
 from tests import seed
 
@@ -187,3 +194,19 @@ async def test_webhook_sync_does_not_rewrite_source_yaml_settings(session, monke
     )
     # One row per feed: webhook_sync's own RSS sub + the source-yaml sub.
     assert len(all_slack) == 2
+
+
+async def test_a_subscriber_naming_an_undeclared_destination_stops_the_sync(session, tmp_path):
+    # Startup and reload both go through sync_sources: the deployment refuses to come up
+    # rather than sync a subscription that can never deliver.
+    sources = tmp_path / "sources.yaml"
+    sources.write_text(
+        "sources:\n  s:\n    url: https://e/x\n    type: json_api\n"
+        "    config:\n      items: '$.a'\n"
+        "    subscribers:\n      - platform: webhook\n        channel: ghost\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SourceConfigError, match="ghost"):
+        await sync_sources(sources, _write_webhooks(tmp_path))
+    assert await _source_yaml_subs(session) == []

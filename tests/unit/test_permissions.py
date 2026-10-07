@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from newsflow.adapters.telegram.bot import (
+    _COMMANDS,
     _admin_cache,
     _require_group_admin,
     digest_command,
@@ -32,6 +33,7 @@ GROUP_ID = -100123
 def _group_update(user_id: int = 42, chat_id: int = GROUP_ID, sender_chat=None):
     update = MagicMock()
     update.message.reply_text = AsyncMock()
+    update.message.reply_document = AsyncMock()
     update.message.sender_chat = sender_chat
     update.effective_chat.id = chat_id
     update.effective_chat.type = "supergroup"
@@ -167,6 +169,61 @@ async def test_digest_show_open_but_enable_gated(db):
 
     context.bot.get_chat_member.assert_awaited_once()  # only the enable call
     assert "No digest configured" in update2.message.reply_text.call_args.args[0]
+
+
+FEED = "https://example.com/feed"
+
+# Every registered command as a plain group member would send it, in its mutating form
+# wherever one exists. `gated` is the audited answer: a new command needs a row here.
+_GATE_TABLE: list[tuple[str, list[str], bool]] = [
+    ("start", [], False),
+    ("help", [], False),
+    ("add", [FEED], True),
+    ("remove", [FEED], True),
+    ("pause", [FEED], True),
+    ("resume", ["all"], True),
+    ("list", [], False),
+    ("info", [], False),
+    ("test", [], False),
+    ("language", ["en"], True),
+    ("translate", ["on"], True),
+    ("setlang", [FEED, "en"], True),
+    ("settrans", [FEED, "on"], True),
+    ("silent", ["on"], True),
+    ("setsilent", [FEED, "on"], True),
+    ("setdisplay", [FEED, "summary", "off"], True),
+    ("template", [], False),
+    ("template", [FEED, "{title}"], True),
+    ("settopic", [], True),
+    ("filter", [], False),
+    ("filter", [FEED, "include", "x"], True),
+    ("digest", ["show"], False),
+    ("digest", ["enable", "daily", "9"], True),
+    ("digest", ["disable"], True),
+    ("digest", ["now"], True),
+    ("import", [], True),
+    ("export", [], False),
+    ("status", [], False),
+    ("manage", [], False),
+]
+
+
+def test_gate_table_covers_every_registered_command():
+    assert {name for name, _, _ in _GATE_TABLE} == {name for name, _ in _COMMANDS}
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "gated"), _GATE_TABLE, ids=[" ".join([n, *a]) for n, a, _ in _GATE_TABLE]
+)
+async def test_group_member_meets_the_gate_where_the_table_says(db, name, args, gated):
+    update, context = _group_update(), _context(status="member")
+    context.args = args
+
+    await dict(_COMMANDS)[name](update, context)
+
+    assert context.bot.get_chat_member.await_count == int(gated)
+    if gated:
+        assert "group admins" in update.message.reply_text.call_args.args[0]
 
 
 # ── config parsing ───────────────────────────────────────────────────────────

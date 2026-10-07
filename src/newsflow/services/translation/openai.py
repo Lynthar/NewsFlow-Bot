@@ -7,6 +7,7 @@ Uses OpenAI's GPT models for translation with context understanding.
 import logging
 from typing import Any
 
+from newsflow.services.llm import chat_completions_create, fill_prompt, language_name, make_client
 from newsflow.services.translation.base import TranslationProvider, TranslationResult
 
 logger = logging.getLogger(__name__)
@@ -20,34 +21,6 @@ DEFAULT_TRANSLATION_PROMPT = (
     "Preserve the original meaning and tone. "
     "Only output the translated text, nothing else."
 )
-
-
-# Language names for better prompts
-LANGUAGE_NAMES = {
-    "zh": "Simplified Chinese",
-    "zh-cn": "Simplified Chinese",
-    "zh-hans": "Simplified Chinese",
-    "zh-tw": "Traditional Chinese",
-    "zh-hant": "Traditional Chinese",
-    "en": "English",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "fr": "French",
-    "de": "German",
-    "es": "Spanish",
-    "pt": "Portuguese",
-    "ru": "Russian",
-    "ar": "Arabic",
-    "hi": "Hindi",
-    "it": "Italian",
-    "nl": "Dutch",
-    "pl": "Polish",
-    "tr": "Turkish",
-    "vi": "Vietnamese",
-    "th": "Thai",
-    "id": "Indonesian",
-    "ms": "Malay",
-}
 
 
 class OpenAIProvider(TranslationProvider):
@@ -71,29 +44,11 @@ class OpenAIProvider(TranslationProvider):
         return "openai"
 
     def _get_client(self) -> Any:
-        """Lazy initialization of OpenAI client."""
         if self._client is None:
-            try:
-                from openai import AsyncOpenAI
-
-                # The SDK default waits 600 s and retries twice; a hung endpoint would stall
-                # the whole dispatch round for half an hour. A failure delivers the original.
-                kwargs: dict[str, Any] = {"api_key": self.api_key, "timeout": 60, "max_retries": 1}
-                if self.base_url:
-                    kwargs["base_url"] = self.base_url
-
-                self._client = AsyncOpenAI(**kwargs)
-            except ImportError:
-                raise ImportError(
-                    "openai package is required for OpenAI translation. "
-                    "Install it with: pip install openai"
-                )
+            # The SDK default waits 600 s and retries twice; a hung endpoint would stall
+            # the whole dispatch round for half an hour. A failure delivers the original.
+            self._client = make_client(self.api_key, self.base_url, timeout=60)
         return self._client
-
-    def _get_language_name(self, lang_code: str) -> str:
-        """Get human-readable language name."""
-        code = lang_code.lower()
-        return LANGUAGE_NAMES.get(code, lang_code)
 
     async def translate(
         self,
@@ -104,32 +59,16 @@ class OpenAIProvider(TranslationProvider):
         """Translate text using OpenAI API."""
         try:
             client = self._get_client()
-            target_name = self._get_language_name(target_lang)
-
             source_desc = (
-                self._get_language_name(source_lang)
-                if source_lang
-                else "the source language (auto-detect)"
+                language_name(source_lang) if source_lang else "the source language (auto-detect)"
             )
-            try:
-                system_prompt = self.system_prompt_template.format(
-                    source_desc=source_desc, target_name=target_name
-                )
-            except (KeyError, IndexError) as e:
-                logger.warning(
-                    f"translation_system_prompt references unknown placeholder "
-                    f"{e}; falling back to default"
-                )
-                system_prompt = DEFAULT_TRANSLATION_PROMPT.format(
-                    source_desc=source_desc, target_name=target_name
-                )
-
-            # Go through the compat shim so the call works on both older
-            # models (max_tokens) and newer ones (max_completion_tokens).
-            from newsflow.services._openai_compat import (
-                chat_completions_create,
+            system_prompt = fill_prompt(
+                self.system_prompt_template,
+                DEFAULT_TRANSLATION_PROMPT,
+                "TRANSLATION_SYSTEM_PROMPT",
+                source_desc=source_desc,
+                target_name=language_name(target_lang),
             )
-
             response = await chat_completions_create(
                 client,
                 model=self.model,
@@ -158,10 +97,7 @@ class OpenAIProvider(TranslationProvider):
 
         except ImportError as e:
             logger.error(f"OpenAI package not installed: {e}")
-            return TranslationResult(
-                success=False,
-                error="OpenAI package not installed. Install with: pip install openai",
-            )
+            return TranslationResult(success=False, error=str(e))
         except Exception as e:
             logger.exception(f"OpenAI translation error: {e}")
             return TranslationResult(

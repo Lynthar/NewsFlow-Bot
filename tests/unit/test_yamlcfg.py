@@ -52,3 +52,8 @@ def test_samples_parse_under_the_strict_schemas():
     assert len(source_sync.parse_sources_yaml(SOURCES_SAMPLE)) == 3
     cfg = webhook_sync.parse_webhooks_yaml(WEBHOOKS_SAMPLE)
     assert len(cfg.destinations) == 7
+
+
+def test_the_two_samples_copied_together_are_deployable():
+    sources = source_sync.parse_sources_yaml(SOURCES_SAMPLE)
+    assert source_sync.undeclared_webhook_destinations(sources, WEBHOOKS_SAMPLE) == []

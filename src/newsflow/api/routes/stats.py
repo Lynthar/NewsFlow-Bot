@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.api.deps import get_db
+from newsflow.api.deps import count, get_db
 from newsflow.config import get_settings
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
@@ -58,40 +58,16 @@ async def get_stats(
     """Get overall bot statistics."""
     settings = get_settings()
 
-    # Count feeds
-    total_feeds_result = await db.execute(select(func.count(Feed.id)))
-    total_feeds = total_feeds_result.scalar_one()
-
-    active_feeds_result = await db.execute(
-        select(func.count(Feed.id)).where(Feed.is_active.is_(True))
-    )
-    active_feeds = active_feeds_result.scalar_one()
-
-    # Count entries
-    total_entries_result = await db.execute(select(func.count(FeedEntry.id)))
-    total_entries = total_entries_result.scalar_one()
-
-    # Count subscriptions
-    total_subs_result = await db.execute(select(func.count(Subscription.id)))
-    total_subs = total_subs_result.scalar_one()
-
-    discord_subs_result = await db.execute(
-        select(func.count(Subscription.id)).where(Subscription.platform == "discord")
-    )
-    discord_subs = discord_subs_result.scalar_one()
-
-    telegram_subs_result = await db.execute(
-        select(func.count(Subscription.id)).where(Subscription.platform == "telegram")
-    )
-    telegram_subs = telegram_subs_result.scalar_one()
+    feeds = select(func.count()).select_from(Feed)
+    subs = select(func.count()).select_from(Subscription)
 
     return StatsResponse(
-        total_feeds=total_feeds,
-        active_feeds=active_feeds,
-        total_entries=total_entries,
-        total_subscriptions=total_subs,
-        discord_subscriptions=discord_subs,
-        telegram_subscriptions=telegram_subs,
+        total_feeds=await count(db, feeds),
+        active_feeds=await count(db, feeds.where(Feed.is_active.is_(True))),
+        total_entries=await count(db, select(func.count()).select_from(FeedEntry)),
+        total_subscriptions=await count(db, subs),
+        discord_subscriptions=await count(db, subs.where(Subscription.platform == "discord")),
+        telegram_subscriptions=await count(db, subs.where(Subscription.platform == "telegram")),
         translation_enabled=settings.can_translate(),
         fetch_interval_minutes=settings.fetch_interval_minutes,
         timestamp=datetime.now(UTC).isoformat(),
@@ -109,17 +85,13 @@ async def get_feed_stats(
 
     feed_stats = []
     for feed in feeds:
-        # Count entries
-        entry_count_result = await db.execute(
-            select(func.count(FeedEntry.id)).where(FeedEntry.feed_id == feed.id)
+        entry_count = await count(
+            db, select(func.count()).select_from(FeedEntry).where(FeedEntry.feed_id == feed.id)
         )
-        entry_count = entry_count_result.scalar_one()
-
-        # Count subscriptions
-        sub_count_result = await db.execute(
-            select(func.count(Subscription.id)).where(Subscription.feed_id == feed.id)
+        sub_count = await count(
+            db,
+            select(func.count()).select_from(Subscription).where(Subscription.feed_id == feed.id),
         )
-        sub_count = sub_count_result.scalar_one()
 
         feed_stats.append(
             FeedStatsResponse(

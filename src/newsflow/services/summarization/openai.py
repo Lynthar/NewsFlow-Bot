@@ -10,11 +10,11 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+from newsflow.services.llm import chat_completions_create, fill_prompt, language_name, make_client
 from newsflow.services.summarization.base import (
     DigestArticle,
     DigestResult,
     SummarizationProvider,
-    language_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,19 +65,9 @@ class OpenAIDigestProvider(SummarizationProvider):
 
     def _get_client(self) -> Any:
         if self._client is None:
-            try:
-                from openai import AsyncOpenAI
-            except ImportError as e:
-                raise ImportError(
-                    "openai package is required. Install with: "
-                    "pip install 'newsflow-bot[translation-openai]'"
-                ) from e
             # Bounded, unlike the SDK's 600 s × 3 attempts, yet room for a slow local
             # model to write a full digest; a failed run is retried on the next tick.
-            kwargs: dict[str, Any] = {"api_key": self.api_key, "timeout": 300, "max_retries": 1}
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self._client = AsyncOpenAI(**kwargs)
+            self._client = make_client(self.api_key, self.base_url, timeout=300)
         return self._client
 
     def _format_articles(self, articles: Sequence[DigestArticle]) -> str:
@@ -105,14 +95,13 @@ class OpenAIDigestProvider(SummarizationProvider):
         if not articles:
             return DigestResult(success=False, error="No articles supplied to digest provider")
 
-        lang = language_name(language)
-        try:
-            system_prompt = self.system_prompt_template.format(window=time_window_desc, lang=lang)
-        except (KeyError, IndexError) as e:
-            logger.warning(
-                f"digest_system_prompt references unknown placeholder {e}; falling back to default"
-            )
-            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(window=time_window_desc, lang=lang)
+        system_prompt = fill_prompt(
+            self.system_prompt_template,
+            SYSTEM_PROMPT_TEMPLATE,
+            "DIGEST_SYSTEM_PROMPT",
+            window=time_window_desc,
+            lang=language_name(language),
+        )
         user_prompt = (
             f"Here are {len(articles)} articles from {time_window_desc}:\n\n"
             + self._format_articles(articles)
@@ -120,12 +109,6 @@ class OpenAIDigestProvider(SummarizationProvider):
 
         try:
             client = self._get_client()
-            # Go through the compat shim so the call works on both older
-            # models (max_tokens) and newer ones (max_completion_tokens).
-            from newsflow.services._openai_compat import (
-                chat_completions_create,
-            )
-
             response = await chat_completions_create(
                 client,
                 model=self.model,

@@ -240,149 +240,28 @@ class SubscriptionRepository:
         )
         return subscription, True
 
-    async def update_subscription_settings(
-        self,
-        subscription_id: int,
-        translate: bool | None = None,
-        target_language: str | None = None,
-        show_summary: bool | None = None,
-        show_image: bool | None = None,
-    ) -> None:
-        """Update subscription settings."""
-        update_data: dict[str, Any] = {}
-        if translate is not None:
-            update_data["translate"] = translate
-        if target_language is not None:
-            update_data["target_language"] = target_language
-        if show_summary is not None:
-            update_data["show_summary"] = show_summary
-        if show_image is not None:
-            update_data["show_image"] = show_image
-
-        if update_data:
+    async def update_subscription(self, subscription_id: int, **values: Any) -> None:
+        """Set columns on one subscription. None is written as NULL — it clears the
+        column — so drop "leave unchanged" keys before calling."""
+        if values:
             await self.session.execute(
-                update(Subscription).where(Subscription.id == subscription_id).values(**update_data)
+                update(Subscription).where(Subscription.id == subscription_id).values(**values)
             )
 
-    async def set_subscription_filter(
-        self,
-        subscription_id: int,
-        filter_rule: dict[str, Any] | None,
-    ) -> None:
-        """Set or clear the filter_rule column. `None` clears the filter."""
-        await self.session.execute(
-            update(Subscription)
-            .where(Subscription.id == subscription_id)
-            .values(filter_rule=filter_rule)
-        )
-
-    async def set_subscription_template(
-        self,
-        subscription_id: int,
-        template: str | None,
-    ) -> None:
-        """Set or clear the message_template column. `None` clears it."""
-        await self.session.execute(
-            update(Subscription)
-            .where(Subscription.id == subscription_id)
-            .values(message_template=template)
-        )
-
-    async def set_channel_template(
-        self,
-        platform: str,
-        channel_id: str,
-        template: str | None,
+    async def update_channel_subscriptions(
+        self, platform: str, channel_id: str, *, feed_id: int | None = None, **values: Any
     ) -> int:
-        """Bulk set/clear message_template for every subscription in a
-        channel — paused ones included, so they don't resume with a stale
-        layout. Returns how many rows were updated."""
-        result = await self.session.execute(
-            update(Subscription)
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-            )
-            .values(message_template=template)
+        """Set columns on every subscription of a channel, paused ones included, or only
+        on its subscription to `feed_id`. Returns how many rows matched."""
+        if not values:
+            return 0
+        stmt = update(Subscription).where(
+            Subscription.platform == platform,
+            Subscription.platform_channel_id == channel_id,
         )
-        return rowcount(result)
-
-    async def set_subscription_mention(
-        self,
-        subscription_id: int,
-        mention: str | None,
-    ) -> None:
-        """Set or clear the mention column. `None` clears it."""
-        await self.session.execute(
-            update(Subscription).where(Subscription.id == subscription_id).values(mention=mention)
-        )
-
-    async def set_channel_mention(
-        self,
-        platform: str,
-        channel_id: str,
-        mention: str | None,
-    ) -> int:
-        """Bulk set/clear mention for every subscription in a channel
-        (paused included). Returns how many rows were updated."""
-        result = await self.session.execute(
-            update(Subscription)
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-            )
-            .values(mention=mention)
-        )
-        return rowcount(result)
-
-    async def set_subscription_thread(
-        self,
-        subscription_id: int,
-        thread_id: int | None,
-    ) -> None:
-        """Set or clear the message_thread_id column. `None` = default view."""
-        await self.session.execute(
-            update(Subscription)
-            .where(Subscription.id == subscription_id)
-            .values(message_thread_id=thread_id)
-        )
-
-    async def set_channel_thread(
-        self,
-        platform: str,
-        channel_id: str,
-        thread_id: int | None,
-    ) -> int:
-        """Bulk-point every subscription in a channel at a forum topic
-        (paused included). Returns how many rows were updated."""
-        result = await self.session.execute(
-            update(Subscription)
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-            )
-            .values(message_thread_id=thread_id)
-        )
-        return rowcount(result)
-
-    async def deactivate_subscription(
-        self,
-        platform: str,
-        channel_id: str,
-        feed_id: int,
-    ) -> bool:
-        """Deactivate a subscription. Dispatch skips inactive subscriptions
-        but the row is retained so it can be resumed without losing state."""
-        result = await self.session.execute(
-            update(Subscription)
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-                Subscription.feed_id == feed_id,
-            )
-            .values(is_active=False)
-        )
-        return rowcount(result) > 0
+        if feed_id is not None:
+            stmt = stmt.where(Subscription.feed_id == feed_id)
+        return rowcount(await self.session.execute(stmt.values(**values)))
 
     async def deactivate_channel(
         self,
@@ -411,44 +290,6 @@ class SubscriptionRepository:
             .values(is_active=False)
         )
         return rowcount(result)
-
-    async def activate_subscription(
-        self,
-        platform: str,
-        channel_id: str,
-        feed_id: int,
-    ) -> bool:
-        """Reactivate a previously paused subscription."""
-        result = await self.session.execute(
-            update(Subscription)
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-                Subscription.feed_id == feed_id,
-            )
-            .values(is_active=True)
-        )
-        return rowcount(result) > 0
-
-    async def set_silent(
-        self,
-        platform: str,
-        channel_id: str,
-        feed_id: int,
-        silent: bool,
-    ) -> bool:
-        """Toggle silent mode on a single subscription. Returns True if a
-        row was actually updated, False if no matching subscription exists."""
-        result = await self.session.execute(
-            update(Subscription)
-            .where(
-                Subscription.platform == platform,
-                Subscription.platform_channel_id == channel_id,
-                Subscription.feed_id == feed_id,
-            )
-            .values(silent=silent)
-        )
-        return rowcount(result) > 0
 
     async def set_channel_silent(
         self,

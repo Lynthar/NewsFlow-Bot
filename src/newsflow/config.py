@@ -308,6 +308,10 @@ class Settings(BaseSettings):
                 f"translation_enabled but provider {self.translation_provider!r} "
                 "has no API key — entries will be delivered untranslated"
             )
+        if self.cache_backend == "redis" and not self.redis_url:
+            warnings.append(
+                "cache_backend=redis without REDIS_URL — the in-memory cache is used instead"
+            )
         if self.api_enabled and not self.api_key and not self.ingest_api_key:
             warnings.append(
                 "api_enabled without API_KEY — write endpoints and /api/ingest "

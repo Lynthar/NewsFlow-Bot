@@ -57,7 +57,7 @@ async def reload_declarative_configs() -> ReloadResult:
             from newsflow.services.source_sync import SourceConfigError, sync_sources
 
             try:
-                await sync_sources(settings.sources_config_path)
+                await sync_sources(settings.sources_config_path, settings.webhooks_config_path)
                 applied.append("sources.yaml synced")
             except SourceConfigError as e:
                 errors.append(f"sources.yaml: {e}")

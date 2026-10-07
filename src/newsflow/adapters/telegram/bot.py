@@ -10,7 +10,7 @@ import re
 import time
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from telegram import (
     BotCommand,
@@ -66,8 +66,9 @@ from newsflow.core.message_template import (
 )
 from newsflow.core.telegram_markdown import markdown_to_telegram_html
 from newsflow.core.timeutil import relative_time
-from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
+from newsflow.core.timezones import parse_timezone
 from newsflow.models.base import get_session_factory
+from newsflow.models.digest import MAX_DIGEST_ARTICLES
 from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
 from newsflow.services.subscription_service import (
@@ -241,8 +242,9 @@ WELCOME_TEXT = (
     "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
     "<b>AI Digest:</b>\n"
     "/digest show — Show current digest config\n"
-    "/digest enable daily &lt;hour&gt; [lang] [tz] — Daily digest\n"
-    "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] — Weekly digest\n"
+    "/digest enable daily &lt;hour&gt; [lang] [tz] [options] — Daily digest\n"
+    "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] [options] — Weekly digest\n"
+    "  options: max_articles=N, include_filtered=on|off\n"
     "/digest disable — Turn off\n"
     "/digest now — Generate and send one immediately\n\n"
     "<b>Other:</b>\n"
@@ -925,12 +927,39 @@ _WEEKDAY_NAMES = {
 }
 
 
-def _parse_digest_enable_args(rest: list[str]) -> tuple[str, int, int | None, str, str]:
-    """Parse `/digest enable` args → (mode, hour, weekday, language, tz).
+class _DigestEnableArgs(NamedTuple):
+    mode: str
+    hour: int
+    weekday: int | None
+    language: str
+    tz_raw: str
+    options: dict[str, Any]
+
+
+def _parse_digest_option(token: str) -> tuple[str, Any]:
+    """Parse one `key=value` token of /digest enable. Raises ValueError with a
+    user-facing message."""
+    key, _, value = token.partition("=")
+    key = key.lower()
+    if key == "max_articles":
+        if not value.isdigit() or not 1 <= int(value) <= MAX_DIGEST_ARTICLES:
+            raise ValueError(f"max_articles must be 1-{MAX_DIGEST_ARTICLES}")
+        return key, int(value)
+    if key == "include_filtered":
+        flag = _parse_on_off(value)
+        if flag is None:
+            raise ValueError("include_filtered must be on or off")
+        return key, flag
+    raise ValueError(f"unknown option '{key}'")
+
+
+def _parse_digest_enable_args(rest: list[str]) -> _DigestEnableArgs:
+    """Parse `/digest enable` args.
 
     Forms: `daily <hour>` / `weekly <weekday> <hour>`, then up to two
     optional trailing tokens in either order — a language code and/or a
-    timezone. A token counts as a timezone only when it parses as one
+    timezone — plus any `max_articles=N` / `include_filtered=on|off`.
+    A token counts as a timezone only when it parses as one
     (Region/City, ±offset, or "utc"), so language codes can't be eaten.
     hour/weekday are LOCAL to the timezone (default UTC). Raises
     ValueError with a user-facing message.
@@ -959,6 +988,8 @@ def _parse_digest_enable_args(rest: list[str]) -> tuple[str, int, int | None, st
 
     if not 0 <= hour <= 23:
         raise ValueError("hour must be 0-23")
+    options = dict(_parse_digest_option(t) for t in tail if "=" in t)
+    tail = [t for t in tail if "=" not in t]
     if len(tail) > 2:
         raise ValueError("too many arguments")
 
@@ -974,7 +1005,7 @@ def _parse_digest_enable_args(rest: list[str]) -> tuple[str, int, int | None, st
             lang_seen = True
         else:
             raise ValueError(f"can't parse extra argument '{token}'")
-    return mode, hour, weekday, language, tz_raw
+    return _DigestEnableArgs(mode, hour, weekday, language, tz_raw, options)
 
 
 async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -984,15 +1015,17 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
       /digest show
       /digest disable
       /digest now
-      /digest enable daily <hour> [lang] [tz]
-      /digest enable weekly <weekday> <hour> [lang] [tz]
+      /digest enable daily <hour> [lang] [tz] [options]
+      /digest enable weekly <weekday> <hour> [lang] [tz] [options]
     """
     from datetime import datetime
 
-    from newsflow.repositories.digest_repository import (
-        ChannelDigestRepository,
+    from newsflow.services.digest_service import (
+        DigestService,
+        disable_digest,
+        enable_digest,
+        get_digest_config,
     )
-    from newsflow.services.digest_service import DigestService, enable_digest
     from newsflow.services.summarization import get_summarizer
 
     msg = update.message
@@ -1007,8 +1040,8 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await msg.reply_text(
             "Usage:\n"
             "/digest show\n"
-            "/digest enable daily &lt;hour&gt; [lang] [tz]\n"
-            "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz]\n"
+            "/digest enable daily &lt;hour&gt; [lang] [tz] [options]\n"
+            "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] [options]\n"
             "/digest disable\n"
             "/digest now",
             parse_mode="HTML",
@@ -1026,8 +1059,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if sub == "show":
         async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            config = await repo.get("telegram", chat_id)
+            config = await get_digest_config(session, "telegram", chat_id)
         if config is None:
             await msg.reply_text("No digest configured. Use /digest enable to set one up.")
             return
@@ -1047,13 +1079,11 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if sub == "disable":
         async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            config = await repo.get("telegram", chat_id)
-            if config is None:
-                await msg.reply_text("No digest configured for this chat.")
-                return
-            config.enabled = False
+            disabled = await disable_digest(session, "telegram", chat_id)
             await session.commit()
+        if not disabled:
+            await msg.reply_text("No digest configured for this chat.")
+            return
         await msg.reply_text("⏸ Digest disabled. Use /digest enable to turn it back on.")
         return
 
@@ -1099,15 +1129,17 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         #   enable weekly <weekday> <hour> [lang] [tz]
         if not rest:
             await msg.reply_text(
-                "Usage: /digest enable daily &lt;hour&gt; [lang] [tz]  OR\n"
-                "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz]\n\n"
-                "tz: IANA name (Asia/Shanghai) or offset (+8); default UTC.",
+                "Usage: /digest enable daily &lt;hour&gt; [lang] [tz] [options]  OR\n"
+                "/digest enable weekly &lt;weekday&gt; &lt;hour&gt; [lang] [tz] [options]\n\n"
+                "tz: IANA name (Asia/Shanghai) or offset (+8); default UTC.\n"
+                f"options: max_articles=1-{MAX_DIGEST_ARTICLES} (default 50), "
+                "include_filtered=on|off (default off); omitted ones keep their current value.",
                 parse_mode="HTML",
             )
             return
 
         try:
-            mode, hour, local_weekday, language, tz_raw = _parse_digest_enable_args(rest)
+            mode, hour, local_weekday, language, tz_raw, options = _parse_digest_enable_args(rest)
         except ValueError as e:
             await msg.reply_text(f"❌ {e}")
             return
@@ -1122,35 +1154,37 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         language = normalized_lang
 
-        # Given in the user's timezone, stored as UTC — converted once,
-        # here (see core/timezones.py for the DST caveat).
         tz = parse_timezone(tz_raw)
         assert tz is not None  # _parse_digest_enable_args validated it
-        utc_hour, utc_weekday = local_schedule_to_utc(hour, local_weekday, tz)
-
         async with session_factory() as session:
-            await enable_digest(
+            config = await enable_digest(
                 session,
                 platform="telegram",
                 channel_id=chat_id,
                 guild_id=None,
                 schedule=mode,
-                delivery_hour_utc=utc_hour,
-                delivery_weekday=utc_weekday,
+                local_hour=hour,
+                local_weekday=local_weekday,
+                tz=tz,
                 language=language,
+                **options,
             )
             await session.commit()
 
         local_desc = f"{hour:02d}:00 {tz_raw}" + (
             f" (weekday {local_weekday})" if local_weekday is not None else ""
         )
-        utc_desc = f"{utc_hour:02d}:00 UTC" + (
-            f" (weekday {utc_weekday})" if utc_weekday is not None else ""
+        utc_desc = f"{config.delivery_hour_utc:02d}:00 UTC" + (
+            f" (weekday {config.delivery_weekday})" if config.delivery_weekday is not None else ""
         )
         desc = f"{mode} at {local_desc}"
         if utc_desc != local_desc:
             desc += f" = {utc_desc}"
-        await msg.reply_text(f"✅ Digest enabled — {desc}, language {language}.")
+        filtered = "including" if config.include_filtered else "excluding"
+        await msg.reply_text(
+            f"✅ Digest enabled — {desc}, language {language}, up to "
+            f"{config.max_articles} articles, {filtered} filtered ones."
+        )
         return
 
     await msg.reply_text(

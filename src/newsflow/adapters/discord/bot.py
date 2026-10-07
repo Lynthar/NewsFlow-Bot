@@ -44,8 +44,9 @@ from newsflow.core.message_template import (
     validate_template,
 )
 from newsflow.core.timeutil import relative_time
-from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
+from newsflow.core.timezones import parse_timezone
 from newsflow.models.base import get_session_factory
+from newsflow.models.digest import MAX_DIGEST_ARTICLES
 from newsflow.models.subscription import Subscription
 from newsflow.services import SubscriptionService, get_dispatcher
 from newsflow.services.subscription_service import OpmlImportResult
@@ -1399,7 +1400,7 @@ class DigestCommands(commands.Cog):
         language: str = "zh-CN",
         timezone: str = "UTC",
         include_filtered: bool = False,
-        max_articles: app_commands.Range[int, 1, 200] = 50,
+        max_articles: app_commands.Range[int, 1, MAX_DIGEST_ARTICLES] = 50,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -1420,8 +1421,6 @@ class DigestCommands(commands.Cog):
             return
         language = normalized_lang
 
-        # The schedule is given in the user's timezone but stored as UTC —
-        # converted once, here (see core/timezones.py for the DST caveat).
         tz = parse_timezone(timezone)
         if tz is None:
             await interaction.followup.send(
@@ -1431,20 +1430,20 @@ class DigestCommands(commands.Cog):
             )
             return
         local_weekday = int(weekday) if schedule.value == "weekly" and weekday is not None else None
-        utc_hour, utc_weekday = local_schedule_to_utc(int(hour), local_weekday, tz)
 
         from newsflow.services.digest_service import enable_digest
 
         session_factory = get_session_factory()
         async with session_factory() as session:
-            await enable_digest(
+            config = await enable_digest(
                 session,
                 platform="discord",
                 channel_id=str(interaction.channel_id),
                 guild_id=(str(interaction.guild_id) if interaction.guild_id else None),
                 schedule=schedule.value,
-                delivery_hour_utc=utc_hour,
-                delivery_weekday=utc_weekday,
+                local_hour=int(hour),
+                local_weekday=local_weekday,
+                tz=tz,
                 language=language,
                 include_filtered=bool(include_filtered),
                 max_articles=int(max_articles),
@@ -1454,8 +1453,8 @@ class DigestCommands(commands.Cog):
         local_desc = f"{int(hour):02d}:00 {timezone}" + (
             f" (weekday {local_weekday})" if local_weekday is not None else ""
         )
-        utc_desc = f"{utc_hour:02d}:00 UTC" + (
-            f" (weekday {utc_weekday})" if utc_weekday is not None else ""
+        utc_desc = f"{config.delivery_hour_utc:02d}:00 UTC" + (
+            f" (weekday {config.delivery_weekday})" if config.delivery_weekday is not None else ""
         )
         lines = [
             "✅ Digest enabled",
@@ -1480,22 +1479,17 @@ class DigestCommands(commands.Cog):
     async def digest_disable(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        from newsflow.repositories.digest_repository import (
-            ChannelDigestRepository,
-        )
+        from newsflow.services.digest_service import disable_digest
 
         session_factory = get_session_factory()
         async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            config = await repo.get("discord", str(interaction.channel_id))
-            if config is None:
-                await interaction.followup.send(
-                    "No digest configured for this channel.",
-                    ephemeral=True,
-                )
-                return
-            config.enabled = False
+            disabled = await disable_digest(session, "discord", str(interaction.channel_id))
             await session.commit()
+        if not disabled:
+            await interaction.followup.send(
+                "No digest configured for this channel.", ephemeral=True
+            )
+            return
 
         await interaction.followup.send(
             "⏸ Digest disabled. Use `/digest enable` to turn it back on.",
@@ -1509,14 +1503,11 @@ class DigestCommands(commands.Cog):
     async def digest_show(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
-        from newsflow.repositories.digest_repository import (
-            ChannelDigestRepository,
-        )
+        from newsflow.services.digest_service import get_digest_config
 
         session_factory = get_session_factory()
         async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            config = await repo.get("discord", str(interaction.channel_id))
+            config = await get_digest_config(session, "discord", str(interaction.channel_id))
 
         if config is None:
             embed = discord.Embed(

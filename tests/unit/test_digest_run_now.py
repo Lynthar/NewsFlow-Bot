@@ -3,7 +3,7 @@ now handlers: whether an empty window consumes the slot, where the chunk budget 
 what each failure reports. Real database and dispatcher; the adapter and the LLM are mocked."""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,9 @@ from newsflow.repositories.digest_repository import ChannelDigestRepository
 from newsflow.services.digest_service import (
     DigestService,
     _most_recent_slot,
+    disable_digest,
     enable_digest,
+    get_digest_config,
     is_due,
 )
 from newsflow.services.dispatcher import Dispatcher
@@ -268,13 +270,63 @@ async def test_enabling_counts_the_current_slot_as_served(db):
     now = datetime.now(UTC)
     async with db() as session:
         config = await enable_digest(
-            session, "discord", CHANNEL, None, schedule="daily", delivery_hour_utc=now.hour
+            session,
+            "discord",
+            CHANNEL,
+            None,
+            schedule="daily",
+            local_hour=now.hour,
+            local_weekday=None,
+            tz=UTC,
         )
         await session.commit()
 
     assert is_due(config, now) is False
     next_slot = _most_recent_slot(config, now) + timedelta(days=1)
     assert is_due(config, next_slot) is True
+
+
+async def test_enabling_stores_the_local_schedule_as_utc_and_keeps_unset_options(db):
+    async with db() as session:
+        await enable_digest(
+            session,
+            "discord",
+            CHANNEL,
+            None,
+            schedule="daily",
+            local_hour=21,
+            local_weekday=None,
+            tz=timezone(timedelta(hours=8)),
+            max_articles=30,
+            include_filtered=True,
+        )
+        config = await enable_digest(
+            session,
+            "discord",
+            CHANNEL,
+            None,
+            schedule="daily",
+            local_hour=9,
+            local_weekday=None,
+            tz=UTC,
+        )
+        await session.commit()
+
+    assert config.delivery_hour_utc == 9
+    assert (config.max_articles, config.include_filtered) == (30, True)
+
+
+async def test_disabling_keeps_the_settings_and_reports_a_missing_digest(db):
+    await _configured(db)
+    async with db() as session:
+        assert await disable_digest(session, "discord", "no-such-channel") is False
+        assert await disable_digest(session, "discord", CHANNEL) is True
+        await session.commit()
+        config = await get_digest_config(session, "discord", CHANNEL)
+
+    assert config is not None
+    assert config.enabled is False
+    assert config.schedule == "daily"
 
 
 # ─── runs that overlap ───────────────────────────────────────────────────────

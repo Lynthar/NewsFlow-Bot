@@ -18,6 +18,9 @@ from newsflow.models.base import Base
 # The longest window a digest reads: a weekly digest covers the 7 days before it.
 WEEKLY_WINDOW = timedelta(days=7)
 
+# The most articles one digest may cover, as both /digest enable commands accept.
+MAX_DIGEST_ARTICLES = 200
+
 
 class ChannelDigest(Base):
     __tablename__ = "channel_digests"

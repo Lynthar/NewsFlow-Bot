@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from sqlalchemy import String
+from sqlalchemy.orm import QueryableAttribute
+
+from newsflow.core.languages import LANGUAGE_CODE_EXAMPLES, normalize_language_code
 
 
 def load_yaml(exc: type[Exception], path: Path) -> Any:
@@ -48,3 +52,28 @@ def require_bool(exc: type[Exception], context: str, key: str, value: Any, defau
         f"{context}: `{key}` must be a YAML boolean (true/false), got {value!r} "
         f'— remove the quotes if you wrote "false"'
     )
+
+
+def require_fits(
+    exc: type[Exception], context: str, key: str, value: str, column: QueryableAttribute[Any]
+) -> str:
+    """`value` when it fits the column it is stored in. Longer, SQLite keeps it whole and
+    Postgres rejects the whole sync, crashing startup without naming the key."""
+    column_type = column.type
+    assert isinstance(column_type, String) and column_type.length is not None
+    if len(value) > column_type.length:
+        raise exc(f"{context}: `{key}` is longer than {column_type.length} characters")
+    return value
+
+
+def require_language(exc: type[Exception], context: str, value: Any, default: str) -> str:
+    """The language code normalized the way every command stores it (zh-cn → zh-CN)."""
+    if value is None:
+        return default
+    code = normalize_language_code(str(value))
+    if code is None:
+        raise exc(
+            f"{context}: `language` {value!r} is not a language code "
+            f"(e.g. {LANGUAGE_CODE_EXAMPLES})"
+        )
+    return code

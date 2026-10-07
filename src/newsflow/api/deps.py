@@ -6,8 +6,10 @@ Provides common dependencies for API routes.
 
 import hmac
 from collections.abc import AsyncGenerator
+from typing import Any
 
 from fastapi import Header, HTTPException, status
+from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.config import get_settings
@@ -99,3 +101,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+# SQLAlchemy 2.0 types select(func.count()) as Select[tuple[int]], 2.1 as Select[int].
+async def count(db: AsyncSession, stmt: Select[Any]) -> int:
+    return int(await db.scalar(stmt) or 0)

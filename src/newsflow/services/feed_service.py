@@ -3,6 +3,7 @@ Feed service - Business logic for feed management.
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -173,8 +174,9 @@ class FeedService:
                 last_modified=result.last_modified,
             )
 
-            # Store entries
-            entries = await self.repo.create_entries_bulk(feed.id, result.entries)
+            entries = await self.repo.create_entries_bulk(
+                feed.id, result.entries, newest_first=True
+            )
         except IntegrityError:
             await self.session.rollback()
             existing = await self.repo.get_feed_by_url(url)
@@ -289,7 +291,9 @@ class FeedService:
 
         await self.repo.record_full_fetch(feed.id, [entry["guid"] for entry in result.entries])
         if result.entries:
-            new_entries = await self.repo.create_entries_bulk(feed.id, result.entries)
+            new_entries = await self.repo.create_entries_bulk(
+                feed.id, result.entries, newest_first=True
+            )
             if first_success and new_entries:
                 # A feed declared in YAML is subscribed before it is ever fetched, so its
                 # subscriptions could not be seeded then; what predates them is backlog.
@@ -423,3 +427,21 @@ class FeedService:
     async def get_feed_by_url(self, url: str) -> Feed | None:
         """Get a feed by URL."""
         return await self.repo.get_feed_by_url(url)
+
+    async def get_feed(self, feed_id: int) -> Feed | None:
+        return await self.repo.get_feed_by_id(feed_id)
+
+    async def list_feeds(self, *, active_only: bool = False) -> Sequence[Feed]:
+        return await self.repo.get_feeds(active_only=active_only)
+
+    async def count_entries(self, feed_id: int) -> int:
+        return await self.repo.count_entries(feed_id)
+
+    async def delete_feed(self, feed_id: int) -> bool:
+        """Delete a feed and all its entries."""
+        return await self.repo.delete_feed(feed_id)
+
+    async def add_entries(self, feed_id: int, entries: list[dict[str, Any]]) -> list[FeedEntry]:
+        """Store entries pushed to a feed, oldest first, skipping guids it already has;
+        returns the new ones."""
+        return await self.repo.create_entries_bulk(feed_id, entries)

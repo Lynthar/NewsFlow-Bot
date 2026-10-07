@@ -169,6 +169,32 @@ async def test_digest_broken_template_falls_back_to_default():
     assert "editor" in sent_system.lower()
 
 
+def _client_answering(text: str) -> MagicMock:
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = text
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=resp)
+    return client
+
+
+async def test_a_stray_brace_in_either_prompt_falls_back_instead_of_failing():
+    stray = "Translate to {target_name} }"
+    translator = OpenAITranslationProvider(api_key="x", model="m", system_prompt_template=stray)
+    translator._client = _client_answering("ok")
+    digester = OpenAIDigestProvider(api_key="x", model="m", system_prompt_template=stray)
+    digester._client = _client_answering("ok")
+    article = DigestArticle(title="T", summary="S", link="https://x", source="X", published_at=None)
+
+    translated = await translator.translate("hi", target_lang="zh-Hant")
+    digest = await digester.generate_digest([article], language="zh-Hant", time_window_desc="d")
+
+    assert translated.success and digest.success
+    for client in (translator._client, digester._client):
+        system = client.chat.completions.create.await_args.kwargs["messages"][0]["content"]
+        assert "Traditional Chinese" in system
+
+
 async def test_digest_truncates_summary_to_max_input_chars():
     """Per-article summaries are truncated to the configured max_input_chars
     before being fed to the LLM prompt."""

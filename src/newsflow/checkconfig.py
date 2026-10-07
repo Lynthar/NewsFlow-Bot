@@ -84,8 +84,11 @@ def _check_webhooks_yaml(settings: Settings, errors: list[str], infos: list[str]
 
 
 def _check_sources_yaml(settings: Settings, errors: list[str], infos: list[str]) -> None:
-    from newsflow.services.source_sync import SourceConfigError, parse_sources_yaml
-    from newsflow.services.webhook_sync import WebhookConfigError, parse_webhooks_yaml
+    from newsflow.services.source_sync import (
+        SourceConfigError,
+        parse_sources_yaml,
+        undeclared_webhook_destinations,
+    )
 
     path = settings.sources_config_path
     if not path.is_file():
@@ -97,30 +100,8 @@ def _check_sources_yaml(settings: Settings, errors: list[str], infos: list[str])
         errors.append(f"sources.yaml: {e}")
         return
     infos.append(f"sources.yaml: {len(sources)} source(s)")
-
-    # Cross-file: webhook subscribers must point at declared destinations.
-    webhook_refs = {
-        (src.name, sub.channel)
-        for src in sources
-        for sub in src.subscribers
-        if sub.platform == "webhook"
-    }
-    if not webhook_refs:
-        return
-    known: set[str] = set()
-    wh_path = settings.webhooks_config_path
-    if wh_path.is_file():
-        try:
-            known = set(parse_webhooks_yaml(wh_path).destinations)
-        except WebhookConfigError:
-            return  # already reported as its own error above
-    for source_name, dest in sorted(webhook_refs):
-        if dest not in known:
-            errors.append(
-                f"sources.yaml: source {source_name!r} subscribes webhook "
-                f"destination {dest!r}, which webhooks.yaml does not declare "
-                "— it would sync but never deliver"
-            )
+    for problem in undeclared_webhook_destinations(sources, settings.webhooks_config_path):
+        errors.append(f"sources.yaml: {problem}")
 
 
 def main() -> int:

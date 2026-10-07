@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from newsflow.api.deps import get_db, require_api_key
 from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.models.feed import Feed
-from newsflow.repositories.feed_repository import FeedRepository
 from newsflow.services.feed_service import FeedService
 
 router = APIRouter()
@@ -85,10 +84,10 @@ class MessageResponse(BaseModel):
 
 async def _feed_to_response(
     feed: Feed,
-    repo: FeedRepository,
+    service: FeedService,
 ) -> FeedResponse:
     """Convert a Feed model to response."""
-    entry_count = await repo.count_entries(feed.id)
+    entry_count = await service.count_entries(feed.id)
     return FeedResponse(
         id=feed.id,
         url=feed.url,
@@ -118,19 +117,12 @@ async def list_feeds(
     Args:
         active_only: Only return active feeds
     """
-    repo = FeedRepository(db)
-
-    if active_only:
-        feeds = await repo.get_all_active_feeds()
-    else:
-        from sqlalchemy import select
-
-        result = await db.execute(select(Feed))
-        feeds = result.scalars().all()
+    service = FeedService(db)
+    feeds = await service.list_feeds(active_only=active_only)
 
     feed_responses = []
     for feed in feeds:
-        response = await _feed_to_response(feed, repo)
+        response = await _feed_to_response(feed, service)
         feed_responses.append(response)
 
     return FeedListResponse(feeds=feed_responses, total=len(feed_responses))
@@ -142,8 +134,8 @@ async def get_feed(
     db: AsyncSession = Depends(get_db),
 ) -> FeedResponse:
     """Get a specific feed by ID."""
-    repo = FeedRepository(db)
-    feed = await repo.get_feed_by_id(feed_id)
+    service = FeedService(db)
+    feed = await service.get_feed(feed_id)
 
     if not feed:
         raise HTTPException(
@@ -151,7 +143,7 @@ async def get_feed(
             detail=f"Feed {feed_id} not found",
         )
 
-    return await _feed_to_response(feed, repo)
+    return await _feed_to_response(feed, service)
 
 
 @router.post("", response_model=FeedResponse, status_code=status.HTTP_201_CREATED)
@@ -166,7 +158,6 @@ async def create_feed(
     The feed URL will be validated and fetched.
     """
     service = FeedService(db)
-    repo = FeedRepository(db)
 
     result = await service.add_feed(str(feed_data.url))
 
@@ -177,7 +168,7 @@ async def create_feed(
         )
 
     assert result.feed is not None
-    return await _feed_to_response(result.feed, repo)
+    return await _feed_to_response(result.feed, service)
 
 
 @router.delete("/{feed_id}", response_model=MessageResponse)
@@ -187,16 +178,16 @@ async def delete_feed(
     _: None = Depends(require_api_key),
 ) -> MessageResponse:
     """Delete a feed and all its entries."""
-    repo = FeedRepository(db)
+    service = FeedService(db)
 
-    feed = await repo.get_feed_by_id(feed_id)
+    feed = await service.get_feed(feed_id)
     if not feed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Feed {feed_id} not found",
         )
 
-    await repo.delete_feed(feed_id)
+    await service.delete_feed(feed_id)
 
     return MessageResponse(message=f"Feed {feed_id} deleted successfully")
 
@@ -208,10 +199,9 @@ async def refresh_feed(
     _: None = Depends(require_api_key),
 ) -> FeedResponse:
     """Force refresh a feed."""
-    repo = FeedRepository(db)
     service = FeedService(db)
 
-    feed = await repo.get_feed_by_id(feed_id)
+    feed = await service.get_feed(feed_id)
     if not feed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -232,7 +222,7 @@ async def refresh_feed(
     # /feed resume. After db.refresh so the reload cannot discard it; get_db commits.
     if not feed.is_active:
         feed.reactivate()
-    return await _feed_to_response(feed, repo)
+    return await _feed_to_response(feed, service)
 
 
 @router.post("/test", response_model=FeedTestResponse)

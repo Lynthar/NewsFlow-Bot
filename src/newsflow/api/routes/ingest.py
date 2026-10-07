@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_ingest_key
-from newsflow.repositories.feed_repository import FeedRepository
+from newsflow.services.feed_service import FeedService
 
 router = APIRouter()
 
@@ -88,15 +88,15 @@ async def ingest(
     """Accept pushed entries for a ``webhook_inbound`` source, looked up by the
     ``{source}`` slug (= the feed's url). Entries are written deduped-by-guid;
     the dispatch loop delivers them to the source's subscribers."""
-    repo = FeedRepository(db)
-    feed = await repo.get_feed_by_url(source)
+    service = FeedService(db)
+    feed = await service.get_feed_by_url(source)
     if feed is None or feed.source_type != "webhook_inbound":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No inbound source named {source!r}",
         )
     entry_dicts = [_to_entry_dict(e, feed.url) for e in payload.entries]
-    created = await repo.create_entries_bulk(feed.id, entry_dicts)
+    created = await service.add_entries(feed.id, entry_dicts)
 
     if created:
         # Commit before triggering so the spawned round sees the new rows. A full

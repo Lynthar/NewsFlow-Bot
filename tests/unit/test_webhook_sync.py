@@ -211,6 +211,30 @@ def test_parse_rejects_a_url_that_is_not_http_and_does_not_echo_it(tmp_path, url
     assert url not in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    ("destination", "key"),
+    [
+        ("n" * 65 + ":\n    url: https://e.com/a", "name"),
+        ("a:\n    url: https://e.com/a\n    secret: '" + "s" * 257 + "'", "secret"),
+        ("a:\n    url: https://e.com/" + "x" * 2048, "url"),
+    ],
+)
+def test_parse_rejects_a_value_wider_than_its_column(tmp_path, destination, key):
+    # SQLite would keep it whole; Postgres rejects the sync and startup crashes unnamed.
+    path = _write(tmp_path, f"destinations:\n  {destination}\n")
+    with pytest.raises(WebhookConfigError, match=f"`{key}` is longer than"):
+        parse_webhooks_yaml(path)
+
+
+def test_parse_normalizes_the_language_and_rejects_a_non_code(tmp_path):
+    ok = _write(tmp_path, "destinations:\n  a:\n    url: https://e.com/a\n    language: zh-cn\n")
+    assert parse_webhooks_yaml(ok).destinations["a"].language == "zh-CN"
+
+    bad = _write(tmp_path, "destinations:\n  a:\n    url: https://e.com/a\n    language: chinese\n")
+    with pytest.raises(WebhookConfigError, match="not a language code"):
+        parse_webhooks_yaml(bad)
+
+
 def test_parse_keeps_env_references_unexpanded(tmp_path, monkeypatch):
     monkeypatch.setenv("HOOK_URL", "https://hooks.example.com/T0/TOKEN")
     monkeypatch.setenv("HOOK_SECRET", "s3cret")

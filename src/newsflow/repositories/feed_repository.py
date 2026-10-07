@@ -119,10 +119,11 @@ class FeedRepository:
         result = await self.session.execute(select(Feed).where(Feed.url == url))
         return result.scalar_one_or_none()
 
-    async def get_all_active_feeds(self) -> Sequence[Feed]:
-        """Get all active feeds."""
-        result = await self.session.execute(select(Feed).where(Feed.is_active.is_(True)))
-        return result.scalars().all()
+    async def get_feeds(self, *, active_only: bool = False) -> Sequence[Feed]:
+        stmt = select(Feed)
+        if active_only:
+            stmt = stmt.where(Feed.is_active.is_(True))
+        return (await self.session.execute(stmt)).scalars().all()
 
     async def get_feeds_due_for_fetch(self) -> Sequence[Feed]:
         """Active feeds that aren't currently inside a backoff window."""
@@ -270,6 +271,8 @@ class FeedRepository:
         self,
         feed_id: int,
         entries_data: list[dict[str, Any]],
+        *,
+        newest_first: bool = False,
     ) -> list[FeedEntry]:
         """
         Bulk create entries, skipping existing ones.
@@ -278,6 +281,9 @@ class FeedRepository:
             feed_id: The feed ID
             entries_data: List of entry dicts with keys:
                 guid, title, link, summary, content, author, published_at, image_url
+            newest_first: `entries_data` is a fetched document, listed newest first. A
+                guid listed twice keeps its first listing, and rows are stored oldest
+                first so id order follows publication — all that orders undated entries.
 
         Returns:
             List of newly created entries
@@ -320,7 +326,7 @@ class FeedRepository:
             )
 
         if new_entries:
-            self.session.add_all(new_entries)
+            self.session.add_all(new_entries[::-1] if newest_first else new_entries)
             await self.session.flush()
 
         return new_entries

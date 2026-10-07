@@ -60,7 +60,7 @@ def test_utc_schedule_passes_through():
 
 
 def test_tg_enable_daily_defaults_to_utc_and_zh():
-    assert _parse_digest_enable_args(["daily", "9"]) == ("daily", 9, None, "zh-CN", "UTC")
+    assert _parse_digest_enable_args(["daily", "9"]) == ("daily", 9, None, "zh-CN", "UTC", {})
 
 
 def test_tg_enable_tail_tokens_lang_and_tz_in_either_order():
@@ -70,6 +70,7 @@ def test_tg_enable_tail_tokens_lang_and_tz_in_either_order():
         None,
         "en",
         "Asia/Shanghai",
+        {},
     )
     assert _parse_digest_enable_args(["daily", "21", "+8", "en"]) == (
         "daily",
@@ -77,6 +78,7 @@ def test_tg_enable_tail_tokens_lang_and_tz_in_either_order():
         None,
         "en",
         "+8",
+        {},
     )
 
 
@@ -87,6 +89,7 @@ def test_tg_enable_weekly_with_weekday_name_and_offset():
         0,
         "zh-CN",
         "+8",
+        {},
     )
 
 
@@ -97,6 +100,22 @@ def test_tg_enable_rejects_bad_hour_and_extra_tokens():
         _parse_digest_enable_args(["daily", "9", "en", "de", "fr"])
     with pytest.raises(ValueError):
         _parse_digest_enable_args(["daily", "9", "en", "de"])  # two languages
+
+
+def test_tg_enable_takes_the_options_discord_has_anywhere_in_the_tail():
+    args = _parse_digest_enable_args(
+        ["daily", "9", "max_articles=30", "en", "include_filtered=on", "+8"]
+    )
+    assert (args.language, args.tz_raw) == ("en", "+8")
+    assert args.options == {"max_articles": 30, "include_filtered": True}
+
+
+@pytest.mark.parametrize(
+    "token", ["max_articles=0", "max_articles=201", "include_filtered=maybe", "size=3"]
+)
+def test_tg_enable_rejects_a_bad_option(token):
+    with pytest.raises(ValueError):
+        _parse_digest_enable_args(["daily", "9", token])
 
 
 # ===== Discord /digest enable parameter surface =====

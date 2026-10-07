@@ -37,7 +37,14 @@ from newsflow.services._owned_subscriptions import (
     DeclaredSubscription,
     reconcile_owned_subscriptions,
 )
-from newsflow.services._yamlcfg import load_yaml, reject_unknown_keys, require_bool, yaml_keys
+from newsflow.services._yamlcfg import (
+    load_yaml,
+    reject_unknown_keys,
+    require_bool,
+    require_fits,
+    require_language,
+    yaml_keys,
+)
 from newsflow.services.feed_service import FeedService
 
 logger = logging.getLogger(__name__)
@@ -121,11 +128,14 @@ def _parse_destinations(
             raise WebhookConfigError(
                 f"destination {name!r}: must be a mapping, got {type(cfg).__name__}"
             )
-        reject_unknown_keys(WebhookConfigError, f"destination {name!r}", cfg, _DESTINATION_KEYS)
+        context = f"destination {name!r}"
+        reject_unknown_keys(WebhookConfigError, context, cfg, _DESTINATION_KEYS)
+        require_fits(WebhookConfigError, context, "name", name, WebhookDestination.name)
 
         url = cfg.get("url")
         if not url or not isinstance(url, str):
             raise WebhookConfigError(f"destination {name!r}: missing or non-string `url`")
+        require_fits(WebhookConfigError, context, "url", url, WebhookDestination.url)
         # The message leaves the URL out: these carry their token in the path or query.
         if urlsplit(_resolved(name, "url", url)).scheme not in ("http", "https"):
             raise WebhookConfigError(f"destination {name!r}: `url` must be http:// or https://")
@@ -143,6 +153,7 @@ def _parse_destinations(
             # and silently produce a different HMAC key than intended.
             raise WebhookConfigError(f"destination {name!r}: `secret` must be a string (quote it)")
         if secret is not None:
+            require_fits(WebhookConfigError, context, "secret", secret, WebhookDestination.secret)
             _resolved(name, "secret", secret)
 
         headers = cfg.get("headers")
@@ -185,7 +196,7 @@ def _parse_destinations(
                 cfg.get("translate"),
                 False,
             ),
-            language=str(cfg.get("language", "zh-CN")),
+            language=require_language(WebhookConfigError, context, cfg.get("language"), "zh-CN"),
         )
     return out
 
@@ -226,6 +237,10 @@ def _parse_subscriptions(
                 raise WebhookConfigError(
                     f"subscriptions[{dest_name!r}]: feed URL must be a string, got {u!r}"
                 )
+            context = f"subscriptions[{dest_name!r}]"
+            require_fits(
+                WebhookConfigError, context, "feed URL", expand_source_shortcut(u), Feed.url
+            )
             if u not in seen:
                 seen.add(u)
                 deduped.append(u)

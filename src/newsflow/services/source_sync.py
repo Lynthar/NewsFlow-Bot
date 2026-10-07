@@ -30,7 +30,14 @@ from newsflow.services._owned_subscriptions import (
     DeclaredSubscription,
     reconcile_owned_subscriptions,
 )
-from newsflow.services._yamlcfg import load_yaml, reject_unknown_keys, require_bool, yaml_keys
+from newsflow.services._yamlcfg import (
+    load_yaml,
+    reject_unknown_keys,
+    require_bool,
+    require_fits,
+    require_language,
+    yaml_keys,
+)
 from newsflow.services.feed_service import FeedService, SourceFeedConflictError
 
 logger = logging.getLogger(__name__)
@@ -103,6 +110,7 @@ def parse_sources_yaml(path: Path) -> list[SourceCfg]:
         url = cfg.get("url")
         if not url or not isinstance(url, str):
             raise SourceConfigError(f"source {name!r}: missing or non-string `url`")
+        require_fits(SourceConfigError, f"source {name!r}", "url", url, Feed.url)
         if url in seen_urls:
             raise SourceConfigError(f"source {name!r}: duplicate url {url!r}")
         seen_urls.add(url)
@@ -164,6 +172,7 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
                 f"source {source_name!r}: subscriber needs a non-empty string `channel`"
             )
         ctx = f"source {source_name!r} subscriber"
+        require_fits(SourceConfigError, ctx, "channel", channel, Subscription.platform_channel_id)
         out.append(
             SubscriberCfg(
                 platform=platform,
@@ -171,7 +180,7 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
                 translate=require_bool(
                     SourceConfigError, ctx, "translate", item.get("translate"), False
                 ),
-                language=str(item.get("language", "zh-CN")),
+                language=require_language(SourceConfigError, ctx, item.get("language"), "zh-CN"),
                 silent=require_bool(SourceConfigError, ctx, "silent", item.get("silent"), False),
             )
         )
@@ -181,10 +190,48 @@ def _parse_subscribers(source_name: str, raw: Any) -> list[SubscriberCfg]:
 # ─── sync ────────────────────────────────────────────────────────────────────
 
 
-async def sync_sources(path: Path) -> None:
+def undeclared_webhook_destinations(sources: list[SourceCfg], webhooks_path: Path) -> list[str]:
+    """One message per webhook subscriber naming a destination webhooks.yaml does not
+    declare: it would sync but never deliver. An unparsable webhooks.yaml is reported as
+    that file's own error, so nothing is checked against it."""
+    from newsflow.services.webhook_sync import WebhookConfigError, parse_webhooks_yaml
+
+    refs = sorted(
+        {
+            (src.name, sub.channel)
+            for src in sources
+            for sub in src.subscribers
+            if sub.platform == "webhook"
+        }
+    )
+    if not refs:
+        return []
+    declared: set[str] = set()
+    if webhooks_path.is_file():
+        try:
+            declared = set(parse_webhooks_yaml(webhooks_path).destinations)
+        except WebhookConfigError:
+            return []
+    return [
+        f"source {name!r} subscribes webhook destination {dest!r}, which webhooks.yaml "
+        "does not declare — it would sync but never deliver"
+        for name, dest in refs
+        if dest not in declared
+    ]
+
+
+async def sync_sources(path: Path, webhooks_path: Path) -> None:
     """Entry point: parse the file and reconcile non-RSS feeds + their
-    subscriptions. Idempotent."""
+    subscriptions. Idempotent.
+
+    Raises:
+        SourceConfigError: the file is invalid, or a webhook subscriber names a
+            destination webhooks.yaml does not declare. Nothing is written then.
+    """
     sources = parse_sources_yaml(path)
+    undeclared = undeclared_webhook_destinations(sources, webhooks_path)
+    if undeclared:
+        raise SourceConfigError("; ".join(undeclared))
     logger.info(
         f"source_sync: {len(sources)} source(s), "
         f"{sum(len(s.subscribers) for s in sources)} subscription(s) in {path}"

@@ -11,14 +11,12 @@ scrape configs pass the key via ``authorization: {credentials: <API_KEY>}``.
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.api.deps import get_db
+from newsflow.api.deps import count, get_db
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import Subscription
@@ -34,31 +32,26 @@ def _metric(name: str, kind: str, help_text: str, value: int) -> str:
     return f"# HELP {name} {help_text}\n# TYPE {name} {kind}\n{name} {value}\n"
 
 
-# SQLAlchemy 2.0 types select(func.count()) as Select[tuple[int]], 2.1 as Select[int].
-async def _count(db: AsyncSession, stmt: Select[Any]) -> int:
-    return int(await db.scalar(stmt) or 0)
-
-
 @router.get("/metrics")
 async def metrics(db: AsyncSession = Depends(get_db)) -> PlainTextResponse:
     totals = get_dispatcher().totals
 
-    feeds_total = await _count(db, select(func.count()).select_from(Feed))
-    feeds_active = await _count(
+    feeds_total = await count(db, select(func.count()).select_from(Feed))
+    feeds_active = await count(
         db, select(func.count()).select_from(Feed).where(Feed.is_active.is_(True))
     )
-    subs_total = await _count(db, select(func.count()).select_from(Subscription))
-    subs_active = await _count(
+    subs_total = await count(db, select(func.count()).select_from(Subscription))
+    subs_active = await count(
         db,
         select(func.count()).select_from(Subscription).where(Subscription.is_active.is_(True)),
     )
-    entries_total = await _count(db, select(func.count()).select_from(FeedEntry))
-    digests_enabled = await _count(
+    entries_total = await count(db, select(func.count()).select_from(FeedEntry))
+    digests_enabled = await count(
         db,
         select(func.count()).select_from(ChannelDigest).where(ChannelDigest.enabled.is_(True)),
     )
-    dests_total = await _count(db, select(func.count()).select_from(WebhookDestination))
-    dests_active = await _count(
+    dests_total = await count(db, select(func.count()).select_from(WebhookDestination))
+    dests_active = await count(
         db,
         select(func.count())
         .select_from(WebhookDestination)

@@ -81,6 +81,29 @@ def test_parse_bad_subscriber_platform_fails(tmp_path):
         parse_sources_yaml(p)
 
 
+def _with_subscriber(tmp_path, subscriber: str):
+    return _write(
+        tmp_path,
+        "sources:\n  x:\n    url: https://e/x\n    type: json_api\n"
+        f"    subscribers:\n      - platform: discord\n        {subscriber}\n",
+    )
+
+
+def test_parse_rejects_a_channel_wider_than_its_column(tmp_path):
+    p = _with_subscriber(tmp_path, f"channel: '{'9' * 65}'")
+    with pytest.raises(SourceConfigError, match="`channel` is longer than 64"):
+        parse_sources_yaml(p)
+
+
+def test_parse_normalizes_the_language_and_rejects_a_non_code(tmp_path):
+    p = _with_subscriber(tmp_path, "channel: '1'\n        language: ZH-tw")
+    assert parse_sources_yaml(p)[0].subscribers[0].language == "zh-TW"
+
+    p = _with_subscriber(tmp_path, "channel: '1'\n        language: chinese")
+    with pytest.raises(SourceConfigError, match="not a language code"):
+        parse_sources_yaml(p)
+
+
 def test_parse_rejects_unknown_source_key(tmp_path):
     # Typo'd keys used to vanish silently; now they abort startup.
     p = _write(

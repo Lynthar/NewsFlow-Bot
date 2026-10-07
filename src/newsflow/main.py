@@ -302,7 +302,7 @@ async def prepare_state(settings: Settings) -> None:
         from newsflow.services.source_sync import SourceConfigError, sync_sources
 
         try:
-            await sync_sources(settings.sources_config_path)
+            await sync_sources(settings.sources_config_path, settings.webhooks_config_path)
         except SourceConfigError as e:
             logger.error(f"sources.yaml is invalid; aborting startup. {e}")
             sys.exit(1)

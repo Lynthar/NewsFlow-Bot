@@ -334,29 +334,48 @@ async def test_count_unsent_is_zero_for_an_unknown_subscription(session):
     assert await repo.count_unsent_entries_for_subscription(999_999) == 0
 
 
-async def test_set_silent_flips_single_subscription(session):
+async def test_update_channel_subscriptions_narrowed_to_one_feed(session):
     feed = await _make_feed_with_entries(session, 0)
+    other = Feed(url="https://example.com/other")
+    session.add(other)
+    await session.flush()
     sub = await _make_subscription(session, feed.id)
+    neighbour = await _make_subscription(session, other.id)
     repo = SubscriptionRepository(session)
 
-    assert sub.silent is False  # default
-
-    flipped = await repo.set_silent(
-        platform=sub.platform,
-        channel_id=sub.platform_channel_id,
-        feed_id=feed.id,
-        silent=True,
+    matched = await repo.update_channel_subscriptions(
+        sub.platform, sub.platform_channel_id, feed_id=feed.id, silent=True
     )
-    assert flipped is True
+    assert matched == 1
 
     await session.refresh(sub)
-    assert sub.silent is True
+    await session.refresh(neighbour)
+    assert (sub.silent, neighbour.silent) == (True, False)
 
 
-async def test_set_silent_returns_false_when_no_match(session):
+async def test_update_channel_subscriptions_reports_no_match(session):
     repo = SubscriptionRepository(session)
-    flipped = await repo.set_silent(platform="discord", channel_id="nope", feed_id=999, silent=True)
-    assert flipped is False
+    assert await repo.update_channel_subscriptions("discord", "nope", feed_id=999, silent=True) == 0
+
+
+async def test_channel_update_leaves_the_same_channel_id_on_another_platform_alone(session):
+    feed = Feed(url="https://example.com/a")
+    session.add(feed)
+    await session.flush()
+    subs = [
+        Subscription(platform=p, platform_user_id="u", platform_channel_id="555", feed_id=feed.id)
+        for p in ("discord", "telegram")
+    ]
+    session.add_all(subs)
+    await session.flush()
+
+    await SubscriptionRepository(session).update_channel_subscriptions(
+        "discord", "555", message_template="{title}"
+    )
+
+    for sub in subs:
+        await session.refresh(sub)
+    assert [s.message_template for s in subs] == ["{title}", None]
 
 
 async def test_get_or_create_subscription_applies_silent_to_new(session):
@@ -622,3 +641,56 @@ async def test_record_of_a_feed_without_snapshots_ages_out(session):
     await session.commit()
 
     assert await _remaining(session) == []
+
+
+async def _fetch_document(session, url: str, entries: list[dict]) -> Feed:
+    """Store one fetched document for a new feed at `url`, listed as given (newest first)."""
+    feed = Feed(url=url)
+    session.add(feed)
+    await session.flush()
+    svc = FeedService(session)
+    svc.fetcher = AsyncMock()
+    svc.fetcher.fetch_feed = AsyncMock(
+        return_value=FetchResult(url=url, success=True, entries=entries)
+    )
+    await svc.fetch_and_store(feed)
+    return feed
+
+
+async def test_undated_entries_go_out_oldest_first_and_preview_the_newest(session):
+    # Feeds list newest first; with no dates, storage order is all that tells them apart.
+    feed = await _fetch_document(
+        session,
+        "https://example.com/undated",
+        [{"guid": g, "title": g, "link": f"https://x/{g}"} for g in ("newest", "middle", "oldest")],
+    )
+    repo = SubscriptionRepository(session)
+    delivered = await _make_subscription(session, feed.id)
+    previewed = Subscription(
+        platform="test", platform_user_id="u", platform_channel_id="chan-2", feed_id=feed.id
+    )
+    session.add(previewed)
+    await session.flush()
+    await repo.seed_sent_entries(previewed.id, feed.id, keep_latest=1)
+
+    unsent = await repo.get_unsent_entries_for_subscription(delivered.id)
+    preview = await repo.get_unsent_entries_for_subscription(previewed.id)
+
+    assert [e.guid for e in unsent] == ["oldest", "middle", "newest"]
+    assert [e.guid for e in preview] == ["newest"]
+
+
+async def test_a_guid_listed_twice_keeps_its_newest_listing(session):
+    feed = await _fetch_document(
+        session,
+        "https://example.com/dup",
+        [
+            {"guid": "g", "title": "revised", "link": "https://x/g"},
+            {"guid": "h", "title": "other", "link": "https://x/h"},
+            {"guid": "g", "title": "original", "link": "https://x/g"},
+        ],
+    )
+    stored = await session.scalar(
+        select(FeedEntry.title).where(FeedEntry.feed_id == feed.id, FeedEntry.guid == "g")
+    )
+    assert stored == "revised"

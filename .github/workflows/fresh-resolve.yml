@@ -1,0 +1,45 @@
+name: Fresh resolve
+
+# poetry.lock pins what CI and the image install. Weekly, this re-resolves to the newest
+# releases pyproject's ranges allow and runs every gate, so an upstream release that breaks
+# one shows up here first — before a lock refresh or a `pip install` from source meets it.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  gates:
+    name: gates on a fresh resolve (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Poetry
+        run: pipx install "poetry==2.5.1"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Re-resolve the lock and install
+        run: |
+          poetry env use python
+          poetry update --lock
+          poetry install --all-extras --with dev
+
+      - name: Run tests
+        run: poetry run pytest tests/ -q
+
+      - name: Ruff
+        run: |
+          poetry run ruff check src/
+          poetry run ruff format --check src/
+
+      - name: Mypy
+        run: poetry run mypy src/

@@ -13,9 +13,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from sqlalchemy import select
 
-from newsflow.adapters.base import Message, TopicGoneError
+from newsflow.adapters.base import Message, TopicGoneError, UndeliverableError
 from newsflow.adapters.discord.bot import (
     FeedCommands,
     NewsFlowBot,
@@ -241,15 +242,15 @@ async def test_telegram_thread_gone_maps_to_topic_gone():
     assert raised.channel_id == "123"
 
 
-async def test_telegram_thread_error_without_thread_is_plain_failure():
+async def test_telegram_thread_error_without_thread_is_not_topic_gone():
     from telegram.error import BadRequest
 
     adapter = seed.tg_adapter()
     adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Message thread not found"))
 
-    ok = await adapter.send_message("123", seed.message())
-
-    assert ok is False
+    # No topic to clear: it is an ordinary refusal of the message.
+    with pytest.raises(UndeliverableError):
+        await adapter.send_message("123", seed.message())
 
 
 # ------------------------------------------------- service / repo round-trip

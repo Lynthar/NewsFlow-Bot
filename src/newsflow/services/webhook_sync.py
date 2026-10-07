@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.adapters.webhook.formats import SUPPORTED_FORMATS
+from newsflow.core.env_refs import expand_env_refs
 from newsflow.core.source_shortcuts import expand_source_shortcut
 from newsflow.core.url_security import InvalidFeedURLError, validate_feed_url
 from newsflow.models.base import get_session_factory
@@ -69,7 +70,7 @@ class WebhookConfigDestination:
     headers: dict[str, Any] | None = None
     timeout_s: int = 10
     # Per-destination defaults inherited by every subscription pointing here.
-    translate: bool = True
+    translate: bool = False
     language: str = "zh-CN"
 
 
@@ -126,7 +127,7 @@ def _parse_destinations(
         if not url or not isinstance(url, str):
             raise WebhookConfigError(f"destination {name!r}: missing or non-string `url`")
         # The message leaves the URL out: these carry their token in the path or query.
-        if urlsplit(url).scheme not in ("http", "https"):
+        if urlsplit(_resolved(name, "url", url)).scheme not in ("http", "https"):
             raise WebhookConfigError(f"destination {name!r}: `url` must be http:// or https://")
 
         fmt = str(cfg.get("format", "generic"))
@@ -141,6 +142,8 @@ def _parse_destinations(
             # int-coercion would lose leading zeros ("0123" → 123 → "123")
             # and silently produce a different HMAC key than intended.
             raise WebhookConfigError(f"destination {name!r}: `secret` must be a string (quote it)")
+        if secret is not None:
+            _resolved(name, "secret", secret)
 
         headers = cfg.get("headers")
         if headers is not None and not isinstance(headers, dict):
@@ -151,6 +154,8 @@ def _parse_destinations(
                 raise WebhookConfigError(
                     f"destination {name!r}: header names must be strings, got {bad_keys!r}"
                 )
+            for key, value in headers.items():
+                _resolved(name, f"headers[{key!r}]", str(value))
 
         try:
             timeout_s = int(cfg.get("timeout_s", 10))
@@ -174,11 +179,24 @@ def _parse_destinations(
             headers=headers,
             timeout_s=timeout_s,
             translate=require_bool(
-                WebhookConfigError, f"destination {name!r}", "translate", cfg.get("translate"), True
+                WebhookConfigError,
+                f"destination {name!r}",
+                "translate",
+                cfg.get("translate"),
+                False,
             ),
             language=str(cfg.get("language", "zh-CN")),
         )
     return out
+
+
+def _resolved(destination: str, field: str, value: str) -> str:
+    """`value` with its ${VAR} references expanded. They are stored unexpanded and resolved
+    at send time; an unset one fails here, at startup or reload, not on every send."""
+    try:
+        return expand_env_refs(value, f"destination {destination!r}: `{field}`")
+    except ValueError as e:
+        raise WebhookConfigError(str(e)) from e
 
 
 def _parse_subscriptions(

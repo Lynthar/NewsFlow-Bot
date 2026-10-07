@@ -13,7 +13,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from newsflow.adapters.base import BaseAdapter, ChannelGoneError, Message, is_http_url
+from newsflow.adapters.base import (
+    BaseAdapter,
+    ChannelGoneError,
+    Message,
+    UndeliverableError,
+    is_http_url,
+)
 from newsflow.adapters.views import (
     DISCORD_EMBED_DESCRIPTION_LIMIT,
     DISCORD_EMBED_FIELD_VALUE_LIMIT,
@@ -23,6 +29,7 @@ from newsflow.adapters.views import (
     import_count_rows,
     import_failure_rows,
     last_error_text,
+    lost_entries_text,
     paginate_lines,
     recent_entry_parts,
     sub_line_parts,
@@ -148,6 +155,9 @@ def _build_status_embed(detail) -> discord.Embed:  # type: ignore[no-untyped-def
         value=f"{detail.unsent_count} queued for this channel",
         inline=True,
     )
+    lost = lost_entries_text(sub.dropped_unsent, detail.undeliverable_count)
+    if lost:
+        embed.add_field(name="Not delivered", value=lost, inline=True)
     embed.add_field(
         name="Translation",
         value=f"{'On' if sub.translate else 'Off'} ({sub.target_language})",
@@ -290,19 +300,26 @@ class NewsFlowBot(commands.Bot):
         logger.exception(f"Error in {event}")
 
 
+# Server channels only: `contexts` is what Discord reads now; guild_only also sends the
+# deprecated dm_permission=false that older clients still go by.
+_SERVER_ONLY = app_commands.AppCommandContext(guild=True)
+
+
 class FeedCommands(commands.Cog):
     """Feed management commands."""
 
     def __init__(self, bot: NewsFlowBot) -> None:
         self.bot = bot
 
-    # Native permission gate: without it any member could remove feeds or rewrite
-    # filters. Discord cannot set permissions per SUBcommand, so the whole group
-    # defaults to Manage Server; admins retune per role under Integrations.
+    # Permission gate: else any member could remove feeds or rewrite filters. No per-SUBcommand
+    # permissions exist, so the group defaults to Manage Server (retune under Integrations).
+    # Server-only: DMs skip the gate, and any member could spend the deployer's quota there.
     feed_group = app_commands.Group(
         name="feed",
         description="Manage RSS feeds",
         default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True,
+        allowed_contexts=_SERVER_ONLY,
     )
 
     @feed_group.command(name="add", description="Add an RSS feed to this channel")
@@ -1188,6 +1205,8 @@ class SettingsCommands(commands.Cog):
         description="Configure bot settings",
         # All subcommands mutate channel-wide state; see feed_group's note.
         default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True,
+        allowed_contexts=_SERVER_ONLY,
     )
 
     @settings_group.command(name="language", description="Set translation target language")
@@ -1348,6 +1367,8 @@ class DigestCommands(commands.Cog):
         # gate necessarily takes /digest show along with them (Discord has
         # no per-subcommand permissions) — see feed_group's note.
         default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True,
+        allowed_contexts=_SERVER_ONLY,
     )
 
     @digest_group.command(
@@ -1412,18 +1433,15 @@ class DigestCommands(commands.Cog):
         local_weekday = int(weekday) if schedule.value == "weekly" and weekday is not None else None
         utc_hour, utc_weekday = local_schedule_to_utc(int(hour), local_weekday, tz)
 
-        from newsflow.repositories.digest_repository import (
-            ChannelDigestRepository,
-        )
+        from newsflow.services.digest_service import enable_digest
 
         session_factory = get_session_factory()
         async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            await repo.upsert(
+            await enable_digest(
+                session,
                 platform="discord",
                 channel_id=str(interaction.channel_id),
                 guild_id=(str(interaction.guild_id) if interaction.guild_id else None),
-                enabled=True,
                 schedule=schedule.value,
                 delivery_hour_utc=utc_hour,
                 delivery_weekday=utc_weekday,
@@ -1613,9 +1631,10 @@ class DiscordAdapter(BaseAdapter):
 
         Raises ChannelGoneError when the channel no longer exists
         (deleted by guild owner, or bot was removed from the guild —
-        both surface as HTTP 404). Transient problems (403 Forbidden,
-        network, rate-limit) still return False so the next dispatch
-        cycle can retry.
+        both surface as HTTP 404). Raises UndeliverableError when Discord
+        answers 400 to the entry and to its bare title-and-link form.
+        Transient problems (403 Forbidden, network, rate-limit) still
+        return False so the next dispatch cycle can retry.
         """
         try:
             channel = self.bot.get_channel(int(channel_id))
@@ -1629,35 +1648,26 @@ class DiscordAdapter(BaseAdapter):
                 )
                 return False
 
-            mention = message.mention
-
-            if message.template_text is not None:
-                # Custom template: plain content (Discord renders Markdown natively). A surviving
-                # image rides in an image-only embed so the template keeps authority over text.
-                # A configured mention is prefixed unless the template placed it via {mention}.
-                content = message.template_text
-                if mention and mention not in content:
-                    content = f"{mention}\n{content}"
-                if len(content) > 2000:
-                    content = content[:1999] + "…"
-                allowed = _mention_allowance(mention) if mention else discord.AllowedMentions.none()
-                if is_http_url(message.image_url):
-                    image_embed = discord.Embed()
-                    image_embed.set_image(url=message.image_url)
-                    await channel.send(content=content, embed=image_embed, allowed_mentions=allowed)
-                else:
-                    await channel.send(content, allowed_mentions=allowed)
-                return True
-
-            embed = self._create_embed(message)
-            if mention:
-                await channel.send(
-                    content=mention, embed=embed, allowed_mentions=_mention_allowance(mention)
-                )
-            else:
-                await channel.send(embed=embed)
+            try:
+                await self._send_entry(channel, message)
+            except discord.HTTPException as e:
+                # 400 is Discord judging this payload (an embed field, a URL); 403/404 and
+                # 5xx are about the channel or the service and go to the handlers below.
+                if e.status != 400:
+                    raise
+                logger.warning(f"Discord refused the entry for {channel_id} ({e.code}): {e}")
+                try:
+                    await self._send_bare(channel, message)
+                except discord.HTTPException as bare_error:
+                    if bare_error.status != 400:
+                        raise
+                    raise UndeliverableError(
+                        channel_id, reason=f"HTTP 400 ({bare_error.code})"
+                    ) from bare_error
             return True
 
+        except UndeliverableError:
+            raise
         except discord.NotFound as e:
             raise ChannelGoneError(channel_id, reason=str(e)) from e
         except discord.Forbidden:
@@ -1666,6 +1676,51 @@ class DiscordAdapter(BaseAdapter):
         except Exception as e:
             logger.exception(f"Failed to send message to {channel_id}: {e}")
             return False
+
+    async def _send_entry(self, channel: discord.abc.Messageable, message: Message) -> None:
+        """Post `message` in its full layout: the custom template, else the embed."""
+        mention = message.mention
+        if message.template_text is not None:
+            # Custom template: plain content (Discord renders Markdown natively). A surviving
+            # image rides in an image-only embed so the template keeps authority over text.
+            # A configured mention is prefixed unless the template placed it via {mention}.
+            content = message.template_text
+            if mention and mention not in content:
+                content = f"{mention}\n{content}"
+            if len(content) > 2000:
+                content = content[:1999] + "…"
+            allowed = _mention_allowance(mention) if mention else discord.AllowedMentions.none()
+            if is_http_url(message.image_url):
+                image_embed = discord.Embed()
+                image_embed.set_image(url=message.image_url)
+                await channel.send(content=content, embed=image_embed, allowed_mentions=allowed)
+            else:
+                await channel.send(content, allowed_mentions=allowed)
+            return
+
+        embed = self._create_embed(message)
+        if mention:
+            await channel.send(
+                content=mention, embed=embed, allowed_mentions=_mention_allowance(mention)
+            )
+        else:
+            await channel.send(embed=embed)
+
+    async def _send_bare(self, channel: discord.abc.Messageable, message: Message) -> None:
+        """Post only the title and link, as plain content: the last form tried for an entry
+        Discord refused. The title is markdown-escaped, since plain content is parsed."""
+        title = discord.utils.escape_markdown(message.display_title, as_needed=True)
+        lines = [title or "(untitled)"]
+        if is_http_url(message.link):
+            lines.append(message.link)
+        if message.mention:
+            lines.insert(0, message.mention)
+        allowed = (
+            _mention_allowance(message.mention)
+            if message.mention
+            else discord.AllowedMentions.none()
+        )
+        await channel.send("\n".join(lines)[:2000], allowed_mentions=allowed)
 
     async def send_text(self, channel_id: str, text: str) -> bool:
         """Send plain text to a Discord channel. Raises ChannelGoneError

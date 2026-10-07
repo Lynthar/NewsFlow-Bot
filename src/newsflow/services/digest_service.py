@@ -5,7 +5,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,11 +25,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Safety margin: even if schedule matches and we're past the hour, don't
-# re-fire within this span of the last successful delivery. Protects
-# against clock skew / loop re-entry.
-_DEDUPE_DELTA_DAILY = timedelta(hours=23)
-_DEDUPE_DELTA_WEEKLY = timedelta(days=6)
+# Attempts at recording a delivered digest. Each waits out the busy timeout on a locked
+# SQLite, and a record that never lands only costs an overlapping window next period.
+_MARK_ATTEMPTS = 3
 
 
 # What one digest run ended up doing. Callers phrase it for their platform —
@@ -158,26 +156,12 @@ def _most_recent_slot(config: ChannelDigest, now: datetime) -> datetime | None:
 
 
 def is_due(config: ChannelDigest, now: datetime) -> bool:
-    """Whether `config` should generate a digest at `now`.
-
-    Slot-based with catch-up: due when the most recent scheduled slot has
-    not been served yet — so a process that was down (or an adapter that
-    wasn't registered) across the delivery hour delivers late instead of
-    silently skipping to the next day/week. The dedupe delta additionally
-    keeps a very recent delivery (e.g. a manual /digest now shortly before
-    the slot) from double-firing inside the same period.
-
-    First-ever delivery (last_delivered_at is None) intentionally keeps
-    the old in-slot-hour behavior: enabling a digest at 14:00 for a 09:00
-    slot waits for tomorrow 09:00 rather than firing immediately.
-    """
+    """Whether `config` should generate a digest at `now`: while its most recent slot is
+    unserved, so a slot missed while the process was down is delivered late, not skipped.
+    Only scheduled runs serve a slot; enabling marks the current one served."""
     if not config.enabled:
         return False
-    if config.schedule == "weekly":
-        dedupe = _DEDUPE_DELTA_WEEKLY
-    elif config.schedule == "daily":
-        dedupe = _DEDUPE_DELTA_DAILY
-    else:
+    if config.schedule not in ("daily", "weekly"):
         logger.warning(
             f"Unknown digest schedule {config.schedule!r} for "
             f"{config.platform}/{config.platform_channel_id}"
@@ -188,21 +172,19 @@ def is_due(config: ChannelDigest, now: datetime) -> bool:
     if slot is None:
         return False
 
-    if config.last_delivered_at is None:
+    if config.last_slot_at is None:
+        # A config enabled before slots were recorded and never delivered since.
         if config.schedule == "weekly" and now.weekday() != config.delivery_weekday:
             return False
         return now.hour == config.delivery_hour_utc
 
-    # SQLite + aiosqlite drops tzinfo on read even though the column
-    # is DateTime(timezone=True). Treat naive values as UTC so the
-    # comparisons below don't blow up the whole digest tick.
-    last = config.last_delivered_at
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=UTC)
+    return _as_utc(config.last_slot_at) < slot
 
-    if last >= slot:
-        return False  # this slot was already served (incl. empty-window marks)
-    return (now - last) >= dedupe
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite + aiosqlite drops tzinfo on read even though the column is
+    DateTime(timezone=True); naive values are UTC."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 def _time_window_desc(config: ChannelDigest, now: datetime) -> tuple[datetime, str]:
@@ -215,14 +197,43 @@ def _time_window_desc(config: ChannelDigest, now: datetime) -> tuple[datetime, s
         if config.schedule == "weekly":
             return now - WEEKLY_WINDOW, "the past 7 days"
         return now - timedelta(hours=24), "the past 24 hours"
-    # See is_due() — SQLite drops tzinfo on read; re-attach UTC so
-    # downstream comparisons stay consistent.
-    last = config.last_delivered_at
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=UTC)
+    last = _as_utc(config.last_delivered_at)
     if config.schedule == "weekly":
         return last, "the past week"
     return last, "the past day"
+
+
+async def _record_delivery(
+    config_id: int, now: datetime, slot: datetime | None, pin_id: str | None
+) -> bool:
+    """Record a delivered digest, retrying in fresh sessions. Never raises: the digest is
+    already on-platform, and dying here would lose that fact. Returns whether it landed."""
+    for attempt in range(1, _MARK_ATTEMPTS + 1):
+        try:
+            async with get_session_factory()() as session:
+                await ChannelDigestRepository(session).mark_delivered(
+                    config_id, now, slot=slot, pinned_message_id=pin_id
+                )
+                await session.commit()
+            return True
+        except Exception:
+            logger.warning(
+                f"Recording digest {config_id} failed (attempt {attempt})", exc_info=True
+            )
+    return False
+
+
+async def enable_digest(
+    session: AsyncSession, platform: str, channel_id: str, guild_id: str | None, **fields: Any
+) -> ChannelDigest:
+    """Enable or reconfigure a channel's digest. The current slot counts as served, so the
+    first delivery is the next slot: enabling never fires one at once."""
+    config = await ChannelDigestRepository(session).upsert(
+        platform, channel_id, guild_id, enabled=True, **fields
+    )
+    config.last_slot_at = _most_recent_slot(config, datetime.now(UTC))
+    await session.flush()
+    return config
 
 
 class DigestService:
@@ -249,8 +260,8 @@ class DigestService:
         single entry for the scheduler and both /digest now handlers.
 
         A `scheduled` run re-checks that its slot is still due once it holds the
-        channel, and an empty window consumes the slot; a manual run does neither,
-        or it would eat the digest the user was going to receive.
+        channel, and an empty window consumes the slot. A manual run is a preview:
+        no mention, no pin, nothing recorded, so the scheduled digest still comes.
 
         Raises:
             ChannelGoneError, ChannelMigratedError: propagated from delivery so
@@ -272,7 +283,10 @@ class DigestService:
                 config = await service.repo.get(platform, channel_id)
                 if config is None:
                     return DigestDeliveryResult("no_config")
-                if scheduled and not is_due(config, now):
+                slot = _most_recent_slot(config, now)
+                if scheduled and (
+                    not is_due(config, now) or dispatcher.digest_slot_served(config.id, slot)
+                ):
                     return DigestDeliveryResult("not_due")
 
                 config_id = config.id
@@ -281,14 +295,14 @@ class DigestService:
                 material = await service.collect(config, now)
                 if material is None:
                     if scheduled:
-                        await service.repo.mark_delivered(config_id, now)
+                        await service.repo.mark_delivered(config_id, now, slot=slot)
                         await session.commit()
                     return DigestDeliveryResult("no_articles")
 
             result = await service.summarize(language, material)
             if not result.success:
                 return DigestDeliveryResult("generation_failed", error=result.error)
-            digest_text = dispatcher.apply_digest_header(result.text, platform)
+            digest_text = dispatcher.apply_digest_header(result.text, platform, mention=scheduled)
 
             chunks, new_pin_id = await dispatcher.deliver_digest(
                 adapter,
@@ -296,25 +310,21 @@ class DigestService:
                 digest_text,
                 chunk_size=adapter.digest_chunk_size,
                 prior_pin_id=prior_pin_id,
+                pin=scheduled,
             )
             if chunks == 0:
                 return DigestDeliveryResult("delivery_failed")
+            if not scheduled:
+                return DigestDeliveryResult("delivered", chunks=chunks)
 
-            # The digest is already on-platform, so a failed UPDATE is reported,
-            # not raised: dying here would lose the fact that it was delivered.
-            mark_failed = False
-            try:
-                async with session_factory() as session:
-                    await ChannelDigestRepository(session).mark_delivered(
-                        config_id, now, pinned_message_id=new_pin_id
-                    )
-                    await session.commit()
-            except Exception:
-                logger.exception(
+            # Served even if the record below never lands: the next tick must not resend.
+            dispatcher.record_digest_slot(config_id, slot)
+            mark_failed = not await _record_delivery(config_id, now, slot, new_pin_id)
+            if mark_failed:
+                logger.error(
                     f"mark_delivered failed for {platform}/{channel_id}; the digest was "
                     f"delivered ({chunks} chunks) but the stored state is stale"
                 )
-                mark_failed = True
 
         return DigestDeliveryResult("delivered", chunks=chunks, mark_failed=mark_failed)
 

@@ -5,7 +5,7 @@ Subscription model for user feed subscriptions.
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from newsflow.models.base import Base
@@ -62,6 +62,9 @@ class Subscription(Base):
     # channel. Stored as serialized FilterRule (see core/filter.py); None
     # means no filter, all entries pass.
     filter_rule: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+    # Entries cleanup deleted while still queued here: the feed outpaced delivery.
+    dropped_unsent: Mapped[int] = mapped_column(Integer, default=0)
 
     # Relationship
     feed: Mapped["Feed"] = relationship(back_populates="subscriptions")
@@ -131,6 +134,10 @@ class SentEntry(Base):
     # never shown to the channel, only recorded so dispatch skips it. The digest
     # pipeline must exclude these; was_filtered cannot carry the meaning.
     seeded: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # True when dispatch gave up on the entry after the platform kept refusing it. Never
+    # shown to the channel, so digests exclude it like a seeded row.
+    undeliverable: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Indexes
     __table_args__ = (

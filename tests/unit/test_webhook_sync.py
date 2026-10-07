@@ -58,6 +58,8 @@ subscriptions:
     assert list(config.destinations) == ["a"]
     assert config.destinations["a"].url == "https://example.com/hook"
     assert config.destinations["a"].format == "generic"
+    # Same default as a sources.yaml subscriber: translation is opt-in per destination.
+    assert config.destinations["a"].translate is False
     assert config.subscriptions == {"a": ["https://feed.example.com/rss"]}
 
 
@@ -207,6 +209,36 @@ def test_parse_rejects_a_url_that_is_not_http_and_does_not_echo_it(tmp_path, url
     with pytest.raises(WebhookConfigError, match="http") as exc:
         parse_webhooks_yaml(path)
     assert url not in str(exc.value)
+
+
+def test_parse_keeps_env_references_unexpanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOOK_URL", "https://hooks.example.com/T0/TOKEN")
+    monkeypatch.setenv("HOOK_SECRET", "s3cret")
+    path = _write(
+        tmp_path,
+        "destinations:\n  a:\n    url: ${HOOK_URL}\n    secret: ${HOOK_SECRET}\n"
+        "    headers:\n      Authorization: Bearer ${HOOK_SECRET}\n",
+    )
+    dest = parse_webhooks_yaml(path).destinations["a"]
+    # What gets stored is the reference: the secrets never reach the database.
+    assert (dest.url, dest.secret) == ("${HOOK_URL}", "${HOOK_SECRET}")
+    assert dest.headers == {"Authorization": "Bearer ${HOOK_SECRET}"}
+
+
+def test_parse_rejects_a_reference_to_an_unset_variable(tmp_path, monkeypatch):
+    monkeypatch.delenv("HOOK_SECRET", raising=False)
+    path = _write(
+        tmp_path, "destinations:\n  a:\n    url: https://e.com/h\n    secret: ${HOOK_SECRET}\n"
+    )
+    with pytest.raises(WebhookConfigError, match="'HOOK_SECRET', which is not set"):
+        parse_webhooks_yaml(path)
+
+
+def test_parse_checks_the_scheme_of_the_expanded_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOOK_URL", "ftp://e.com/hook")
+    path = _write(tmp_path, "destinations:\n  a:\n    url: ${HOOK_URL}\n")
+    with pytest.raises(WebhookConfigError, match="http"):
+        parse_webhooks_yaml(path)
 
 
 def test_parse_allows_empty_subscriptions(tmp_path):

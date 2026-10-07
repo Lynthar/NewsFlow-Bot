@@ -97,6 +97,18 @@ async def metrics(db: AsyncSession = Depends(get_db)) -> PlainTextResponse:
                 "Send/dispatch errors since process start",
                 totals.send_errors,
             ),
+            _metric(
+                "newsflow_entries_undeliverable_total",
+                "counter",
+                "Entries given up after the platform kept refusing them",
+                totals.entries_undeliverable,
+            ),
+            _metric(
+                "newsflow_entries_dropped_unsent_total",
+                "counter",
+                "Entries cleanup deleted before they were delivered",
+                totals.entries_dropped_unsent,
+            ),
             _metric("newsflow_feeds", "gauge", "Feeds in the database", feeds_total),
             _metric("newsflow_feeds_active", "gauge", "Active (fetchable) feeds", feeds_active),
             _metric("newsflow_subscriptions", "gauge", "Subscriptions", subs_total),

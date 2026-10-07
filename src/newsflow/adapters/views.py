@@ -84,6 +84,16 @@ def last_error_text(feed: Feed) -> str | None:
     return clip(feed.last_error, ERROR_LIMIT)
 
 
+def lost_entries_text(dropped: int, refused: int) -> str | None:
+    """What never reached the channel, for /feed status — None when nothing was lost."""
+    parts = []
+    if dropped:
+        parts.append(f"{dropped} expired while queued")
+    if refused:
+        parts.append(f"{refused} refused by the platform")
+    return " · ".join(parts) or None
+
+
 def recent_entry_parts(entry: FeedEntry) -> tuple[str, str | None, str]:
     """(title, link, relative time) for one recent-article row. The link is
     None unless it is an http(s) URL within URL_LIMIT: a truncated href points

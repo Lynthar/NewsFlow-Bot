@@ -5,7 +5,7 @@ All platform adapters (Discord, Telegram, etc.) should inherit from this.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TypeGuard
 
@@ -82,6 +82,20 @@ class TopicGoneError(Exception):
         super().__init__(msg)
         self.channel_id = channel_id
         self.thread_id = thread_id
+        self.reason = reason
+
+
+class UndeliverableError(Exception):
+    """The platform rejected this one message as invalid, and its `bare_message` form too:
+    raise it only after trying that. The dispatcher gives the entry up once a notice to the
+    channel goes through, and retries until then — a channel fault can look just like this."""
+
+    def __init__(self, channel_id: str, reason: str = "") -> None:
+        msg = f"message to {channel_id} is undeliverable"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+        self.channel_id = channel_id
         self.reason = reason
 
 
@@ -166,6 +180,19 @@ class Message:
             "original_summary": self.summary,
             "translated_summary": self.summary_translated or "",
         }
+
+
+def bare_message(message: Message) -> Message:
+    """`message` cut down to title and link: the last rendering an adapter tries before it
+    gives up on an entry."""
+    return replace(
+        message,
+        summary="",
+        summary_translated=None,
+        image_url=None,
+        template_text=None,
+        show_image=False,
+    )
 
 
 class BaseAdapter(ABC):

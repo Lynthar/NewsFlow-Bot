@@ -1,10 +1,11 @@
 # Allowlist style: exclude everything, then admit exactly what the Dockerfile
-# COPYs (pyproject.toml, README.md, src/, alembic/, alembic.ini, LICENSE).
+# COPYs (pyproject.toml, poetry.lock, README.md, src/, alembic/, alembic.ini, LICENSE).
 # This guarantees secrets and local state (.env, config/, data/, .git/,
 # databases, virtualenvs) can never leak into the build context — relevant
 # both locally and for remote builders, which receive the whole context.
 *
 !pyproject.toml
+!poetry.lock
 !README.md
 !src
 !alembic

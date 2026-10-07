@@ -32,6 +32,7 @@ ALLOWED: dict[str, str] = {
     "newsflow.services.feed_service.get_fetcher": "HTTP boundary — the fetcher is the network",
     "newsflow.core.get_fetcher": "HTTP boundary — the fetcher is the network",
     "newsflow.services.dispatcher.get_translation_service": "LLM boundary",
+    "newsflow.services.summarization.get_summarizer": "LLM boundary",
     "f._fetch_sync": "IMAP boundary — the synchronous imap-tools call",
     # Clocks: real waits would make the tests slow, not more truthful.
     "newsflow.services.dispatcher.asyncio.sleep": "clock — skips the 60s startup delay",

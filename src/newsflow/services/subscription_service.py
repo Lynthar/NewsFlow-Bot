@@ -68,6 +68,7 @@ class SubscriptionDetail:
     feed: Feed
     recent_entries: list[FeedEntry]
     unsent_count: int = 0
+    undeliverable_count: int = 0
 
 
 @dataclass
@@ -404,8 +405,13 @@ class SubscriptionService:
             return None
         recent = await self.feed_repo.get_recent_entries(feed.id, entry_limit)
         unsent = await self.sub_repo.count_unsent_entries_for_subscription(sub.id)
+        undeliverable = await self.sub_repo.count_undeliverable(sub.id)
         return SubscriptionDetail(
-            subscription=sub, feed=feed, recent_entries=list(recent), unsent_count=unsent
+            subscription=sub,
+            feed=feed,
+            recent_entries=list(recent),
+            unsent_count=unsent,
+            undeliverable_count=undeliverable,
         )
 
     async def get_channel_subscriptions(

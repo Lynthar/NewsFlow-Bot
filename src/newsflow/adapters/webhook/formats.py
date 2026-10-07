@@ -216,28 +216,18 @@ def _to_ntfy_text(text: str) -> WireRequest:
 
 
 def _to_lark(m: Message) -> WireRequest:
-    title = m.display_title
-    summary = m.display_summary or ""
+    rows: list[list[dict[str, str]]] = []
+    if m.display_summary:
+        rows.append([{"tag": "text", "text": m.display_summary}])
+    rows.append(
+        [
+            {"tag": "a", "text": "Read more →", "href": m.link},
+            {"tag": "text", "text": f"  ({m.source})"},
+        ]
+    )
     payload = {
         "msg_type": "post",
-        "content": {
-            "post": {
-                "zh_cn": {
-                    "title": title,
-                    "content": [
-                        [{"tag": "text", "text": summary}],
-                        [
-                            {
-                                "tag": "a",
-                                "text": "Read more →",
-                                "href": m.link,
-                            },
-                            {"tag": "text", "text": f"  ({m.source})"},
-                        ],
-                    ],
-                }
-            }
-        },
+        "content": {"post": {"zh_cn": {"title": m.display_title, "content": rows}}},
     }
     return _json(payload)
 

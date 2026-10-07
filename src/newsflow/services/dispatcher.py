@@ -19,6 +19,7 @@ from newsflow.adapters.base import (
     ChannelMigratedError,
     Message,
     TopicGoneError,
+    UndeliverableError,
 )
 from newsflow.config import get_settings
 from newsflow.core.content_processor import (
@@ -43,6 +44,15 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Send attempts per subscription per round. Filtered and silenced entries do not count:
+# they post nothing, and spending the budget on them starved the entries that pass.
+SENDS_PER_ROUND = 10
+# Unsent entries one round reads per subscription, bounding the work a backlog of
+# filtered or silenced entries can cause.
+ROUND_LOOKAHEAD = 200
+# Consecutive failed rounds after which an entry is given up, once a notice gets through.
+STRIKES_TO_GIVE_UP = 3
 
 
 class MessageSender(Protocol):
@@ -93,6 +103,8 @@ class DispatcherTotals:
     new_entries: int = 0
     messages_sent: int = 0
     send_errors: int = 0
+    entries_undeliverable: int = 0
+    entries_dropped_unsent: int = 0
 
 
 class Dispatcher:
@@ -128,6 +140,11 @@ class Dispatcher:
         self.delivery_lock = asyncio.Lock()
         # Serialise digest runs per (platform, channel); see digest_lock().
         self._digest_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Digest config id → the slot its last scheduled run served, whether or not the
+        # database recorded it: a failed record must not make the next tick resend.
+        self._digest_slots: dict[int, datetime] = {}
+        # subscription id → guid → consecutive rounds that entry failed to send.
+        self._send_strikes: dict[int, dict[str, int]] = {}
         self.totals = DispatcherTotals()
 
     def digest_lock(self, platform: str, channel_id: str) -> asyncio.Lock:
@@ -135,6 +152,13 @@ class Dispatcher:
         the delivery. Take it before `delivery_lock`, never while holding it: a digest
         waits on a round, so the reverse order can deadlock."""
         return self._digest_locks.setdefault((platform, channel_id), asyncio.Lock())
+
+    def record_digest_slot(self, config_id: int, slot: datetime | None) -> None:
+        if slot is not None:
+            self._digest_slots[config_id] = slot
+
+    def digest_slot_served(self, config_id: int, slot: datetime | None) -> bool:
+        return slot is not None and self._digest_slots.get(config_id) == slot
 
     def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task[Any]:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
@@ -240,6 +264,8 @@ class Dispatcher:
                 # rolls back and expires EVERY ORM instance in the session, so a cached
                 # object would raise MissingGreenlet and abort the rest of the round.
                 sub_ids = [s.id for s in subscriptions]
+                live = set(sub_ids)
+                self._send_strikes = {k: v for k, v in self._send_strikes.items() if k in live}
                 # Channels already found gone this cycle. The bulk UPDATE does not sync
                 # identity-mapped instances, so the re-fetch still sees is_active=True.
                 dead_channels: set[tuple[str, str]] = set()
@@ -293,7 +319,7 @@ class Dispatcher:
         sub_repo: SubscriptionRepository,
         *,
         dead_channels: set[tuple[str, str]] | None = None,
-        bypass_silent: bool = False,
+        preview: bool = False,
     ) -> int:
         """
         Dispatch new entries to a single subscription.
@@ -304,10 +330,9 @@ class Dispatcher:
                 gone. Updated in-place when this call hits ChannelGoneError.
                 None for one-shot callers (e.g. the preview path) where
                 the cycle-wide skip semantics don't apply.
-            bypass_silent: when True, ignore the subscription's `silent`
-                flag and deliver normally. Used by the post-subscribe
-                preview path so the user always sees one confirmation
-                article, even on silent subscriptions.
+            preview: the post-subscribe path. Ignores the subscription's
+                `silent` flag, so the user always sees one confirmation
+                article, and counts no failed rounds.
 
         Returns:
             Number of messages sent
@@ -318,8 +343,9 @@ class Dispatcher:
             logger.warning(f"No adapter for platform: {subscription.platform}")
             return 0
 
-        # Get unsent entries
-        entries = await sub_repo.get_unsent_entries_for_subscription(subscription.id, limit=10)
+        entries = await sub_repo.get_unsent_entries_for_subscription(
+            subscription.id, limit=ROUND_LOOKAHEAD
+        )
 
         if not entries:
             return 0
@@ -331,9 +357,27 @@ class Dispatcher:
         # A failed flush expires every loaded instance, so the error handlers below
         # log these plain ids: reading an expired attribute raises a second time.
         sub_id = subscription.id
+        channel_id = subscription.platform_channel_id
+        feed_name = subscription.feed.title or subscription.feed.url
+        prior_strikes = self._send_strikes.get(sub_id, {})
+        strikes = {e.guid: prior_strikes[e.guid] for e in entries if e.guid in prior_strikes}
+        give_up: list[tuple[int, str]] = []
+
+        def strike(feed_id: int, guid: str) -> None:
+            self.totals.send_errors += 1
+            if preview:
+                return
+            strikes[guid] = strikes.get(guid, 0) + 1
+            if strikes[guid] >= STRIKES_TO_GIVE_UP:
+                give_up.append((feed_id, guid))
+
         sent_count = 0
+        attempts = 0
         for entry in entries:
+            if attempts >= SENDS_PER_ROUND:
+                break
             entry_id = entry.id
+            feed_id, guid = entry.feed_id, entry.guid
             try:
                 # Filter before the expensive translate/send path; filtered entries are marked
                 # processed. Match on CLEANED text — raw markup fires exclude words on URLs
@@ -358,8 +402,7 @@ class Dispatcher:
 
                 # Silent mode: no instant push, but mark sent (was_filtered=False) so digest
                 # picks it up via SentEntry. Translation skipped — digest uses the original.
-                # bypass_silent=True is the preview path (one confirmation article).
-                if subscription.silent and not bypass_silent:
+                if subscription.silent and not preview:
                     await sub_repo.mark_entry_sent(
                         subscription.id,
                         entry.feed_id,
@@ -377,6 +420,7 @@ class Dispatcher:
                 # Create message (with translation if enabled). Commit its translation-cache
                 # write first: no write transaction stays open across a network await, or
                 # every other writer (the webhook breaker, a digest, a command) waits on it.
+                attempts += 1
                 message = await self._create_message(entry, subscription, session)
                 await session.commit()
 
@@ -388,6 +432,7 @@ class Dispatcher:
                 if success:
                     # Committed per entry: the message is already out, so the mark must not
                     # wait on, or be rolled back with, anything sent after it.
+                    strikes.pop(guid, None)
                     await sub_repo.mark_entry_sent(subscription.id, entry.feed_id, entry.guid)
                     await session.commit()
                     sent_count += 1
@@ -398,10 +443,16 @@ class Dispatcher:
                     logger.warning(
                         f"Failed to send entry {entry.id} to {subscription.platform}/{subscription.platform_channel_id}"
                     )
+                    strike(feed_id, guid)
 
                 # Smoothing pause only. Real rate limiting lives in the libraries
                 # (discord.py buckets, Telegram AIORateLimiter).
                 await asyncio.sleep(0.1)
+
+            except UndeliverableError as e:
+                logger.warning(f"Entry {entry_id} for subscription {sub_id} is undeliverable: {e}")
+                self.totals.send_errors += 1
+                give_up.append((feed_id, guid))
 
             except TopicGoneError as e:
                 # Forum topic deleted, chat alive: clear the thread so delivery falls back to
@@ -490,8 +541,56 @@ class Dispatcher:
 
             except Exception as e:
                 logger.exception(f"Error sending entry {entry_id}: {e}")
+                strike(feed_id, guid)
 
+        if not preview:
+            self._send_strikes[sub_id] = strikes
+        if give_up:
+            await self._give_up(session, sub_repo, adapter, sub_id, channel_id, feed_name, give_up)
         return sent_count
+
+    async def _give_up(
+        self,
+        session: AsyncSession,
+        sub_repo: SubscriptionRepository,
+        adapter: MessageSender,
+        sub_id: int,
+        channel_id: str,
+        feed_name: str,
+        entries: list[tuple[int, str]],
+    ) -> None:
+        """Mark `entries` undeliverable once a notice to their channel goes through. A
+        refused notice means the channel itself is failing, so they stay queued."""
+        n = len(entries)
+        text = (
+            f'⚠️ {n} article{"" if n == 1 else "s"} from "{feed_name}" could not be '
+            f"delivered after repeated attempts and {'was' if n == 1 else 'were'} skipped."
+        )
+        try:
+            noticed = await adapter.send_text(channel_id, text)
+        except Exception as e:
+            # Gone or migrated channels included: the next round's send handles those.
+            logger.warning(f"Undeliverable-entry notice to {channel_id} failed: {e!r}")
+            noticed = False
+        if not noticed:
+            logger.warning(
+                f"Subscription {sub_id}: {n} entries keep failing and {channel_id} refused "
+                f"the notice too; keeping them queued"
+            )
+            return
+        try:
+            for feed_id, guid in entries:
+                await sub_repo.mark_entry_sent(sub_id, feed_id, guid, undeliverable=True)
+            await session.commit()
+        except SQLAlchemyError:
+            logger.exception(f"Could not mark {n} undeliverable entries for subscription {sub_id}")
+            await session.rollback()
+            return
+        self.totals.entries_undeliverable += n
+        strikes = self._send_strikes.get(sub_id, {})
+        for _, guid in entries:
+            strikes.pop(guid, None)
+        logger.warning(f"Subscription {sub_id}: gave up on {n} undeliverable entries")
 
     async def _translate_entry(
         self,
@@ -707,10 +806,10 @@ class Dispatcher:
                 )
                 return 0
 
-            # bypass_silent: a freshly-subscribed silent channel should
-            # still see one confirmation article so the user knows the
-            # subscription took. Subsequent dispatch cycles honor silent.
-            sent = await self._dispatch_to_subscription(session, sub, sub_repo, bypass_silent=True)
+            # preview: a freshly-subscribed silent channel should still see
+            # one confirmation article so the user knows the subscription
+            # took. Subsequent dispatch cycles honor silent.
+            sent = await self._dispatch_to_subscription(session, sub, sub_repo, preview=True)
             await session.commit()
             return sent
 
@@ -790,15 +889,13 @@ class Dispatcher:
     # mass-mention token parse, turning model-emitted @everyone/@here inert.
     _ZWSP = "\u200b"
 
-    def apply_digest_header(self, text: str, platform: str) -> str:
+    def apply_digest_header(self, text: str, platform: str, *, mention: bool = True) -> str:
         """Prepend a visible header + platform-appropriate mention to
         digest text when DIGEST_MENTION_ON_DELIVERY is enabled.
 
         Shared between the scheduled digest path (`_tick_digests`) and
         the manual `/digest now` handlers in both Discord and Telegram
-        adapters, so either trigger produces the same delivery shape.
-        Without this shim the 3 paths had drifted — mention only fired
-        on scheduled runs, not on manual test runs.
+        adapters, so every trigger produces the same delivery shape.
 
         Discord gets `@here`, and the Discord adapter sends digest text
         with AllowedMentions(everyone=True) so it actually pings —
@@ -810,7 +907,8 @@ class Dispatcher:
         the "Mention Everyone" channel permission — Discord requires
         both the permission and the allowance.) Telegram / webhook just
         get the visible header — no mention token since those platforms'
-        notification model differs.
+        notification model differs. `mention=False` (a manual preview)
+        keeps the header and the neutralizing but drops the `@here`.
         """
         if not self.settings.digest_mention_on_delivery:
             return text
@@ -818,7 +916,7 @@ class Dispatcher:
             body = text.replace("@everyone", f"@{self._ZWSP}everyone").replace(
                 "@here", f"@{self._ZWSP}here"
             )
-            return "@here 📰 **Digest**\n\n" + body
+            return ("@here " if mention else "") + "📰 **Digest**\n\n" + body
         return "📰 **Digest**\n\n" + text
 
     @staticmethod
@@ -896,6 +994,7 @@ class Dispatcher:
         *,
         chunk_size: int,
         prior_pin_id: str | None,
+        pin: bool = True,
     ) -> tuple[int, str | None]:
         """Deliver a digest: send `text` (splitting on paragraphs if it
         exceeds `chunk_size`), pin the first chunk, and unpin the prior
@@ -905,7 +1004,8 @@ class Dispatcher:
         pinning, the send still counts as a successful delivery. The
         old pin is left alone in that case so the channel retains
         *some* pinned digest rather than none — the caller will retry
-        unpinning on the next delivery.
+        unpinning on the next delivery. `pin=False` (a manual preview)
+        sends without pinning and leaves the prior pin alone.
 
         Returns (chunks_sent, new_pin_id):
           - chunks_sent: total chunks that reached the channel. 0 means
@@ -926,7 +1026,10 @@ class Dispatcher:
         # Digest-specific send methods: platforms that can't render the
         # digest's Markdown natively re-render per chunk (Telegram →
         # HTML + previews off); everyone else falls through to send_text.
-        sent_first, new_pin_id = await adapter.send_digest_text_pinned(channel_id, chunks[0])
+        if pin:
+            sent_first, new_pin_id = await adapter.send_digest_text_pinned(channel_id, chunks[0])
+        else:
+            sent_first, new_pin_id = await adapter.send_digest_text(channel_id, chunks[0]), None
         if not sent_first:
             return 0, None
         chunks_sent = 1
@@ -1013,6 +1116,11 @@ class Dispatcher:
                     logger.warning(f"Digest generation failed for {channel}: {outcome.error}")
                 elif outcome.status == "delivery_failed":
                     logger.warning(f"Digest generated but send failed for {channel}")
+                elif outcome.status == "delivered" and outcome.mark_failed:
+                    logger.warning(
+                        f"Delivered digest to {channel} ({outcome.chunks} chunks) but could "
+                        f"not record it; the next period's window will overlap this one"
+                    )
                 elif outcome.status == "delivered":
                     logger.info(f"Delivered digest to {channel} ({outcome.chunks} chunks)")
             except ChannelMigratedError as e:
@@ -1080,6 +1188,34 @@ class Dispatcher:
                     f"Digest delivery failed for {config.platform}/{config.platform_channel_id}"
                 )
 
+    async def cleanup_once(self) -> None:
+        """Delete expired feed entries and sent records, first counting, per subscription,
+        the queued entries that go with them."""
+        entry_retention_days = self.settings.entry_retention_days
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            feed_repo = FeedRepository(session)
+            sub_repo = SubscriptionRepository(session)
+
+            dropped = await sub_repo.count_unsent_expiring(entry_retention_days)
+            entries_deleted = await feed_repo.cleanup_old_entries(entry_retention_days)
+            sent_deleted = await sub_repo.cleanup_old_sent_entries(
+                self.settings.sent_entry_retention_days
+            )
+            await sub_repo.add_dropped_unsent({row[0]: row[3] for row in dropped})
+            await session.commit()
+
+        logger.info(
+            f"Cleanup: deleted {entries_deleted} old entries, {sent_deleted} old sent records"
+        )
+        for sub_id, platform, channel, n in dropped:
+            logger.warning(
+                f"Subscription {sub_id} ({platform}/{channel}): cleanup deleted {n} entries "
+                f"it never delivered — the feed publishes faster than {SENDS_PER_ROUND} "
+                f"per round can deliver"
+            )
+        self.totals.entries_dropped_unsent += sum(row[3] for row in dropped)
+
     async def run_cleanup_loop(self, heartbeat_tick_seconds: int = 300) -> None:
         """Periodically delete old feed entries and sent-entry records.
 
@@ -1117,19 +1253,7 @@ class Dispatcher:
         while True:
             if loop.time() >= next_cleanup_at:
                 try:
-                    session_factory = get_session_factory()
-                    async with session_factory() as session:
-                        feed_repo = FeedRepository(session)
-                        sub_repo = SubscriptionRepository(session)
-
-                        entries_deleted = await feed_repo.cleanup_old_entries(entry_retention_days)
-                        sent_deleted = await sub_repo.cleanup_old_sent_entries(sent_retention_days)
-                        await session.commit()
-
-                        logger.info(
-                            f"Cleanup: deleted {entries_deleted} old entries, "
-                            f"{sent_deleted} old sent records"
-                        )
+                    await self.cleanup_once()
                 except Exception:
                     logger.exception("Cleanup loop error")
                 # Always advance the next-run pointer, even on error —

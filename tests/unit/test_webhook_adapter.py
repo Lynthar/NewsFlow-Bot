@@ -20,7 +20,7 @@ import aiohttp
 import pytest
 import pytest_asyncio
 
-from newsflow.adapters.base import Message
+from newsflow.adapters.base import Message, UndeliverableError
 from newsflow.adapters.webhook.bot import WebhookAdapter, _retry_after_seconds
 from newsflow.core.feed_fetcher import FetchResult
 from newsflow.models.webhook import WebhookDestination
@@ -221,6 +221,29 @@ async def test_hmac_signature_when_secret_present():
 
     expected = hmac.new(secret.encode("utf-8"), sent["data"], hashlib.sha256).hexdigest()
     assert sig_header == f"sha256={expected}"
+
+
+async def test_env_references_are_expanded_at_send_time(monkeypatch):
+    monkeypatch.setenv("HOOK_URL", "https://hooks.example.com/T0/TOKEN")
+    monkeypatch.setenv("HOOK_SECRET", "s3cret")
+    session = _FakeSession(status=200)
+    adapter = _make_adapter(session)
+    adapter._destinations = {
+        "x": _dest(
+            name="x",
+            url="${HOOK_URL}",
+            secret="${HOOK_SECRET}",
+            headers={"Authorization": "Bearer ${HOOK_SECRET}"},
+        )
+    }
+
+    assert await adapter.send_message("x", _message()) is True
+
+    sent = session.calls[0]
+    assert sent["url"] == "https://hooks.example.com/T0/TOKEN"
+    assert sent["headers"]["Authorization"] == "Bearer s3cret"
+    expected = hmac.new(b"s3cret", sent["data"], hashlib.sha256).hexdigest()
+    assert sent["headers"]["X-NewsFlow-Signature"] == f"sha256={expected}"
 
 
 async def test_no_signature_header_when_secret_missing():
@@ -506,6 +529,42 @@ async def test_accepted_200_body_is_a_success(session):
     adapter._destinations = {"brk": dest}
 
     assert await adapter.send_message("brk", _message()) is True
+    assert dest.error_count == 0
+
+
+# ─── content rejections ──────────────────────────────────────────────────────
+
+
+async def test_rejected_entry_is_resent_as_title_and_link(session):
+    dest = await _persisted_dest(session, format="discord")
+    fake = _FakeSession(statuses=[400, 200])
+    adapter = _make_adapter(fake)
+    adapter._destinations = {"brk": dest}
+    msg = Message(
+        title="Hello",
+        summary="summary",
+        link="https://example.com/a",
+        source="Source",
+        image_url="https://example.com/i.png",
+    )
+
+    assert await adapter.send_message("brk", msg) is True
+    embed = json.loads(fake.calls[1]["data"])["embeds"][0]
+    assert embed["title"] == "Hello"
+    assert "image" not in embed and "fields" not in embed
+    assert dest.error_count == 0
+
+
+async def test_content_rejections_never_trip_the_breaker(session):
+    dest = await _persisted_dest(session)
+    adapter = _make_adapter(_FakeSession(status=400, body=b"bad"))
+    adapter._destinations = {"brk": dest}
+
+    for _ in range(12):
+        with pytest.raises(UndeliverableError):
+            await adapter.send_message("brk", _message())
+
+    assert dest.is_active is True
     assert dest.error_count == 0
 
 

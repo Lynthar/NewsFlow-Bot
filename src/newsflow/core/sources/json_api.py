@@ -24,14 +24,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
-import re
 from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
 from dateutil import parser as date_parser
 
+from newsflow.core.env_refs import expand_env_refs
 from newsflow.core.feed_fetcher import (
     DEFAULT_HEADERS,
     FeedFetchError,
@@ -71,9 +70,6 @@ def _fail(url: str, error: str, status: int | None = None) -> FetchResult:
     return FetchResult(url=url, success=False, entries=[], error=error, status=status)
 
 
-_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
-
 def _resolve_headers(raw: Any) -> dict[str, str]:
     """Expand ``${ENV_VAR}`` references in configured header values.
 
@@ -85,22 +81,7 @@ def _resolve_headers(raw: Any) -> dict[str, str]:
         return {}
     if not isinstance(raw, dict):
         raise ValueError("config.headers must be a mapping of header -> value")
-    out: dict[str, str] = {}
-    for key, value in raw.items():
-        name = str(key)
-
-        def expand(match: re.Match[str], _header: str = name) -> str:
-            var = match.group(1)
-            resolved = os.environ.get(var)
-            if resolved is None:
-                raise ValueError(
-                    f"headers[{_header!r}] references environment variable "
-                    f"{var!r}, which is not set"
-                )
-            return resolved
-
-        out[name] = _ENV_REF_RE.sub(expand, str(value))
-    return out
+    return {str(k): expand_env_refs(str(v), f"headers[{str(k)!r}]") for k, v in raw.items()}
 
 
 def _parse_date(value: Any) -> datetime | None:

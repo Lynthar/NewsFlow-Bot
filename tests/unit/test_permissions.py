@@ -204,3 +204,24 @@ def test_discord_groups_locked_to_manage_guild():
     assert DigestCommands.digest_group.default_permissions == Permissions(manage_guild=True)
     # The top-level /status stays open to everyone.
     assert SettingsCommands.status.default_permissions is None
+
+
+def test_discord_management_groups_are_not_offered_in_dms():
+    # The Manage Server gate does not apply in a DM: anyone sharing a server with the bot
+    # could subscribe, translate and run digests there on the deployer's quota.
+    discord = pytest.importorskip("discord")
+
+    from newsflow.adapters.discord.bot import (
+        DigestCommands,
+        FeedCommands,
+        SettingsCommands,
+    )
+
+    tree = discord.app_commands.CommandTree(discord.Client(intents=discord.Intents.none()))
+    for group in (
+        FeedCommands.feed_group,
+        SettingsCommands.settings_group,
+        DigestCommands.digest_group,
+    ):
+        payload = group.to_dict(tree)
+        assert (payload["contexts"], payload["dm_permission"]) == ([0], False)

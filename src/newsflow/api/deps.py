@@ -43,6 +43,25 @@ async def require_api_key(
         )
 
 
+async def require_ingest_key(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Guard /api/ingest: INGEST_API_KEY or API_KEY. Fail-closed (503) when neither is
+    configured. The ingest key opens nothing else."""
+    settings = get_settings()
+    keys = [k for k in (settings.ingest_api_key, settings.api_key) if k]
+    if not keys:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Ingest is disabled (no ingest_api_key or api_key configured)",
+        )
+    if not any(_token_matches(authorization, k) for k in keys):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+
+
 async def require_read_api_key(
     authorization: str | None = Header(default=None),
 ) -> None:

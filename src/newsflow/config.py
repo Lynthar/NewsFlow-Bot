@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     # Empty = write access disabled (fail closed). Set via the API_KEY env var.
     # Once set, READ endpoints (except health probes) require it too.
     api_key: str = ""
+    # Key for /api/ingest alone, for the systems that push entries from outside: a leak
+    # there then grants no management access. Empty = API_KEY serves ingest too.
+    ingest_api_key: str = ""
     # CORS allowlist for browser callers. Empty (default) = no CORS headers
     # at all; the old blanket allow_origins=["*"] is opt-in via
     # API_CORS_ORIGINS=* if someone truly wants it. Comma or JSON list.
@@ -305,7 +308,7 @@ class Settings(BaseSettings):
                 f"translation_enabled but provider {self.translation_provider!r} "
                 "has no API key — entries will be delivered untranslated"
             )
-        if self.api_enabled and not self.api_key:
+        if self.api_enabled and not self.api_key and not self.ingest_api_key:
             warnings.append(
                 "api_enabled without API_KEY — write endpoints and /api/ingest "
                 "are fail-closed (503), push sources won't work"

@@ -7,9 +7,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, exists, func, or_, select, update
+from sqlalchemy import ColumnElement, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import InstrumentedAttribute, selectinload
 
 from newsflow.config import get_settings
 from newsflow.models.subscription import SentEntry, Subscription
@@ -19,6 +19,32 @@ if TYPE_CHECKING:
     from newsflow.models.feed import FeedEntry
 
 logger = logging.getLogger(__name__)
+
+
+def _unsent(
+    subscription_id: InstrumentedAttribute[int] | int, feed_id: InstrumentedAttribute[int] | int
+) -> list[ColumnElement[bool]]:
+    """FeedEntry conditions for the queue a subscription delivers from: entries of its feed
+    with no SentEntry for it, inside the publish-age window. `published_at IS NULL` always
+    passes — some feeds carry no date and we'd rather deliver than silently drop."""
+    from newsflow.models.feed import FeedEntry
+
+    # NOT EXISTS rather than NOT IN, to avoid the NULL-in-list trap.
+    sent_exists = (
+        select(SentEntry.id)
+        .where(
+            SentEntry.subscription_id == subscription_id,
+            SentEntry.feed_id == FeedEntry.feed_id,
+            SentEntry.guid == FeedEntry.guid,
+        )
+        .exists()
+    )
+    conditions = [FeedEntry.feed_id == feed_id, ~sent_exists]
+    max_age_days = get_settings().max_entry_publish_age_days
+    if max_age_days > 0:
+        cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+        conditions.append(or_(FeedEntry.published_at.is_(None), FeedEntry.published_at >= cutoff))
+    return conditions
 
 
 class SubscriptionRepository:
@@ -501,6 +527,7 @@ class SubscriptionRepository:
         feed_id: int,
         guid: str,
         was_filtered: bool = False,
+        undeliverable: bool = False,
     ) -> SentEntry:
         """Record that a subscription has processed a (feed, guid) pair.
 
@@ -512,12 +539,15 @@ class SubscriptionRepository:
         `was_filtered=True` means the entry matched the subscription's
         filter rule out and was NOT actually delivered — we still persist
         a row so the dispatcher doesn't keep re-evaluating it forever.
+        `undeliverable=True` means the platform kept refusing it and dispatch
+        gave up; digests exclude those rows.
         """
         sent = SentEntry(
             subscription_id=subscription_id,
             feed_id=feed_id,
             guid=guid,
             was_filtered=was_filtered,
+            undeliverable=undeliverable,
         )
         self.session.add(sent)
         await self.session.flush()
@@ -631,40 +661,12 @@ class SubscriptionRepository:
         if not subscription:
             return []
 
-        # NOT EXISTS join: rows in feed_entries with no matching SentEntry
-        # for this subscription on (feed_id, guid). NOT EXISTS rather
-        # than NOT IN to avoid the well-known NULL-in-list trap.
-        sent_exists = (
-            select(SentEntry.id)
-            .where(
-                SentEntry.subscription_id == subscription_id,
-                SentEntry.feed_id == FeedEntry.feed_id,
-                SentEntry.guid == FeedEntry.guid,
-            )
-            .exists()
-        )
-
-        conditions = [
-            FeedEntry.feed_id == subscription.feed_id,
-            ~sent_exists,
-        ]
-
-        max_age_days = get_settings().max_entry_publish_age_days
-        if max_age_days > 0:
-            cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
-            conditions.append(
-                or_(
-                    FeedEntry.published_at.is_(None),
-                    FeedEntry.published_at >= cutoff,
-                )
-            )
-
         # Oldest first: newest belongs at the bottom of the chat, and newest-first let
         # fresh entries permanently squeeze out older ones until retention dropped them.
         # Undated entries sort first; id breaks ties deterministically.
         result = await self.session.execute(
             select(FeedEntry)
-            .where(*conditions)
+            .where(*_unsent(subscription_id, subscription.feed_id))
             .order_by(
                 FeedEntry.published_at.asc().nullsfirst(),
                 FeedEntry.id.asc(),
@@ -683,31 +685,52 @@ class SubscriptionRepository:
         subscription = await self.get_subscription_by_id(subscription_id)
         if not subscription:
             return 0
-
-        sent_exists = (
-            select(SentEntry.id)
-            .where(
-                SentEntry.subscription_id == subscription_id,
-                SentEntry.feed_id == FeedEntry.feed_id,
-                SentEntry.guid == FeedEntry.guid,
-            )
-            .exists()
-        )
-        conditions = [
-            FeedEntry.feed_id == subscription.feed_id,
-            ~sent_exists,
-        ]
-        max_age_days = get_settings().max_entry_publish_age_days
-        if max_age_days > 0:
-            cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
-            conditions.append(
-                or_(
-                    FeedEntry.published_at.is_(None),
-                    FeedEntry.published_at >= cutoff,
-                )
-            )
         count = await self.session.scalar(
-            select(func.count()).select_from(FeedEntry).where(*conditions)
+            select(func.count())
+            .select_from(FeedEntry)
+            .where(*_unsent(subscription_id, subscription.feed_id))
+        )
+        return int(count or 0)
+
+    async def count_unsent_expiring(self, days: int) -> list[tuple[int, str, str, int]]:
+        """Per active subscription, its queued entries that `cleanup_old_entries(days)`
+        would delete now: (id, platform, channel id, count). Only non-zero counts."""
+        from newsflow.models.feed import FeedEntry
+        from newsflow.repositories.feed_repository import expired_entries
+
+        result = await self.session.execute(
+            select(
+                Subscription.id,
+                Subscription.platform,
+                Subscription.platform_channel_id,
+                func.count(FeedEntry.id),
+            )
+            .join(FeedEntry, FeedEntry.feed_id == Subscription.feed_id)
+            .where(
+                Subscription.is_active.is_(True),
+                *_unsent(Subscription.id, Subscription.feed_id),
+                *expired_entries(days, datetime.now(UTC)),
+            )
+            .group_by(Subscription.id, Subscription.platform, Subscription.platform_channel_id)
+        )
+        return [(row[0], row[1], row[2], int(row[3])) for row in result.all()]
+
+    async def add_dropped_unsent(self, counts: dict[int, int]) -> None:
+        """Add each subscription's count of entries cleanup deleted before delivery."""
+        for sub_id, n in counts.items():
+            await self.session.execute(
+                update(Subscription)
+                .where(Subscription.id == sub_id)
+                .values(dropped_unsent=Subscription.dropped_unsent + n)
+            )
+
+    async def count_undeliverable(self, subscription_id: int) -> int:
+        """Entries dispatch gave up on for this subscription, among the kept sent records."""
+        count = await self.session.scalar(
+            select(func.count()).where(
+                SentEntry.subscription_id == subscription_id,
+                SentEntry.undeliverable.is_(True),
+            )
         )
         return int(count or 0)
 

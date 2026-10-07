@@ -9,8 +9,10 @@ staying untouched when no template is set.
 
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 
+from newsflow.adapters.base import UndeliverableError
 from tests import seed
 
 # ---------------------------------------------------------------- telegram
@@ -58,18 +60,19 @@ async def test_telegram_entity_rejection_falls_back_to_plain():
     assert retry_kwargs["text"] == "**broken"
 
 
-async def test_telegram_non_entity_bad_request_is_not_swallowed():
+async def test_telegram_non_entity_bad_request_on_template_sends_title_and_link():
     from telegram.error import BadRequest
 
     adapter = seed.tg_adapter()
-    adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Message is too long"))
+    adapter.app.bot.send_message = AsyncMock(side_effect=[BadRequest("Message is too long"), None])
 
     ok = await adapter.send_message("123", seed.message(template_text="{x}"))
 
-    # Falls through to the generic failure path: one attempt, retried
-    # next cycle — no bogus plain-text resend of an unrelated error.
-    assert ok is False
-    assert adapter.app.bot.send_message.await_count == 1
+    # Not the plain rendering of the template: a non-entity refusal skips to the bare form.
+    assert ok is True
+    bare = adapter.app.bot.send_message.await_args.kwargs
+    assert "{x}" not in bare["text"]
+    assert bare["disable_web_page_preview"] is True
 
 
 async def test_telegram_oversized_html_sends_plain_text():
@@ -173,3 +176,37 @@ async def test_discord_embed_drops_a_link_discord_would_reject():
 
     assert await adapter.send_message("42", seed.message(link="https://x.test/a b")) is True
     assert channel.send.await_args.kwargs["embed"].url is None
+
+
+def _discord_http_error(status: int, code: int) -> discord.HTTPException:
+    response = MagicMock(status=status, reason="refused")
+    return discord.HTTPException(response, {"code": code, "message": "refused"})
+
+
+async def test_discord_400_resends_the_entry_as_escaped_title_and_link():
+    adapter, channel = seed.discord_adapter()
+    channel.send.side_effect = [_discord_http_error(400, 50035), None]
+
+    ok = await adapter.send_message("42", seed.message(title="**T**", link="https://x.test/a"))
+
+    assert ok is True
+    bare = channel.send.await_args
+    assert bare.args[0] == "\\*\\*T**\nhttps://x.test/a"
+    assert "embed" not in bare.kwargs
+
+
+async def test_discord_400_on_title_and_link_too_is_undeliverable():
+    adapter, channel = seed.discord_adapter()
+    channel.send.side_effect = _discord_http_error(400, 50035)
+
+    with pytest.raises(UndeliverableError):
+        await adapter.send_message("42", seed.message())
+    assert channel.send.await_count == 2
+
+
+async def test_discord_5xx_is_not_retried_as_title_and_link():
+    adapter, channel = seed.discord_adapter()
+    channel.send.side_effect = _discord_http_error(503, 0)
+
+    assert await adapter.send_message("42", seed.message()) is False
+    assert channel.send.await_count == 1

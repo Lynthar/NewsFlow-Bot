@@ -8,6 +8,7 @@ from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.services.digest_service import (
     DigestService,
+    _most_recent_slot,
     append_source_list,
     build_source_list,
     is_due,
@@ -63,17 +64,11 @@ def test_is_due_daily_skips_other_hours():
     assert is_due(config, _utc(2026, 4, 22, 10)) is False
 
 
-def test_is_due_daily_dedupe_within_window():
-    last = _utc(2026, 4, 22, 9, 0)
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
-    # Loop re-checks during the same hour slot — must not double-fire.
+def test_is_due_served_slot_does_not_fire_again():
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_slot_at=_utc(2026, 4, 22, 9))
     assert is_due(config, _utc(2026, 4, 22, 9, 30)) is False
-
-
-def test_is_due_daily_fires_next_day():
-    last = _utc(2026, 4, 21, 9, 0)
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
-    assert is_due(config, _utc(2026, 4, 22, 9, 0)) is True
+    assert is_due(config, _utc(2026, 4, 23, 8, 55)) is False
+    assert is_due(config, _utc(2026, 4, 23, 9, 0)) is True
 
 
 def test_is_due_weekly_requires_matching_weekday():
@@ -96,12 +91,10 @@ def test_is_due_unknown_schedule_returns_false():
     assert is_due(config, _utc(2026, 4, 22, 9)) is False
 
 
-def test_is_due_handles_naive_last_delivered_at():
-    # SQLite + aiosqlite drops tzinfo on read for DateTime(timezone=True).
-    # is_due() must not crash with TypeError (offset-naive vs offset-aware)
-    # — that bug stalled the entire digest tick after the first delivery.
-    naive = datetime(2026, 4, 21, 9, 0)  # no tzinfo
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=naive)
+def test_is_due_handles_naive_last_slot_at():
+    # SQLite + aiosqlite drops tzinfo on read for DateTime(timezone=True); comparing
+    # naive with aware raises and once stalled the whole digest tick.
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_slot_at=datetime(2026, 4, 21, 9))
     assert is_due(config, _utc(2026, 4, 22, 9, 0)) is True
     assert is_due(config, _utc(2026, 4, 21, 9, 30)) is False
 
@@ -110,64 +103,35 @@ def test_is_due_handles_naive_last_delivered_at():
 
 
 def test_is_due_catches_up_after_missed_daily_slot():
-    # Delivered yesterday 09:02; the process was down across today's
-    # 09:00 slot. An 11:47 tick must still deliver (late) instead of
-    # silently skipping to tomorrow.
-    last = _utc(2026, 4, 21, 9, 2)
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
+    # Yesterday's slot served; the process was down across today's 09:00. An 11:47
+    # tick must still deliver (late) instead of silently skipping to tomorrow.
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_slot_at=_utc(2026, 4, 21, 9))
     assert is_due(config, _utc(2026, 4, 22, 11, 47)) is True
 
 
-def test_is_due_no_refire_after_late_catchup_delivery():
-    # The catch-up delivery marked 11:50; later ticks the same day stay
-    # quiet (last_delivered_at is now past the day's slot).
-    last = _utc(2026, 4, 22, 11, 50)
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
-    assert is_due(config, _utc(2026, 4, 22, 14, 0)) is False
-
-
-def test_is_due_manual_delivery_shortly_before_slot_suppresses_it():
-    # /digest now at 08:00 satisfies today's 09:00 slot (dedupe delta);
-    # tomorrow's slot fires normally.
-    last = _utc(2026, 4, 22, 8, 0)
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=last)
-    assert is_due(config, _utc(2026, 4, 22, 9, 30)) is False
-    assert is_due(config, _utc(2026, 4, 23, 9, 5)) is True
-
-
 def test_is_due_weekly_catches_up_within_the_week():
-    # Weekly Wed 09:00 (2026-04-22 is a Wednesday). Delivered the prior
-    # Wednesday; down across this Wednesday's slot → the Friday tick
-    # still delivers instead of waiting a whole further week.
-    last = _utc(2026, 4, 15, 9, 0, weekday=2)
+    # Weekly Wed 09:00 (2026-04-22 is a Wednesday). Served the prior Wednesday; down
+    # across this Wednesday's slot → the Friday tick still delivers.
     config = _cfg(
-        schedule="weekly", delivery_hour_utc=9, delivery_weekday=2, last_delivered_at=last
+        schedule="weekly",
+        delivery_hour_utc=9,
+        delivery_weekday=2,
+        last_slot_at=_utc(2026, 4, 15, 9, weekday=2),
     )
     assert is_due(config, _utc(2026, 4, 24, 16, 0)) is True
 
 
 def test_is_due_weekly_slot_is_the_delivery_weekday_at_the_delivery_hour():
-    """A Wed-09:00 digest delivered late last Wednesday is served until this
-    Wednesday 09:00 exactly, and stays due (catch-up) for the rest of the week."""
-    last = _utc(2026, 4, 15, 12, 0, weekday=2)
     config = _cfg(
-        schedule="weekly", delivery_hour_utc=9, delivery_weekday=2, last_delivered_at=last
+        schedule="weekly",
+        delivery_hour_utc=9,
+        delivery_weekday=2,
+        last_slot_at=_utc(2026, 4, 15, 9, weekday=2),
     )
     assert is_due(config, _utc(2026, 4, 21, 12, 0, weekday=1)) is False
     assert is_due(config, _utc(2026, 4, 22, 8, 0, weekday=2)) is False
     assert is_due(config, _utc(2026, 4, 22, 9, 0, weekday=2)) is True
     assert is_due(config, _utc(2026, 4, 25, 12, 0, weekday=5)) is True
-
-
-def test_is_due_weekly_delivery_before_the_slot_does_not_serve_it():
-    """A manual digest on Tuesday evening predates Wednesday's slot, so the
-    slot is still owed — the next week's ticks catch it up."""
-    last = _utc(2026, 4, 14, 20, 0, weekday=1)
-    config = _cfg(
-        schedule="weekly", delivery_hour_utc=9, delivery_weekday=2, last_delivered_at=last
-    )
-    assert is_due(config, _utc(2026, 4, 21, 12, 0, weekday=1)) is True
-    assert is_due(config, _utc(2026, 4, 22, 8, 0, weekday=2)) is True
 
 
 def test_is_due_weekly_without_a_weekday_is_never_due():
@@ -179,7 +143,7 @@ def test_is_due_weekly_without_a_weekday_is_never_due():
         schedule="weekly",
         delivery_hour_utc=9,
         delivery_weekday=None,
-        last_delivered_at=_utc(2026, 4, 1, 9),
+        last_slot_at=_utc(2026, 4, 1, 9),
     )
     assert is_due(served, _utc(2026, 4, 22, 9)) is False
 
@@ -187,25 +151,47 @@ def test_is_due_weekly_without_a_weekday_is_never_due():
 def test_is_due_daily_before_the_slot_hour_looks_at_yesterdays_slot():
     """At 08:00 the most recent slot is yesterday's 09:00: served → not due
     (today's slot has not arrived); missed → due now, as catch-up."""
-    served = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=_utc(2026, 4, 21, 9))
+    served = _cfg(schedule="daily", delivery_hour_utc=9, last_slot_at=_utc(2026, 4, 21, 9))
     assert is_due(served, _utc(2026, 4, 22, 8)) is False
-    missed = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=_utc(2026, 4, 20, 9))
+    missed = _cfg(schedule="daily", delivery_hour_utc=9, last_slot_at=_utc(2026, 4, 20, 9))
     assert is_due(missed, _utc(2026, 4, 22, 8)) is True
 
 
-def test_is_due_delivery_exactly_at_the_slot_serves_it():
-    """Delivered at 09:00:00 sharp: the slot is served, so a tick 23.5h later,
-    still before the next slot, must not fire again."""
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=_utc(2026, 4, 22, 9))
-    assert is_due(config, _utc(2026, 4, 23, 8, 30)) is False
-
-
-def test_is_due_first_ever_still_waits_for_the_slot_hour():
-    # Enabling at 14:00 for a 09:00 slot must NOT fire immediately with a
-    # surprise digest; the first delivery waits for the next slot.
-    config = _cfg(schedule="daily", delivery_hour_utc=9, last_delivered_at=None)
+def test_is_due_without_a_recorded_slot_waits_for_the_slot_hour():
+    # A config enabled before slots were recorded: enabling at 14:00 for a 09:00 slot
+    # must NOT fire immediately; the first delivery waits for the next slot.
+    config = _cfg(schedule="daily", delivery_hour_utc=9)
     assert is_due(config, _utc(2026, 4, 22, 14, 0)) is False
     assert is_due(config, _utc(2026, 4, 23, 9, 0)) is True
+
+
+def test_scheduled_deliveries_stay_on_the_slot_hour_across_reconfiguration():
+    """Ticks every 5 minutes for three weeks. Changing the hour (as /digest enable does:
+    the current slot counts as served) never makes a delivery land off the hour."""
+    config = _cfg(schedule="daily", delivery_hour_utc=9, last_slot_at=_utc(2026, 4, 1, 9))
+    now = _utc(2026, 4, 1, 9, 5)
+    deliveries: list[datetime] = []
+    while now < _utc(2026, 4, 22, 0):
+        if now == _utc(2026, 4, 5, 14, 5):
+            config.delivery_hour_utc = 18
+            config.last_slot_at = _most_recent_slot(config, now)
+        if now == _utc(2026, 4, 12, 20, 5):
+            config.delivery_hour_utc = 7
+            config.last_slot_at = _most_recent_slot(config, now)
+        if is_due(config, now):
+            deliveries.append(now)
+            config.last_slot_at = _most_recent_slot(config, now)
+        now += timedelta(minutes=5)
+
+    assert all(d.minute == 0 and d.hour == _hour_in_force(d) for d in deliveries)
+    # 2–5 Apr at 09:00, 5–12 Apr at 18:00, 13–21 Apr at 07:00.
+    assert len(deliveries) == 4 + 8 + 9
+
+
+def _hour_in_force(when: datetime) -> int:
+    if when < _utc(2026, 4, 5, 14, 5):
+        return 9
+    return 18 if when < _utc(2026, 4, 12, 20, 5) else 7
 
 
 # ===== source list assembly =====

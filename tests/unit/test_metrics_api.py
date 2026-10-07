@@ -9,16 +9,20 @@ pytest.importorskip("fastapi")  # needs the api extra
 from newsflow.api.routes.metrics import metrics  # noqa: E402
 from newsflow.models.feed import Feed, FeedEntry  # noqa: E402
 from newsflow.models.subscription import SentEntry, Subscription  # noqa: E402
+from newsflow.services.dispatcher import DispatcherTotals  # noqa: E402
 from newsflow.services.subscription_service import SubscriptionService  # noqa: E402
 
 
 class _FakeDispatcher:
-    class totals:  # noqa: N801 — attribute container, mirrors DispatcherTotals
-        dispatch_rounds = 3
-        feeds_fetched = 12
-        new_entries = 7
-        messages_sent = 5
-        send_errors = 1
+    totals = DispatcherTotals(
+        dispatch_rounds=3,
+        feeds_fetched=12,
+        new_entries=7,
+        messages_sent=5,
+        send_errors=1,
+        entries_undeliverable=2,
+        entries_dropped_unsent=4,
+    )
 
 
 async def test_metrics_renders_prometheus_text(session, monkeypatch):
@@ -44,6 +48,8 @@ async def test_metrics_renders_prometheus_text(session, monkeypatch):
     assert "# TYPE newsflow_dispatch_rounds_total counter" in body
     assert "newsflow_dispatch_rounds_total 3" in body
     assert "newsflow_messages_sent_total 5" in body
+    assert "newsflow_entries_undeliverable_total 2" in body
+    assert "newsflow_entries_dropped_unsent_total 4" in body
     assert "newsflow_feeds 1" in body
     assert "newsflow_subscriptions_active 1" in body
 
@@ -61,12 +67,13 @@ async def test_status_detail_reports_backlog(session):
     )
     session.add(sub)
     await session.flush()
-    # Three entries, one already sent → backlog of 2.
+    # Three entries, one sent and one given up → backlog of 1.
     for guid in ("a", "b", "c"):
         session.add(
             FeedEntry(feed_id=feed.id, guid=guid, title=guid.upper(), link=f"https://x/{guid}")
         )
     session.add(SentEntry(subscription_id=sub.id, feed_id=feed.id, guid="a"))
+    session.add(SentEntry(subscription_id=sub.id, feed_id=feed.id, guid="b", undeliverable=True))
     await session.commit()
 
     detail = await SubscriptionService(session).get_subscription_detail(
@@ -74,4 +81,5 @@ async def test_status_detail_reports_backlog(session):
     )
 
     assert detail is not None
-    assert detail.unsent_count == 2
+    assert detail.unsent_count == 1
+    assert detail.undeliverable_count == 1

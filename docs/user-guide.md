@@ -55,7 +55,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `/feed resume <url>` | 恢复已暂停的订阅；被自动禁用的 feed 也会一并复活重新抓取。`/feed resume all` 恢复本频道全部暂停订阅（bot 被踢出重邀后批量恢复用） |
 | `/feed list [page]` | 分页列出本频道订阅（每页 20 条，含暂停/静默/故障状态标注） |
 | `/feed test <url>` | 不订阅，只测试 URL 是否是合法 feed |
-| `/feed status <url>` | 单 feed 详情：健康、最近失败时间、最近 5 篇文章 |
+| `/feed status <url>` | 单 feed 详情：健康、最近失败时间、积压条数、没送达的条目（排队期间过期被清理的、平台反复拒收而放弃的）、最近 5 篇文章 |
 
 > **`/feed add` 接受的输入**：
 > - **feed 地址**：常规 RSS / Atom / **JSON Feed**（[jsonfeed.org](https://jsonfeed.org)）URL。
@@ -143,10 +143,10 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 
 | 命令 | 说明 |
 |---|---|
-| `/digest enable schedule:<daily\|weekly> hour:<0-23> [weekday:<0-6>] [language:<code>] [timezone:<tz>] [include_filtered:<bool>] [max_articles:<n>]` | 启用或更新。`hour`/`weekday` 按 `timezone` 解释（缺省 UTC）；`timezone` 收 IANA 名（`Asia/Shanghai`）或固定偏移（`+8`、`-5:30`），启用时刻换算成 UTC 入库（DST 地区冬夏偏 1 小时，重新 enable 即校正），确认回显同时给本地与 UTC |
+| `/digest enable schedule:<daily\|weekly> hour:<0-23> [weekday:<0-6>] [language:<code>] [timezone:<tz>] [include_filtered:<bool>] [max_articles:<n>]` | 启用或更新。`hour`/`weekday` 按 `timezone` 解释（缺省 UTC）；`timezone` 收 IANA 名（`Asia/Shanghai`）或固定偏移（`+8`、`-5:30`），启用时刻换算成 UTC 入库（DST 地区冬夏偏 1 小时，重新 enable 即校正），确认回显同时给本地与 UTC。启用或改时间后从**下一个**投递时段开始，不会当场补发一期 |
 | `/digest show` | 查看当前配置 |
 | `/digest disable` | 关闭（配置保留） |
-| `/digest now` | 立即生成并投递一次（测试用） |
+| `/digest now` | 立即生成一份预览：不置顶、不 `@here`、不计入投递记录，当天的定时 digest 照常到达 |
 
 **其他**
 
@@ -238,7 +238,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `/digest enable daily <hour> [lang] [tz]` | 启用日报。`hour` 按 `tz` 解释；`tz` 收 `Asia/Shanghai` / `+8` / `utc`（缺省 UTC），两个尾参顺序随意 |
 | `/digest enable weekly <weekday> <hour> [lang] [tz]` | 启用周报（weekday 支持 `mon…sun` 或 `0…6`，同样按 `tz` 解释） |
 | `/digest disable` | 关闭 |
-| `/digest now` | 立即投递一次 |
+| `/digest now` | 立即生成一份预览（不置顶、不计入投递记录，定时 digest 照常到达） |
 
 **其他**
 
@@ -323,6 +323,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `API_HOST` | `127.0.0.1` | 监听地址。**默认回环**（GET 端点会暴露 feed URL——常内嵌 token——与错误详情）；Docker 镜像内部覆盖为 `0.0.0.0`（容器的暴露边界是端口映射），裸机要对外需自行设 `0.0.0.0` |
 | `API_PORT` | `8000` | 监听端口 |
 | `API_KEY` | `（空）` | API 共享密钥。**空 = 禁用所有写端点（fail-closed）**、读端点开放；**一旦设置，读端点（health/ready/live 探针除外）同样要求携带**。请求带 `Authorization: Bearer <API_KEY>` |
+| `INGEST_API_KEY` | `（空）` | 只开放 `/api/ingest` 的独立密钥，给往里推内容的外部系统（NAS、CI、n8n）用：它泄露了也碰不到管理端点。空 = `API_KEY` 兼管 ingest。设了它之后 `API_KEY` 仍然能推 |
 | `API_CORS_ORIGINS` | 空 | 浏览器跨域来源白名单（逗号或 JSON 数组）。**空 = 完全不发 CORS 头**；写 `*` 恢复旧的全放行 |
 
 ### 2.7B 声明式配置文件
@@ -358,7 +359,7 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `TELEGRAM_ADMIN_ONLY` | `true` | Telegram **群组**里的变更型命令（/add、/remove、/pause、/resume、/language、/translate、/setlang、/settrans、/silent、/setsilent、/setdisplay、/settopic、/import、/filter 与 /template 的 set/clear/reset 形式、/digest 的 enable/disable/now）仅群主/管理员可用；只读命令（/list、/info、/status、/export、/test、/digest show、裸 /filter 与 /template 查看等）所有成员可用。**私聊永不受限**。设为 `false` 恢复旧的任何成员可管理行为 |
 | `ADMIN_USER_IDS` | 空 | 全局管理员用户 id 列表（数字 id），**始终**通过 Telegram 群管理员检查。支持逗号分隔（`123,456`）或 JSON 数组两种写法。Discord 端不消费此项——Discord 用原生命令权限（见下） |
 
-Discord 端无需配置：`/feed`、`/settings`、`/digest` 三个命令组自带 `default_permissions`（Manage Server），普通成员默认看不到这些命令；服务器管理员可在 **服务器设置 → 整合（Integrations）** 里按角色/频道放宽整组。顶级 `/status` 保持公开。Discord 平台限制：权限只能设到命令组一级，无法给组内单个子命令单独放行。管理员身份判断结果在 bot 侧缓存 60 秒（Telegram），提升/撤销管理员最迟 1 分钟生效。
+Discord 端无需配置：`/feed`、`/settings`、`/digest` 三个命令组自带 `default_permissions`（Manage Server），普通成员默认看不到这些命令；服务器管理员可在 **服务器设置 → 整合（Integrations）** 里按角色/频道放宽整组。三个命令组**只在服务器频道里可用、私信里不可用**：私信不受 Manage Server 限制，否则任何与 bot 同服务器的人都能在私信里订阅、抓取、开 digest，消耗部署者的抓取、翻译与 LLM 额度。顶级 `/status` 保持公开。Discord 平台限制：权限只能设到命令组一级，无法给组内单个子命令单独放行。管理员身份判断结果在 bot 侧缓存 60 秒（Telegram），提升/撤销管理员最迟 1 分钟生效。
 
 ---
 
@@ -401,16 +402,17 @@ SELECT * FROM channel_digests WHERE enabled=True
    │
    ▼ 对每个 config 调 is_due(config, now)——槽位制，带补发：
      - 计算最近一个应投递时刻 slot（delivery_hour_utc + weekly 的 weekday）
-     - last_delivered_at 已过 slot → 不触发（本槽已投递，含空窗推进）
-     - last_delivered_at 在 slot 之前且距今 ≥ 去重阈值（日 23h / 周 6d）→ 触发
-       ⇒ 进程跨过投递小时宕机/重启，恢复后**晚发补上**而不是静默跳过一期；
-         手动 /digest now 后紧邻的定时槽仍会被去重阈值抵掉
-     - 首次投递（last_delivered_at 为空）保持旧行为：等到投递小时才发
+     - last_slot_at（上一次定时投递服务的那个 slot）早于 slot → 触发，否则不触发
+       ⇒ 进程跨过投递小时宕机/重启，恢复后**晚发补上**而不是静默跳过一期，
+         补发记的仍是那个 slot，下一期回到原来的整点
+     - 只有定时投递写 last_slot_at；/digest now 是预览，什么都不写；
+       /digest enable（含改时间、停用后重新启用）把当前 slot 记为已服务，从下一个开始
    │
    ▼ 命中的 config：
    │
    ▼
 查询该频道在 (last_delivered_at, now] 窗口里推送过的 FeedEntry
+（last_delivered_at 是上一次定时投递的时刻；没投递过时取过去 24 小时 / 7 天）
 （默认只算 was_filtered=False 的；include_filtered=True 时包括被过滤掉的）
    │
    ▼
@@ -551,13 +553,13 @@ DIGEST_MODEL=qwen2.5:14b
 ```yaml
 destinations:
   <name>:                            # 用户可读别名，订阅用它引用
-    url: <http endpoint>
+    url: <http endpoint>             # 可写 ${VAR}，见下
     format: generic | slack | discord | matrix | ntfy | lark | wecom
-    secret: <可选, HMAC-SHA256 key>
-    headers:                         # 可选, 任意自定义 HTTP headers
-      Authorization: "Bearer xxx"
+    secret: <可选, HMAC-SHA256 key>  # 可写 ${VAR}
+    headers:                         # 可选, 任意自定义 HTTP headers, 值可写 ${VAR}
+      Authorization: "Bearer ${MY_HOOK_TOKEN}"
     timeout_s: 10                    # 可选, 请求超时, 默认 10 s, 上限 60 s
-    translate: true                  # 可选, 是否对此目的地启用翻译
+    translate: false                 # 可选, 是否对此目的地启用翻译, 默认 false
     language: zh-CN                  # 可选, translate=true 时的目标语言
 
 subscriptions:
@@ -565,6 +567,10 @@ subscriptions:
     - <feed_url>
     - <feed_url>
 ```
+
+**凭据用 `${VAR}` 引用环境变量**：`url`、`secret` 与 `headers` 的值里的 `${VAR}` 在**发送时**才从进程环境展开，数据库里存的是引用本身，凭据不进库、不进备份、不随异常文本进日志。Slack、Discord、企业微信、飞书的 webhook URL 本身就是凭据，建议整条写成 `url: ${SLACK_HOOK_URL}`。变量必须出现在**解析这份文件的进程环境**里（启动、热重载、`make checkconfig`）：没设置会直接报错并点名变量，不会等到发送时才失败。Docker 下 compose 会把 `.env` 原样传进容器；裸机运行时 `.env` 只被 bot 自己的配置读取，引用的变量要另外 `export` 或写进 systemd 的 `EnvironmentFile`。
+
+**`translate` 默认关闭**，与 `sources.yaml` 的订阅者一致：开了全局翻译的部署，没写这个键的目的地收到的是原文。
 
 **完整带注释的示例**：`samples/webhooks.example.yaml` —— Slack / Discord / Matrix / ntfy / 飞书 / 企业微信 / n8n 七种目的地全覆盖。
 
@@ -673,10 +679,10 @@ def verify(body: bytes, header_value: str, secret: str) -> bool:
 | 企业微信 URL 里带 `?key=...` | 把完整 URL 原样贴进 yaml；bot 不会重组 URL |
 | 日志出现 `refused: wecom code …` / `refused: lark code …` | 这两家出错时也回 HTTP 200，错误码在响应体里，bot 按它判定成败。企业微信 93000 是 key 失效或机器人已被移出群；飞书 19021 是开了「签名校验」——它要求每次请求在 body 里现算 `timestamp` 与 `sign`，bot 不支持，改用「自定义关键词」或「IP 白名单」；19024 是消息里没有你设的自定义关键词 |
 | 改 yaml 后重启没变化 | 检查启动日志 `webhook_sync: N destination(s), M subscription(s)`；若数量不符，说明解析器没拿到最新文件 |
-| Discord 收到 HTTP 400 / 什么都没发出来 | 目的地填了 `format: generic`（或漏填）。Discord 原生 webhook 只认 `content` / `embeds`，收到我们的自定义 JSON 会直接 400 —— 改成 `format: discord` |
+| Discord 收到 HTTP 400 / 什么都没发出来 | 目的地填了 `format: generic`（或漏填）。Discord 原生 webhook 只认 `content` / `embeds`，收到我们的自定义 JSON 会直接 400 —— 改成 `format: discord`。这种配置错误不会丢条目：bot 只在同一目的地确实收下了一条提示时才放弃条目（见 §11.41），格式不对时提示也会被拒 |
 | Matrix 房间里出现的是一整包 JSON | 该 hookshot webhook 配了 transformation function，把我们的 `text` / `html` 覆盖了；删掉转换脚本即可 |
 | 日志出现 `rate-limited; retrying in Ns` | 接收端在限流。发送会按对方给的等待时间重试一次，**不计入熔断计数**；等待超过 5 秒则跳过本轮，条目留到下一轮再发（分发是串行的，不能为一个端点卡住其他平台） |
-| 日志出现 `auto-disabled after 10 straight failures` | **目的地熔断**：连续 10 次发送失败（HTTP 非 2xx / 超时 / 连接错 / 企业微信与飞书响应体里的非零错误码，其中限流码 45009 / 11232 与 429 一样不计入）后该 destination 自动停用，不再发起网络请求（对齐 feed 侧的自动禁用机制）。修好端点后热重载（`POST /api/admin/reload` 或 SIGHUP）或重启即恢复——仍在文件里声明 = 你想让它工作；保留期内未投递的积压会随即补发。任一次成功也会清零失败计数 |
+| 日志出现 `auto-disabled after 10 straight failures` | **目的地熔断**：连续 10 次发送失败（HTTP 非 2xx / 超时 / 连接错 / 企业微信与飞书响应体里的非零错误码，其中限流码 45009 / 11232 与 429 一样不计入；400 / 413 / 422 也不计入——它们说的是这一条内容，不是端点，见 §11.41）后该 destination 自动停用，不再发起网络请求（对齐 feed 侧的自动禁用机制）。修好端点后热重载（`POST /api/admin/reload` 或 SIGHUP）或重启即恢复——仍在文件里声明 = 你想让它工作；保留期内未投递的积压会随即补发。任一次成功也会清零失败计数 |
 
 > **未知字段现在是硬错误**：`webhooks.yaml` / `sources.yaml` 里拼错的键（如 `secert:`）过去被静默忽略（HMAC 签名就这样无声消失过），现在直接中止启动并列出合法键。升级后若启动失败，按报错清理多余键即可；部署前可用 `make checkconfig` 离线预检（§7.6）。
 
@@ -800,11 +806,11 @@ sources:
         channel: "123456789012345678"
 ```
 
-外部这样推（需 REST API 启用 + `API_KEY`，见 §2.7 / §6）：
+外部这样推（需 REST API 启用 + `INGEST_API_KEY` 或 `API_KEY`，见 §2.7 / §6）。推送方在 bot 之外，给它单独的 `INGEST_API_KEY`：泄露了也只能推条目，碰不到删源、重载这些管理端点。
 
 ```bash
 curl -X POST http://<host>:8000/api/ingest/ci-events \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer $INGEST_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"entries":[{"id":"build-42","title":"Build #42 passed","url":"https://ci/42"}]}'
 ```
@@ -889,7 +895,7 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 | `GET` | `/health` | 服务状态 |
 | `GET` | `/ready` | 就绪检查（含 DB 连接）；未就绪返回 **503**（编排系统按状态码摘流量） |
 | `GET` | `/live` | 存活探针（K8s 友好） |
-| `GET` | `/metrics` | **Prometheus 指标**：调度轮次/发送量/错误计数器 + feed/订阅/destination/digest 数量 gauge（文本格式，零依赖手写渲染） |
+| `GET` | `/metrics` | **Prometheus 指标**：调度轮次/发送量/错误计数器（`newsflow_send_errors_total` 逐条计发送失败）、`newsflow_entries_undeliverable_total`（平台反复拒收而放弃的条目）、`newsflow_entries_dropped_unsent_total`（排队期间过期被清理的条目）+ feed/订阅/destination/digest 数量 gauge（文本格式，零依赖手写渲染） |
 | `GET` | `/api/feeds` | 列全部 feed |
 | `POST` | `/api/feeds` | 添加 feed |
 | `GET` | `/api/feeds/{id}` | 单 feed 详情 |
@@ -903,10 +909,10 @@ curl -X POST http://<host>:8000/api/ingest/ci-events \
 | `POST` | `/api/subscriptions` | 🔒 订阅：`{platform, channel_id, feed_url}`——缺失的 feed 走与 `/add` 相同的抓取校验路径 |
 | `POST` | `/api/subscriptions/{id}/pause` · `/resume` | 🔒 暂停 / 恢复某订阅 |
 | `DELETE` | `/api/subscriptions/{id}` | 🔒 退订（连带过滤器与去重历史，语义同 `/remove`） |
-| `POST` | `/api/ingest/{source}` | 🔒 **入站推送**：条目 POST 进对应 `webhook_inbound` 源（见 §4B），**入库即触发一轮即时分发**——不再等下一个抓取周期 |
+| `POST` | `/api/ingest/{source}` | 🔑 **入站推送**：条目 POST 进对应 `webhook_inbound` 源（见 §4B），**入库即触发一轮即时分发**——不再等下一个抓取周期 |
 | `POST` | `/api/admin/reload` | 🔒 **热重载** `webhooks.yaml` + `sources.yaml`（等价于 SIGHUP，见 §7.6）；文件解析失败保持旧状态并返回 400 |
 
-🔒 = 需 `Authorization: Bearer <API_KEY>`；未配 `API_KEY` 返回 503。
+🔒 = 需 `Authorization: Bearer <API_KEY>`；未配 `API_KEY` 返回 503。🔑 = `INGEST_API_KEY` 或 `API_KEY` 均可；两个都没配返回 503。
 
 `LOG_LEVEL=DEBUG` 时自动暴露 `/docs`（Swagger UI）。
 
@@ -1429,12 +1435,15 @@ Prompt 里对输出语言直接下命令（`"...in {language}..."`），LLM 按 
 对每个 `ChannelDigest` 调 `is_due(config, now)`——槽位制：
 
 - 先算最近一个应投递时刻 `slot`（由 `delivery_hour_utc`、weekly 的 `delivery_weekday` 推出）
-- `last_delivered_at ≥ slot` → 本槽已投递过（含空窗推进），不触发
-- `last_delivered_at < slot` 且距今 ≥ 去重阈值（日 23h / 周 6d）→ 触发。
-  **错过槽位会补发**：跨过投递小时的宕机/重启，恢复后的第一次 tick 就把这期补上，
-  而不是旧行为的"静默跳到下一天/下一周"；补发晚点后，后续几天的实际投递时刻会以
-  每天最多 1 小时的速度收敛回配置槽位（去重阈值所致，属预期）
-- 首次投递（`last_delivered_at` 为空）等到投递小时才发，启用命令不会立刻炸出一期
+- `last_slot_at < slot` → 触发，否则不触发。`last_slot_at` 记的是上一次**定时**投递服务的那个
+  slot，不是投递发生的时刻：**错过槽位会补发**，跨过投递小时的宕机/重启，恢复后第一次 tick
+  就把这期补上，而补发记下的仍是原 slot，下一期准点回到配置的整点
+- 「哪一格已服务」和「digest 窗口从哪儿算起」（`last_delivered_at`）分成两列。过去一列兼两职，
+  手动跑一次、改一次投递小时，之后的定时投递就每天提前或推后一小时，最长三周才绕回
+- 只有定时投递写这两列。`/digest now` 是预览：不置顶、不 `@here`、什么都不记，当天的定时
+  digest 照常到达（它会把预览里总结过的文章再总结一遍——预览本来就是看看效果）
+- `/digest enable`（首次启用、改时间、停用后重新启用都走它）把当前 slot 记为已服务，
+  第一期从下一个 slot 开始，启用命令不会立刻炸出一期
 
 选 5 分钟而不是 1 小时：loop 自己开销几乎为零（一次 `SELECT WHERE enabled=True`），
 但 5min 粒度让配置改动能较快生效（比如用户刚 `/digest enable hour:9`，
@@ -1443,12 +1452,15 @@ Prompt 里对输出语言直接下命令（`"...in {language}..."`），LLM 按 
 
 ### 11.12 为什么 digest 空窗口也 mark_delivered？
 
-如果时间窗内一篇文章都没有（频道订阅的源那段时间全没更新），`DigestService.generate`
-返回 `None`。但我们仍然调用 `mark_delivered` 推进 `last_delivered_at`。
+如果时间窗内一篇文章都没有（频道订阅的源那段时间全没更新），没有东西可总结。
+但定时运行仍然调用 `mark_delivered`，把这个 slot 记为已服务。
 
-理由：如果不推进，下一次 loop 唤醒（5 分钟后）仍在同一 hour slot，`is_due` 仍然返回
-True，会一直尝试生成→返回 None→不推进，浪费 CPU。推进之后下一次就得等到下一个
-交付时间点。
+理由：如果不记，下一次 loop 唤醒（5 分钟后）`is_due` 仍然返回 True，
+会一直尝试生成→没有文章→不记，浪费 CPU。记下之后就得等到下一个交付时间点。
+
+投递成功但 `mark_delivered` 写库失败时（锁超时、Postgres 连接断开），先换新 session 重试几次；
+仍然失败，Dispatcher 在内存里记住这个 slot 已服务，下一次 tick 不会把同一期再投一遍，
+日志打 WARNING。代价只是下一期的窗口与这一期重叠。
 
 ### 11.13 为什么有 SSRF 校验而不是纯靠网络边界？
 
@@ -1559,8 +1571,17 @@ egress 策略 / VPS 网络边界作为第二层防御。
 ### 11.20 未发条目为什么按最旧优先
 
 两个理由。**时序**：最新的文章应该落在聊天记录底部，而不是压在更旧的上面。
-**积压公平**：待发多于 `limit` 时，最新优先会让每轮的新条目永久挤掉更早的，直到它们被保留期静默清掉；
+**积压公平**：待发多于每轮上限时，最新优先会让每轮的新条目永久挤掉更早的，直到它们被保留期静默清掉；
 最旧优先则是跨轮把积压排空。无日期的条目排在最前（无法判断新旧，宁可发也不要饿死），`id` 用来打破并列、保证确定性。
+
+**上限只数真正发出去的消息**：每个订阅每轮最多尝试发送 10 条（`SENDS_PER_ROUND`），被过滤、被静默的条目不占名额，
+单轮最多读 200 条（`ROUND_LOOKAHEAD`）限住工作量。过去过滤与静默也占名额，「高产源 + 关键词」「静默 + 日报」这两种
+消化高产源的用法正好撞上上限：关键词订阅只送达一小部分命中，静默订阅的日报总结的是十天前的条目。
+
+**上限之外的丢失要看得见**：持续到达率超过上限的源（arXiv 分类、HN newest），积压会一直长到保留期，
+清理时删掉还没投递的条目。清理前按订阅数出这批条目，打 WARNING、计入 `/metrics` 的
+`newsflow_entries_dropped_unsent_total`、累加到订阅上，在 `/feed status`（Telegram `/info`）的 Not delivered 一行显示。
+看到它，就该给这个源加过滤或改用静默 + digest。
 
 ### 11.21 入库去重要同时防"批内重复"
 
@@ -1627,7 +1648,7 @@ alembic 自己的 logger（`alembic.runtime.migration` 等）照样向根 logger
 
 静默模式不做即时推送，但仍以 `was_filtered=False` 标记为已发，让 digest 流水线经由 `SentEntry` 收得到它。
 这里也跳过翻译——digest 用的是原始标题/摘要，不必浪费 API 花销。
-`bypass_silent=True` 来自预览路径，让用户订阅时能收到一篇确认文章。
+`preview=True` 来自预览路径，让用户订阅时能收到一篇确认文章。
 
 ### 11.30 Telegram 群升级为超级群的自愈
 
@@ -1664,16 +1685,16 @@ alembic 自己的 logger（`alembic.runtime.migration` 等）照样向根 logger
 `DigestService.run_now` 是定时 tick 与两个 `/digest now` 的唯一入口，一次运行按下面的规矩拿锁、开 session：
 
 1. **每个频道一把锁，从读窗口一直持到写完投递标记**（`Dispatcher.digest_lock`）。两次运行若同时读同一个窗口，
-   同一份摘要会发两遍，慢的那次还会把更早的时间写回水位。定时运行拿到锁后重读配置、重判是否到期，
-   手动运行刚服务过的时段就不再发。
+   同一份摘要会发两遍，慢的那次还会把更早的时间写回水位。定时运行拿到锁后重读配置、重判是否到期。
+   手动预览也拿这把锁，但它什么都不写，排在它后面的定时运行照常投递。
 2. **读素材的那一小段同时持有投递锁**（`Dispatcher.delivery_lock`，投递轮与 `/add` 预览共用的那把）。
    投递标记都在这把锁里写入并提交，所以持锁读到的素材是完整的；不然一条已 flush、未提交的标记读不到，
    水位又越过了它，这篇文章就永远进不了摘要。调 LLM 之前释放。**顺序永远是先频道锁、后投递锁**，
    投递路径从不拿频道锁，所以不会死锁。
 3. **session 不跨 LLM 调用与平台 IO**：读配置与素材一个 session，生成与投递不持 session，
    写投递标记一个短 session。分块大小取各 adapter 的 `digest_chunk_size`（Discord 1900、Telegram 3800）。
-   写标记失败时 digest 其实**已经发到频道里了**——记日志然后继续；下一 tick 的 `is_due()` 会看到过期标记、
-   可能重发一次，那比让循环崩掉好。
+   写标记失败时 digest 其实**已经发到频道里了**——重试几次，仍失败就只记日志、不抛（见 §11.12），
+   让循环崩掉会把「已经发了」这件事一起丢掉。
 
 **digest 目标频道消失时**：停掉 digest 配置**以及**所有仍指向该频道的活跃订阅。
 feed dispatch 路径本来也会处理它自己那部分，但这个 tick 可能跑在下一次 feed dispatch 之前，所以这里抄近路。
@@ -1758,6 +1779,29 @@ feed 合法地会重定向（http→https、FeedBurner、CDN），所以策略�
 所以它们仍然计数、仍然十次停用，但每次都按普通抓取间隔重试——十次拒绝在默认间隔下约十小时就把停用通知送到人手里，
 而不是沿着曲线累到八天之后。404 仍走曲线：它多半是对方正在部署，按普通间隔连打十次会把一个健康的源在一个下午里停掉。
 
+### 11.41 平台反复拒收的条目：先降级，确认频道能收再放弃
+
+adapter 的契约过去只有两种结果：抛异常表示频道出了问题、要改库（消失、迁移、话题失效），
+返回 False 表示这轮没发出去、下轮再试。平台明确判定「这条请求本身非法」时也只能返回 False，
+于是一条永远发不出去的条目每轮都排在最旧优先的队头，攒到 10 条就把整个订阅饿死；webhook 上还会把整个目的地熔断。
+
+现在分两层：
+
+1. **adapter 先降级**。平台拒收整条（Discord 400、Telegram 非频道级的 BadRequest、webhook 400 / 413 / 422 或
+   企业微信与飞书的响应体错误码）时，改发只有标题和链接的纯文本。还被拒，才抛 `UndeliverableError`。
+   webhook 的 400 / 413 / 422 不计入熔断：它们说的是这一条内容，计进去会让一个源的坏条目停掉同一目的地上的所有订阅。
+2. **dispatcher 兜底并确认**。同一条连续三轮发送失败，或 adapter 抛了 `UndeliverableError`，本轮末尾给该频道
+   发一条提示（「N 篇文章多次投递失败，已跳过」，只写条数和 feed 名，不带可能正是祸根的标题与链接）。
+   **提示发出去了才把这些条目标成放弃**（`SentEntry.undeliverable`，digest 不收）；提示也被拒，说明是频道本身出了问题
+   ——权限被收、目的地格式配错、网络断了——条目原样留在队里，频道恢复后照常补发。
+
+这一步确认不能省：「请求非法」的错误里混着频道级的情况（Discord 的非文字频道是 400，Telegram 的无权限是 BadRequest，
+格式配错的 webhook 回的也是 400），只凭错误分类就放弃，一次权限事故就会变成整批丢失。
+连续失败计数放在内存里，重启清零，最坏只是多试几轮。话题订阅的提示落在主话题，与 digest 一致。
+
+**Telegram 发送超时按「至少一次」处理**：读超时可能发生在 Telegram 已经收下消息之后，下轮重试可能重复一条；
+反过来当成已发，可能丢一条。选了前者。请求超时设为 25 秒（PTB 默认 5 秒），把「慢但成功」的发送误判成超时的情况压到最少。
+
 ## 十二、代码风格与约定
 
 ### 12.1 工具配置
@@ -1834,6 +1878,11 @@ disallow_untyped_defs = true   # 所有函数必须标注类型
 
 - **核心依赖**（`[tool.poetry.dependencies]`）：没了就启动不了的必填项。
 - **可选 extras**（`[tool.poetry.extras]`）：按功能分组，`translation-deepl`、`api`、`cache`、`postgres`、`all` 等。
+- **版本锁**：`poetry.lock` 是唯一的版本来源。CI 用 Poetry 照它安装；镜像在构建阶段把它导出成 requirements 再装，
+  所以测过的就是发布的。每周一次的 `fresh-resolve.yml` 按 `pyproject.toml` 的范围重新解析到最新版本、跑全部门禁，
+  上游发版弄坏了什么先在那里看到。发版前刷新锁：用 `poetry.lock` 头部注明的那个 Poetry 版本跑 `poetry update`
+  （换个版本会把整份锁文件改写一遍，真正的依赖变化就淹没在格式噪音里），三道门禁全过再提交。
+  `test.yml`、`fresh-resolve.yml` 与 `docker/Dockerfile` 里的 Poetry 只读锁，三处钉在同一个版本，要改一起改。
 - **懒 import**：如果一个模块需要可选依赖，import 必须放在函数内部，而不是模块顶部：
 
 ```python
@@ -2093,7 +2142,7 @@ results = await asyncio.gather(*[repo.do_something(session, x) for x in items])
 
 ```
 NewsFlow-Bot/
-├── .github/workflows/            # CI：test.yml（pytest + ruff + mypy 三门禁）+ docker-publish.yml
+├── .github/workflows/            # CI：test.yml（照 poetry.lock 跑 pytest + ruff + mypy 三门禁）+ fresh-resolve.yml（每周新解析）+ docker-publish.yml
 ├── alembic/                      # 迁移脚本 + env.py
 ├── config/                       # webhooks.yaml / sources.yaml 放这里
 │                                 #   （Docker 以只读挂载进 /app/config）

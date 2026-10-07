@@ -7,7 +7,7 @@ and immediately triggers a dispatch round — "pushed" content shouldn't sit
 waiting for the next scheduled cycle (up to a full fetch interval).
 
 Idempotent by guid (client ``id`` or a content hash), so re-POSTing the same
-item is a no-op. Writes require the API key (see ``require_api_key``).
+item is a no-op. Writes require INGEST_API_KEY or API_KEY (see ``require_ingest_key``).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from newsflow.api.deps import get_db, require_api_key
+from newsflow.api.deps import get_db, require_ingest_key
 from newsflow.repositories.feed_repository import FeedRepository
 
 router = APIRouter()
@@ -83,7 +83,7 @@ async def ingest(
     source: str,
     payload: IngestPayload,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_api_key),
+    _: None = Depends(require_ingest_key),
 ) -> IngestResponse:
     """Accept pushed entries for a ``webhook_inbound`` source, looked up by the
     ``{source}`` slug (= the feed's url). Entries are written deduped-by-guid;

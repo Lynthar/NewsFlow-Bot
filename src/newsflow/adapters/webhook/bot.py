@@ -14,12 +14,13 @@ import hashlib
 import hmac
 import logging
 from collections.abc import Mapping
+from enum import Enum, auto
 from urllib.parse import urlsplit
 
 import aiohttp
 from sqlalchemy import select
 
-from newsflow.adapters.base import BaseAdapter, Message
+from newsflow.adapters.base import BaseAdapter, Message, UndeliverableError, bare_message
 from newsflow.adapters.webhook.formats import (
     Refusal,
     WireRequest,
@@ -28,6 +29,7 @@ from newsflow.adapters.webhook.formats import (
     build_payload,
     reads_verdict_from_body,
 )
+from newsflow.core.env_refs import expand_env_refs
 from newsflow.core.feed_fetcher import read_body_capped
 from newsflow.models.base import get_session_factory
 from newsflow.models.webhook import WebhookDestination
@@ -69,6 +71,20 @@ def _loggable_host(url: str) -> str:
 
 # A verdict body is a few dozen bytes; anything past this is not one.
 _VERDICT_BODY_CAP = 4096
+
+# Statuses that judge the payload rather than the endpoint: they never charge the breaker,
+# or one feed's unpostable entries would disable a destination every other feed shares.
+_CONTENT_REJECTIONS = frozenset({400, 413, 422})
+
+
+class _Outcome(Enum):
+    SENT = auto()
+    # A _CONTENT_REJECTIONS status. The breaker is not charged.
+    REJECTED = auto()
+    # A 2xx whose body reports a refusal. Not charged yet: the caller decides.
+    REFUSED = auto()
+    # Already charged to the breaker, or deferred by a rate limit.
+    FAILED = auto()
 
 
 async def _read_refusal(format_name: str, resp: aiohttp.ClientResponse) -> Refusal | None:
@@ -136,39 +152,73 @@ class WebhookAdapter(BaseAdapter):
             self._stop_event.set()
 
     async def send_message(self, channel_id: str, message: Message) -> bool:
+        """Post an entry. Raises UndeliverableError when the receiver answers a
+        _CONTENT_REJECTIONS status to the entry and to its bare title-and-link form."""
         dest = self._destinations.get(channel_id)
         if dest is None:
             logger.warning(f"webhook send: destination {channel_id!r} not configured")
             return False
         if dest.is_active is False:
             return False  # breaker open — backlog retries cheaply, no network
-        wire = build_payload(dest.format, message)
-        return await self._post(dest, wire)
+        outcome, error = await self._post(dest, build_payload(dest.format, message))
+        if outcome in (_Outcome.REJECTED, _Outcome.REFUSED):
+            bare = build_payload(dest.format, bare_message(message))
+            outcome, error = await self._post(dest, bare)
+        if outcome is _Outcome.REJECTED:
+            raise UndeliverableError(dest.name, reason=error or "rejected")
+        if outcome is _Outcome.REFUSED:
+            await self._record_send_result(dest, ok=False, error=error)
+        return outcome is _Outcome.SENT
 
     async def send_text(self, channel_id: str, text: str) -> bool:
         dest = self._destinations.get(channel_id)
         if dest is None or dest.is_active is False:
             return False
-        wire = build_notification_payload(dest.format, text)
-        return await self._post(dest, wire)
+        outcome, error = await self._post(dest, build_notification_payload(dest.format, text))
+        if outcome is _Outcome.REFUSED:
+            await self._record_send_result(dest, ok=False, error=error)
+        return outcome is _Outcome.SENT
 
-    async def _post(self, dest: WebhookDestination, wire: WireRequest) -> bool:
+    async def _post(
+        self, dest: WebhookDestination, wire: WireRequest
+    ) -> tuple[_Outcome, str | None]:
         """POST the wire body to dest.url with format-default headers, any
-        user-supplied headers, and an HMAC signature if dest.secret is set."""
+        user-supplied headers, and an HMAC signature if dest.secret is set.
+
+        Returns:
+            The outcome, and for REJECTED / REFUSED the error to report.
+        """
         headers: dict[str, str] = dict(wire.headers)
-        if dest.headers:
-            # Cast to str — SQLAlchemy JSON returns whatever the user wrote,
-            # which could be numbers or bools if they were careless.
-            headers.update({k: str(v) for k, v in dest.headers.items()})
-        if dest.secret:
+        try:
+            # ${VAR} references are stored unexpanded: the secrets never reach the database.
+            url = expand_env_refs(dest.url, f"webhook {dest.name!r}: url")
+            secret = (
+                expand_env_refs(dest.secret, f"webhook {dest.name!r}: secret")
+                if dest.secret
+                else None
+            )
+            if dest.headers:
+                # Cast to str — SQLAlchemy JSON returns whatever the user wrote,
+                # which could be numbers or bools if they were careless.
+                headers.update(
+                    {
+                        k: expand_env_refs(str(v), f"webhook {dest.name!r}: headers[{k!r}]")
+                        for k, v in dest.headers.items()
+                    }
+                )
+        except ValueError as e:
+            logger.warning(str(e))
+            await self._record_send_result(dest, ok=False, error=str(e))
+            return _Outcome.FAILED, None
+        if secret:
             # Sign the exact bytes we're about to send. Receiver computes the
             # same HMAC and compares. Prevents tampering on open endpoints.
-            sig = hmac.new(dest.secret.encode("utf-8"), wire.body, hashlib.sha256).hexdigest()
+            sig = hmac.new(secret.encode("utf-8"), wire.body, hashlib.sha256).hexdigest()
             headers["X-NewsFlow-Signature"] = f"sha256={sig}"
 
         # Log host only — the full URL often contains a secret token (Slack,
         # Zapier, feishu signed URLs all do) that shouldn't land in logs.
-        host = _loggable_host(dest.url)
+        host = _loggable_host(url)
         timeout = aiohttp.ClientTimeout(total=max(1, dest.timeout_s))
 
         for attempt in range(2):
@@ -176,13 +226,13 @@ class WebhookAdapter(BaseAdapter):
             # retry below is sleeping.
             if self._session is None or self._session.closed:
                 logger.error("webhook send attempted with no open aiohttp session")
-                return False
+                return _Outcome.FAILED, None
             try:
                 # allow_redirects=False: a webhook answering a POST with a redirect is a
                 # misconfiguration, and following it would re-send the signed body and auth
                 # headers to a URL the operator never vetted.
                 async with self._session.post(
-                    dest.url,
+                    url,
                     data=wire.body,
                     headers=headers,
                     timeout=timeout,
@@ -193,7 +243,7 @@ class WebhookAdapter(BaseAdapter):
                         refusal = await _read_refusal(dest.format, resp)
                         if refusal is None:
                             await self._record_send_result(dest, ok=True)
-                            return True
+                            return _Outcome.SENT, None
                     if refusal is not None and refusal.rate_limited:
                         # No wait to honour: the code says only "slow down", and WeCom's
                         # window is a minute. Like a 429, it never touches the breaker.
@@ -201,7 +251,7 @@ class WebhookAdapter(BaseAdapter):
                             f"webhook {dest.name} ({host}) rate-limited ({refusal.error}); "
                             f"deferring to the next dispatch round"
                         )
-                        return False
+                        return _Outcome.FAILED, None
                     if resp.status == 429:
                         # The receiver is pacing us, not failing. Neither branch touches the
                         # breaker: 10 rate-limits in a row would disable a healthy endpoint,
@@ -217,37 +267,38 @@ class WebhookAdapter(BaseAdapter):
                             f"webhook {dest.name} ({host}) rate-limited; "
                             f"deferring to the next dispatch round"
                         )
-                        return False
+                        return _Outcome.FAILED, None
                     if refusal is not None:
                         logger.warning(f"webhook {dest.name} ({host}) refused: {refusal.error}")
-                        await self._record_send_result(dest, ok=False, error=refusal.error)
-                        return False
+                        return _Outcome.REFUSED, refusal.error
                     # Read a small slice of the body for diagnostics without
                     # letting a misbehaving server push megabytes into our logs.
                     snippet = (await resp.content.read(512)).decode("utf-8", errors="replace")
                     logger.warning(f"webhook {dest.name} ({host}) HTTP {resp.status}: {snippet!r}")
+                    if resp.status in _CONTENT_REJECTIONS:
+                        return _Outcome.REJECTED, f"HTTP {resp.status}"
                     await self._record_send_result(dest, ok=False, error=f"HTTP {resp.status}")
-                    return False
+                    return _Outcome.FAILED, None
             except TimeoutError:
                 logger.warning(f"webhook {dest.name} ({host}) timed out after {dest.timeout_s}s")
                 await self._record_send_result(
                     dest, ok=False, error=f"timeout after {dest.timeout_s}s"
                 )
-                return False
+                return _Outcome.FAILED, None
             except aiohttp.ClientError as e:
                 # Type name only: aiohttp's message can quote the whole URL, token included.
                 error = type(e).__name__
                 logger.warning(f"webhook {dest.name} ({host}) client error: {error}")
                 await self._record_send_result(dest, ok=False, error=error)
-                return False
+                return _Outcome.FAILED, None
             except ValueError as e:
                 # aiohttp raises ValueError on an illegal header value. Treat it as a failed send
                 # rather than letting it escape and wedge the entry in the dispatch loop.
                 error = type(e).__name__
                 logger.warning(f"webhook {dest.name} ({host}) bad header/request: {error}")
                 await self._record_send_result(dest, ok=False, error=error)
-                return False
-        return False
+                return _Outcome.FAILED, None
+        return _Outcome.FAILED, None
 
     # Consecutive-failure threshold; mirrors Feed.mark_error's hardcoded 10.
     _MAX_CONSECUTIVE_ERRORS = 10

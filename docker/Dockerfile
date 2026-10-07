@@ -4,7 +4,7 @@
 # ============================================
 # Stage 1: Builder
 # ============================================
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
@@ -13,35 +13,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install directly via pip, no poetry in the runtime toolchain.
-#
-# History: earlier revisions used `poetry export -f requirements.txt
-# --extras all` but hit poetry-plugin-export's dependency walker bug —
-# it picks protobuf 7.x even though google-cloud-translate requires
-# protobuf <7.0.0, making `--extras all` fail in resolution. The prior
-# Dockerfile hid the failure behind a silent `|| fallback-to-no-extras`
-# shim, shipping an image missing openai / deepl / redis / fastapi. pip's
-# own resolver handles the same dependency graph correctly (picks
-# protobuf 6.x), so we use it directly and skip poetry altogether at
-# build time.
-COPY pyproject.toml README.md ./
+# Install exactly what poetry.lock pins, so the image is what the tests ran against.
+# The lock is exported here; Poetry lives in this stage only, never in the runtime image.
+COPY pyproject.toml poetry.lock README.md ./
 COPY src/ ./src/
+RUN pip install --no-cache-dir "poetry==2.5.1" "poetry-plugin-export==1.10.1" \
+ && poetry export -f requirements.txt --all-extras --without-hashes -o /tmp/requirements.txt
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install the project + every optional extra. Sanity-check on the next
-# line imports the critical optional packages; if any is missing the
-# build aborts here with a clear ModuleNotFoundError naming the culprit
-# instead of the bot limping along with broken digest / translation.
-RUN pip install --no-cache-dir ".[all]" \
+# The import check aborts the build, naming the culprit, if an optional package is missing:
+# otherwise the bot would start with digest or translation silently broken.
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+ && pip install --no-cache-dir --no-deps . \
  && python -c "import openai, deepl, redis, fastapi, aiohttp, feedparser, sqlalchemy, yaml, defusedxml; print('build deps OK; openai=', openai.__version__)"
 
 
 # ============================================
 # Stage 2: Runtime
 # ============================================
-FROM python:3.11-slim as runtime
+FROM python:3.11-slim AS runtime
 
 # Labels
 LABEL maintainer="NewsFlow Bot"

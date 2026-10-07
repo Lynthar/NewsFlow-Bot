@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.models.subscription import SentEntry
 from newsflow.repositories.digest_repository import ChannelDigestRepository
-from newsflow.services.digest_service import DigestService
+from newsflow.services.digest_service import (
+    DigestService,
+    _most_recent_slot,
+    enable_digest,
+    is_due,
+)
 from newsflow.services.dispatcher import Dispatcher
 from newsflow.services.summarization.base import DigestResult
 from tests import seed
@@ -50,8 +55,9 @@ async def _configured(db) -> None:
         await session.commit()
 
 
-async def _delivered_article(db) -> None:
-    """One article the channel received an hour ago — inside the first digest's window."""
+async def _delivered_article(db, now: datetime = NOW) -> None:
+    """One article the channel received an hour before `now` — inside the first digest's
+    window."""
     sub = await seed.subscription(db, platform="discord", channel_id=CHANNEL, user_id="u")
     entry = await seed.entry(db, sub.feed_id, guid="g1", title="Hello", link="https://ex.com/1")
     async with db() as session:
@@ -60,7 +66,7 @@ async def _delivered_article(db) -> None:
                 subscription_id=sub.id,
                 feed_id=entry.feed_id,
                 guid=entry.guid,
-                sent_at=NOW - timedelta(hours=1),
+                sent_at=now - timedelta(hours=1),
             )
         )
         await session.commit()
@@ -139,9 +145,22 @@ async def test_chunk_budget_comes_from_the_adapter_not_the_call_site(db, configu
     rest = [call.args[1] for call in adapter.send_digest_text.await_args_list]
     assert outcome.chunks == 1 + len(rest) >= 2
     assert all(len(chunk) <= 40 for chunk in [first, *rest])
-    # And the header shim ran, so a manual run pings the same way a scheduled
-    # one does — the drift this orchestration was introduced to stop.
     assert first.startswith("@here 📰 **Digest**")
+
+
+async def test_manual_run_is_a_preview_that_pings_pins_and_records_nothing(db, configure):
+    configure(digest_mention_on_delivery=True)
+    await _configured(db)
+    await _delivered_article(db)
+    adapter = _adapter()
+
+    outcome = await _run(_dispatcher(adapter), scheduled=False)
+
+    assert outcome.status == "delivered"
+    adapter.send_digest_text_pinned.assert_not_awaited()
+    adapter.unpin_message.assert_not_awaited()
+    assert adapter.send_digest_text.await_args.args[1].startswith("📰 **Digest**")
+    assert await _state(db) == (None, "pin-old")
 
 
 async def test_failed_delivery_does_not_record_one(db):
@@ -178,13 +197,92 @@ async def test_a_failed_delivery_record_is_reported_not_raised(db, monkeypatch):
     assert (outcome.status, outcome.mark_failed) == ("delivered", True)
 
 
+async def test_a_slot_whose_record_failed_is_not_delivered_again(db, monkeypatch):
+    await _configured(db)
+    await _delivered_article(db)
+    adapter = _adapter()
+    dispatcher = _dispatcher(adapter)
+    real_commit = AsyncSession.commit
+
+    async def locked(self):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(AsyncSession, "commit", locked)
+    await _run(dispatcher, scheduled=True)
+    monkeypatch.setattr(AsyncSession, "commit", real_commit)
+
+    again = await _run(dispatcher, scheduled=True)
+
+    assert again.status == "not_due"
+    assert adapter.send_digest_text_pinned.await_count == 1
+
+
+async def test_a_record_that_fails_once_is_retried(db, monkeypatch):
+    await _configured(db)
+    await _delivered_article(db)
+    real_commit = AsyncSession.commit
+    failures = iter([True])
+
+    async def flaky(self):
+        if next(failures, False):
+            raise RuntimeError("database is locked")
+        await real_commit(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", flaky)
+    outcome = await _run(_dispatcher(_adapter()), scheduled=True)
+
+    assert (outcome.status, outcome.mark_failed) == ("delivered", False)
+    assert await _state(db) == (NOW, "pin-new")
+
+
+async def test_tick_warns_when_a_delivered_digest_could_not_be_recorded(db, monkeypatch, caplog):
+    async with db() as session:
+        # Last served two days ago, so a catch-up is due whatever the hour is now.
+        await ChannelDigestRepository(session).upsert(
+            "discord",
+            CHANNEL,
+            None,
+            language="en",
+            last_slot_at=datetime.now(UTC) - timedelta(days=2),
+        )
+        await session.commit()
+    await _delivered_article(db, datetime.now(UTC))
+    monkeypatch.setattr(
+        "newsflow.services.summarization.get_summarizer",
+        lambda: _summarizer(DigestResult(success=True, text="body")),
+    )
+
+    async def locked(self):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(AsyncSession, "commit", locked)
+    await _dispatcher(_adapter())._tick_digests()
+
+    assert f"Delivered digest to discord/{CHANNEL} (1 chunks) but could not record it" in (
+        caplog.text
+    )
+
+
+async def test_enabling_counts_the_current_slot_as_served(db):
+    # Enabled inside its own delivery hour: without a served slot it would fire at once.
+    now = datetime.now(UTC)
+    async with db() as session:
+        config = await enable_digest(
+            session, "discord", CHANNEL, None, schedule="daily", delivery_hour_utc=now.hour
+        )
+        await session.commit()
+
+    assert is_due(config, now) is False
+    next_slot = _most_recent_slot(config, now) + timedelta(days=1)
+    assert is_due(config, next_slot) is True
+
+
 # ─── runs that overlap ───────────────────────────────────────────────────────
 
 
-async def test_overlapping_runs_for_one_channel_deliver_once(db):
-    """A manual run is still waiting on the LLM when the scheduled one starts. They
-    used to read the same window, both deliver it, and the slower one wrote its older
-    time back. Now the second waits, finds the slot served, and stops."""
+async def test_a_preview_in_flight_neither_blocks_nor_records_the_scheduled_run(db):
+    """A manual preview is still waiting on the LLM when the scheduled run starts. The
+    scheduled run waits for the channel, then delivers; only it pins and records."""
     await _configured(db)
     await _delivered_article(db)
     adapter = _adapter()
@@ -208,9 +306,9 @@ async def test_overlapping_runs_for_one_channel_deliver_once(db):
     release.set()
     outcomes = await asyncio.gather(manual, scheduled)
 
-    assert [o.status for o in outcomes] == ["delivered", "not_due"]
+    assert [o.status for o in outcomes] == ["delivered", "delivered"]
     assert adapter.send_digest_text_pinned.await_count == 1
-    assert (await _state(db))[0] == NOW
+    assert await _state(db) == (NOW, "pin-new")
 
 
 async def test_digest_waits_for_a_delivery_mark_still_being_written(db):

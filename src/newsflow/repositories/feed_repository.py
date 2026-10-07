@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import ColumnElement, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.models.digest import WEEKLY_WINDOW
@@ -18,6 +18,29 @@ from newsflow.models.subscription import SentEntry
 from newsflow.repositories._result import rowcount
 
 logger = logging.getLogger(__name__)
+
+
+def expired_entries(days: int, now: datetime) -> list[ColumnElement[bool]]:
+    """Entries cleanup deletes at `now`: stored more than `days` ago, except those a channel
+    processed within a digest window. A digest selects by when an entry was processed, and
+    one processed late (a paused subscription resumed) would lose its body first."""
+    digest_material = (
+        select(FeedEntry.id)
+        .join(
+            SentEntry,
+            (SentEntry.feed_id == FeedEntry.feed_id) & (SentEntry.guid == FeedEntry.guid),
+        )
+        .where(
+            SentEntry.sent_at > now - WEEKLY_WINDOW,
+            SentEntry.seeded.is_(False),
+            SentEntry.undeliverable.is_(False),
+        )
+    )
+    return [
+        FeedEntry.created_at < now - timedelta(days=days),
+        FeedEntry.id.not_in(digest_material),
+    ]
+
 
 # Column-length caps for untrusted feed-derived text (mirrors the model columns).
 # Over-length values fail the INSERT on Postgres and overrun platform message
@@ -323,27 +346,13 @@ class FeedRepository:
         )
 
     async def cleanup_old_entries(self, days: int = 7) -> int:
-        """Delete entries stored more than `days` ago, except those a channel processed
-        within a digest window: a digest selects by when an entry was processed, and
-        one processed late (a paused subscription resumed) would lose its body first.
+        """Delete the entries `expired_entries` selects.
 
         Returns:
             Number of deleted entries
         """
-        now = datetime.now(UTC)
-        digest_material = (
-            select(FeedEntry.id)
-            .join(
-                SentEntry,
-                (SentEntry.feed_id == FeedEntry.feed_id) & (SentEntry.guid == FeedEntry.guid),
-            )
-            .where(SentEntry.sent_at > now - WEEKLY_WINDOW, SentEntry.seeded.is_(False))
-        )
         result = await self.session.execute(
-            delete(FeedEntry).where(
-                FeedEntry.created_at < now - timedelta(days=days),
-                FeedEntry.id.not_in(digest_material),
-            )
+            delete(FeedEntry).where(*expired_entries(days, datetime.now(UTC)))
         )
         return rowcount(result)
 

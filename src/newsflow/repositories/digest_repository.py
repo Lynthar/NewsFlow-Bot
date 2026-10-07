@@ -107,9 +107,10 @@ class ChannelDigestRepository:
         digest_id: int,
         at: datetime,
         *,
+        slot: datetime | None = None,
         pinned_message_id: str | None = None,
     ) -> None:
-        """Record that a digest was delivered at `at`.
+        """Record that a digest was delivered at `at`, serving `slot`.
 
         `pinned_message_id` is kwarg-only and only overwrites the stored
         pin id when non-None. That way, a delivery where send succeeded
@@ -118,7 +119,7 @@ class ChannelDigestRepository:
         successfully pass the new message id; callers that never
         attempt pinning (or whose pin failed) leave the arg at None.
         """
-        values: dict[str, Any] = {"last_delivered_at": at}
+        values: dict[str, Any] = {"last_delivered_at": at, "last_slot_at": slot}
         if pinned_message_id is not None:
             values["last_pinned_message_id"] = pinned_message_id
         await self.session.execute(
@@ -148,9 +149,10 @@ class ChannelDigestRepository:
             Subscription.platform_channel_id == channel_id,
             SentEntry.sent_at > since,
             SentEntry.sent_at <= until,
-            # Seeded back-catalog rows were never shown to the channel. Exclude them
+            # Seeded and undeliverable rows were never shown to the channel. Exclude them
             # unconditionally — even an include_filtered digest must not surface them.
             SentEntry.seeded.is_(False),
+            SentEntry.undeliverable.is_(False),
         ]
         if not include_filtered:
             conditions.append(SentEntry.was_filtered.is_(False))

@@ -6,13 +6,16 @@ so a max-field entry rendered 11k+ chars — a deterministic "message is too
 long" BadRequest that the dispatcher would retry every cycle forever.
 """
 
+import sys
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from telegram.error import BadRequest
+import pytest
+import telegram
+from telegram.error import BadRequest, TimedOut
 
-from newsflow.adapters.base import Message
-from newsflow.adapters.telegram.bot import TelegramAdapter
+from newsflow.adapters.base import Message, UndeliverableError
+from newsflow.adapters.telegram.bot import TelegramAdapter, build_application
 
 
 def _adapter():
@@ -133,16 +136,43 @@ async def test_entity_rejection_falls_back_to_plain_text():
     assert "https://example.com/a" in second["text"]
 
 
-async def test_other_bad_request_still_returns_false():
-    """Non-entity BadRequests keep the transient-failure contract
-    (False → retry next cycle)."""
+async def test_other_bad_request_falls_back_to_title_and_link():
     adapter = _adapter()
-    adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Flood control exceeded"))
-    ok = await adapter.send_message("123", _message())
-    assert ok is False
+    adapter.app.bot.send_message = AsyncMock(
+        side_effect=[BadRequest("Wrong file identifier"), None]
+    )
+    ok = await adapter.send_message("123", _message(title="T", link="https://e.com/a"))
+    assert ok is True
+    bare = adapter.app.bot.send_message.await_args.kwargs
+    assert bare["text"] == "T\nhttps://e.com/a"
+    assert "parse_mode" not in bare
+
+
+async def test_bad_request_on_title_and_link_too_is_undeliverable():
+    adapter = _adapter()
+    adapter.app.bot.send_message = AsyncMock(side_effect=BadRequest("Wrong file identifier"))
+    with pytest.raises(UndeliverableError):
+        await adapter.send_message("123", _message())
+    assert adapter.app.bot.send_message.await_count == 2
 
 
 def test_plain_fallback_always_fits_cap():
     adapter = _adapter()
     msg = _message(title="T" * 1024, summary="S" * 1024, link="https://e.com/" + "x" * 2000)
     assert len(adapter._format_message_plain(msg)) <= 4096
+
+
+@pytest.mark.skipif(
+    sys.version_info >= (3, 13) and telegram.__version_info__ < (21,),
+    reason="python-telegram-bot below 21 cannot build an Application on Python 3.13",
+)
+def test_bot_requests_wait_long_enough_for_a_slow_send():
+    # PTB's 5 s default gave up on sends Telegram had accepted; each was posted twice.
+    assert build_application("123:abc").bot.request.read_timeout == 25.0
+
+
+async def test_timed_out_send_is_retried_next_round_without_a_fallback():
+    adapter = _adapter()
+    adapter.app.bot.send_message = AsyncMock(side_effect=TimedOut())
+    assert await adapter.send_message("123", _message()) is False
+    assert adapter.app.bot.send_message.await_count == 1

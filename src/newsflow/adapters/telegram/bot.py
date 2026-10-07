@@ -36,6 +36,7 @@ from newsflow.adapters.base import (
     ChannelMigratedError,
     Message,
     TopicGoneError,
+    UndeliverableError,
     is_http_url,
 )
 from newsflow.adapters.views import (
@@ -47,6 +48,7 @@ from newsflow.adapters.views import (
     import_count_rows,
     import_failure_rows,
     last_error_text,
+    lost_entries_text,
     paginate_lines,
     recent_entry_parts,
     sub_line_parts,
@@ -863,6 +865,9 @@ async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"<b>Backlog:</b> {detail.unsent_count} entr"
         f"{'y' if detail.unsent_count == 1 else 'ies'} queued for this chat",
     ]
+    lost = lost_entries_text(sub.dropped_unsent, detail.undeliverable_count)
+    if lost:
+        lines.append(f"<b>Not delivered:</b> {lost}")
     err = last_error_text(feed)
     if err:
         lines.append(f"<b>Last error:</b> {_escape_html(err)}")
@@ -977,7 +982,7 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from newsflow.repositories.digest_repository import (
         ChannelDigestRepository,
     )
-    from newsflow.services.digest_service import DigestService
+    from newsflow.services.digest_service import DigestService, enable_digest
     from newsflow.services.summarization import get_summarizer
 
     msg = update.message
@@ -1114,12 +1119,11 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         utc_hour, utc_weekday = local_schedule_to_utc(hour, local_weekday, tz)
 
         async with session_factory() as session:
-            repo = ChannelDigestRepository(session)
-            await repo.upsert(
+            await enable_digest(
+                session,
                 platform="telegram",
                 channel_id=chat_id,
                 guild_id=None,
-                enabled=True,
                 schedule=mode,
                 delivery_hour_utc=utc_hour,
                 delivery_weekday=utc_weekday,
@@ -2360,16 +2364,7 @@ class TelegramAdapter(BaseAdapter):
         global _adapter
         _adapter = self
 
-        # AIORateLimiter queues sends inside Telegram's 30/s global, 1/s per-chat and
-        # 20/min per-group limits; needs python-telegram-bot[rate-limiter].
-        # job_queue(None): periodic work runs on the dispatcher's own asyncio loops.
-        self.app = (
-            Application.builder()
-            .token(self.token)
-            .rate_limiter(AIORateLimiter())
-            .job_queue(None)
-            .build()
-        )
+        self.app = build_application(self.token)
 
         for name, callback in _COMMANDS:
             self.app.add_handler(CommandHandler(name, callback))
@@ -2474,52 +2469,37 @@ class TelegramAdapter(BaseAdapter):
     async def send_message(self, channel_id: str, message: Message) -> bool:
         """Send a message to a Telegram chat. Raises ChannelGoneError
         when the chat is permanently unreachable (deleted, bot kicked,
-        bot blocked); transient errors return False so the next
+        bot blocked), and UndeliverableError when a BadRequest that is
+        not about the chat refuses both the entry and its bare
+        title-and-link form; transient errors return False so the next
         dispatch cycle retries."""
         if not self.app:
             return False
+        from telegram.error import BadRequest, TimedOut
 
         try:
-            if message.template_text is not None:
-                await self._send_template_message(
-                    channel_id,
-                    message.template_text,
-                    message.thread_id,
-                    show_preview=message.show_image,
-                )
-                return True
-            text = self._format_message(message)
-            # show_image=False maps to "no link preview": Telegram has no
-            # separate image attachment — the preview card IS the image
-            # surface (/setdisplay <url> image off).
-            disable_preview = not message.show_image
-            from telegram.error import BadRequest
-
             try:
-                await self.app.bot.send_message(
-                    chat_id=int(channel_id),
-                    text=text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=disable_preview,
-                    message_thread_id=message.thread_id,
-                )
+                await self._send_entry(channel_id, message)
             except BadRequest as e:
-                # Deterministic rejection of OUR rendering (entity blind spot) would retry
-                # forever: the entry never marks sent and every cycle re-fails. Degrade to
-                # plain text, which the DB column caps keep under 4096.
-                if "parse entities" not in str(e).lower():
+                if self._is_chat_level(e, message):
                     raise
                 logger.warning(
-                    f"Entry HTML rejected by Telegram for {channel_id}; "
-                    f"falling back to plain text: {e}"
+                    f"Telegram refused the entry for {channel_id}; sending title and link: {e}"
                 )
-                await self.app.bot.send_message(
-                    chat_id=int(channel_id),
-                    text=self._format_message_plain(message),
-                    disable_web_page_preview=disable_preview,
-                    message_thread_id=message.thread_id,
-                )
+                try:
+                    await self._send_bare(channel_id, message)
+                except BadRequest as bare_error:
+                    if self._is_chat_level(bare_error, message):
+                        raise
+                    raise UndeliverableError(channel_id, reason=str(bare_error)) from bare_error
             return True
+        except UndeliverableError:
+            raise
+        except TimedOut as e:
+            # A read timeout can come after Telegram accepted the message. Retrying anyway
+            # is at-least-once by choice: a duplicate post beats a lost entry.
+            logger.warning(f"Telegram timed out sending to {channel_id}; retrying next round: {e}")
+            return False
         except Exception as e:
             if message.thread_id is not None and _is_thread_gone(e):
                 raise TopicGoneError(channel_id, message.thread_id, reason=str(e)) from e
@@ -2530,6 +2510,64 @@ class TelegramAdapter(BaseAdapter):
                 raise ChannelGoneError(channel_id, reason=str(e)) from e
             logger.exception(f"Failed to send message to {channel_id}: {e}")
             return False
+
+    async def _send_entry(self, channel_id: str, message: Message) -> None:
+        """Post `message` in its full layout: the custom template, else the HTML layout."""
+        assert self.app is not None
+        if message.template_text is not None:
+            await self._send_template_message(
+                channel_id,
+                message.template_text,
+                message.thread_id,
+                show_preview=message.show_image,
+            )
+            return
+        from telegram.error import BadRequest
+
+        # show_image=False maps to "no link preview": Telegram has no separate image
+        # attachment — the preview card IS the image surface (/setdisplay <url> image off).
+        disable_preview = not message.show_image
+        try:
+            await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=self._format_message(message),
+                parse_mode="HTML",
+                disable_web_page_preview=disable_preview,
+                message_thread_id=message.thread_id,
+            )
+        except BadRequest as e:
+            # An entity blind spot in OUR rendering: degrade to plain text, which the DB
+            # column caps keep under 4096.
+            if "parse entities" not in str(e).lower():
+                raise
+            logger.warning(
+                f"Entry HTML rejected by Telegram for {channel_id}; falling back to plain text: {e}"
+            )
+            await self.app.bot.send_message(
+                chat_id=int(channel_id),
+                text=self._format_message_plain(message),
+                disable_web_page_preview=disable_preview,
+                message_thread_id=message.thread_id,
+            )
+
+    async def _send_bare(self, channel_id: str, message: Message) -> None:
+        """Post only the title and link, as plain text without a preview: the last form
+        tried for an entry Telegram refused."""
+        assert self.app is not None
+        text = f"{message.display_title}\n{message.link}".strip() or "(untitled)"
+        await self.app.bot.send_message(
+            chat_id=int(channel_id),
+            text=text[:4096],
+            disable_web_page_preview=True,
+            message_thread_id=message.thread_id,
+        )
+
+    def _is_chat_level(self, e: Exception, message: Message) -> bool:
+        """Whether `e` is about the chat or topic rather than the message, so the
+        gone/migrated handling applies instead of a simpler rendering."""
+        if message.thread_id is not None and _is_thread_gone(e):
+            return True
+        return self._is_chat_gone(e)
 
     async def send_text(self, channel_id: str, text: str) -> bool:
         """Send plain text to a Telegram chat. See send_message for
@@ -2825,6 +2863,26 @@ class TelegramAdapter(BaseAdapter):
         """Escape HTML special characters (module-level helper, incl. quotes
         for href attribute safety)."""
         return _escape_html(text)
+
+
+# Read and write timeout for Bot API calls. PTB's 5 s default timed out sends that
+# Telegram had accepted, and every such send is posted twice.
+_REQUEST_TIMEOUT_S = 25.0
+
+
+def build_application(token: str) -> Application[Any, Any, Any, Any, Any, Any]:
+    """The bot's Application. AIORateLimiter queues sends inside Telegram's 30/s global,
+    1/s per-chat and 20/min per-group limits; no job queue, since periodic work runs on
+    the dispatcher's own loops."""
+    return (
+        Application.builder()
+        .token(token)
+        .rate_limiter(AIORateLimiter())
+        .job_queue(None)
+        .read_timeout(_REQUEST_TIMEOUT_S)
+        .write_timeout(_REQUEST_TIMEOUT_S)
+        .build()
+    )
 
 
 # Global app instance

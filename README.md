@@ -87,9 +87,10 @@ You get a preview within seconds, then updates on the polling interval.
 /digest enable …           # turn on daily or weekly summaries
 ```
 
-Discord has `/feed`, `/settings`, `/status` and `/digest` command groups, all
-requiring Manage Server. Telegram has the same surface as flat commands
-(`/add`, `/remove`, `/filter`, `/digest`, and so on).
+Discord has `/feed`, `/settings` and `/digest` command groups, which require
+Manage Server and work only in server channels, not in DMs, plus an open
+`/status`. Telegram has the same surface as flat commands (`/add`, `/remove`,
+`/filter`, `/digest`, and so on).
 
 ## Configuration
 
@@ -104,6 +105,7 @@ sources.
 | `FETCH_INTERVAL_MINUTES` | `60` | Polling interval |
 | `TRANSLATION_ENABLED` / `TRANSLATION_PROVIDER` | `false` / `deepl` | `google`, `deepl` or `openai` |
 | `API_ENABLED` / `API_KEY` | `false` / — | REST API and inbound `/api/ingest` |
+| `INGEST_API_KEY` | — | A key that opens `/api/ingest` alone, for the systems that push entries in |
 | `OPENAI_BASE_URL` | — | Point translation or digests at a local model |
 
 Editing `.env` needs `up -d` to take effect; `restart` won't re-read it.

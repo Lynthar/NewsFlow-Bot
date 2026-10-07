@@ -11,7 +11,7 @@ pytest.importorskip("fastapi")  # needs the api extra
 
 from fastapi import HTTPException  # noqa: E402
 
-from newsflow.api.deps import require_api_key  # noqa: E402
+from newsflow.api.deps import require_api_key, require_ingest_key  # noqa: E402
 from newsflow.api.routes.ingest import (  # noqa: E402
     IngestEntry,
     IngestPayload,
@@ -43,6 +43,24 @@ async def test_auth_accepts_bearer_and_raw(configure):
     # Neither call should raise.
     await require_api_key(authorization="Bearer secret")
     await require_api_key(authorization="secret")
+
+
+async def test_ingest_key_opens_ingest_and_nothing_else(configure):
+    configure(api_key="admin", ingest_api_key="push")
+    await require_ingest_key(authorization="Bearer push")
+    await require_ingest_key(authorization="Bearer admin")
+    with pytest.raises(HTTPException) as exc:
+        await require_api_key(authorization="Bearer push")
+    assert exc.value.status_code == 401
+
+
+async def test_ingest_falls_back_to_api_key_and_fails_closed_without_either(configure):
+    configure(api_key="admin")
+    await require_ingest_key(authorization="Bearer admin")
+    configure(api_key="")
+    with pytest.raises(HTTPException) as exc:
+        await require_ingest_key(authorization="Bearer anything")
+    assert exc.value.status_code == 503
 
 
 async def test_read_auth_open_without_key_locked_with_key(configure):
@@ -162,3 +180,18 @@ def test_entry_field_length_caps():
     with pytest.raises(ValidationError):
         IngestEntry(content="x" * 262_145)
     assert IngestEntry(title="x" * 1024).title is not None
+
+
+async def test_ingest_key_over_http_reaches_ingest_but_not_admin(db, configure):
+    httpx = pytest.importorskip("httpx")
+    from newsflow.api import create_app
+
+    configure(api_enabled=True, api_key="admin", ingest_api_key="push")
+    transport = httpx.ASGITransport(app=create_app())
+    headers = {"Authorization": "Bearer push"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://api") as client:
+        ingest = await client.post("/api/ingest/nowhere", json={"entries": []}, headers=headers)
+        admin = await client.post("/api/admin/reload", headers=headers)
+
+    assert ingest.status_code == 404  # authenticated; the source just does not exist
+    assert admin.status_code == 401

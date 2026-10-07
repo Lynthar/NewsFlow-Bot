@@ -111,8 +111,8 @@ async def test_non_silent_subscription_delivers_normally(session):
     adapter.send_message.assert_awaited_once()
 
 
-async def test_bypass_silent_delivers_one_article(session):
-    """Preview path (dispatch_subscription) sets bypass_silent=True so the
+async def test_preview_delivers_one_article(session):
+    """Preview path (dispatch_subscription) sets preview=True so the
     user sees one confirmation article even on a silent sub."""
     feed = Feed(url="https://example.com/feed", title="Example", is_active=True, error_count=0)
     session.add(feed)
@@ -139,7 +139,7 @@ async def test_bypass_silent_delivers_one_article(session):
     d = seed.dispatcher_with_adapter("discord", adapter)
     sub_repo = SubscriptionRepository(session)
 
-    sent_count = await d._dispatch_to_subscription(session, sub, sub_repo, bypass_silent=True)
+    sent_count = await d._dispatch_to_subscription(session, sub, sub_repo, preview=True)
     await session.commit()
 
     assert sent_count == 1

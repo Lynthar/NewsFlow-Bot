@@ -80,9 +80,9 @@ python -m newsflow.checkconfig
 /digest enable …           # 打开日报或周报
 ```
 
-Discord 侧是 `/feed`、`/settings`、`/status`、`/digest` 四个命令组，都要求「管理服务器」
-权限。Telegram 侧是同样的能力，写成平铺命令（`/add`、`/remove`、`/filter`、`/digest`
-这些）。
+Discord 侧是 `/feed`、`/settings`、`/digest` 三个命令组，要求「管理服务器」权限、
+只能在服务器频道里用（私信里不可用），另有一个对所有人开放的 `/status`。Telegram 侧是
+同样的能力，写成平铺命令（`/add`、`/remove`、`/filter`、`/digest` 这些）。
 
 ## 配置
 
@@ -96,6 +96,7 @@ Discord 侧是 `/feed`、`/settings`、`/status`、`/digest` 四个命令组，�
 | `FETCH_INTERVAL_MINUTES` | `60` | 轮询间隔 |
 | `TRANSLATION_ENABLED` / `TRANSLATION_PROVIDER` | `false` / `deepl` | 三选一：`google`、`deepl`、`openai` |
 | `API_ENABLED` / `API_KEY` | `false` / 无 | REST API 与入站 `/api/ingest` |
+| `INGEST_API_KEY` | 无 | 只开放 `/api/ingest` 的独立密钥，给往里推内容的外部系统用 |
 | `OPENAI_BASE_URL` | 无 | 把翻译或日报指向本地模型 |
 
 改完 `.env` 要 `up -d` 才生效，`restart` 不会重新读。

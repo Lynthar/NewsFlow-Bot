@@ -43,6 +43,9 @@ class ChannelDigest(Base):
 
     # Delivery tracking — window for the next digest is (last_delivered_at, now]
     last_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The latest scheduled slot already served. Kept apart from last_delivered_at, so an
+    # off-slot delivery or a changed hour cannot shift when the next one is due.
+    last_slot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Platform message id of the currently-pinned digest; the next delivery unpins it
     # first. NULL when nothing is pinned or the adapter cannot pin. String because
     # platforms use different id formats.

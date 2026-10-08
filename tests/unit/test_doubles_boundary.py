@@ -12,7 +12,10 @@ adding one is a deliberate act and a stale entry fails too.
 import re
 from pathlib import Path
 
-TESTS = Path(__file__).resolve().parents[1]
+# Resolved like the rglob results, or a checkout reached through a symlink or a network
+# share never recognises itself and flags its own sample strings.
+SELF = Path(__file__).resolve()
+TESTS = SELF.parents[1]
 
 # patch("a.b"), patch.object(x, "b"), monkeypatch.setattr("a.b", …) and
 # monkeypatch.setattr(x, "b", …), with or without the mock. / unittest.mock. prefix;
@@ -58,7 +61,7 @@ ALLOWED: dict[str, str] = {
 def _doubles() -> list[tuple[str, str]]:
     found = []
     for path in sorted(TESTS.rglob("*.py")):
-        if path == Path(__file__):
+        if path == SELF:
             continue
         text = path.read_text(encoding="utf-8")
         for match in _DOUBLE.finditer(text):
@@ -103,6 +106,6 @@ def test_patch_multiple_is_not_used():
     users = [
         str(path.relative_to(TESTS))
         for path in sorted(TESTS.rglob("*.py"))
-        if path != Path(__file__) and "patch.multiple(" in path.read_text(encoding="utf-8")
+        if path != SELF and "patch.multiple(" in path.read_text(encoding="utf-8")
     ]
     assert not users, f"patch.multiple hides its targets; spell them out with patch(): {users}"

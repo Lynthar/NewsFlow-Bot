@@ -230,6 +230,7 @@ def test_misspelled_dotenv_key_is_reported(configure, monkeypatch, tmp_path):
     assert any("TRANSLATON_ENABLED" in w and "TRANSLATION_ENABLED" in w for w in warnings)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod cannot make a file unreadable")
 def test_unreadable_dotenv_is_skipped_and_reported(configure, monkeypatch, tmp_path):
     # systemd's EnvironmentFile reads .env as root and passes the values on as the
     # environment; the service user cannot open the file itself, and must still start.

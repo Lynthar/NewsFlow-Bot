@@ -56,6 +56,7 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM is TerminateProcess on Windows")
 @pytest.mark.parametrize("api", [False, True], ids=["api-off", "api-on"])
 def test_sigterm_stops_everything_and_closes_the_database(tmp_path: Path, api: bool):
     proc = _start(tmp_path, api=api, api_port=_free_port())

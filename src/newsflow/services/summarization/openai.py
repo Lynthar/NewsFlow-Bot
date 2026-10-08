@@ -80,9 +80,11 @@ class OpenAIDigestProvider(SummarizationProvider):
             published = (
                 art.published_at.strftime("%Y-%m-%d %H:%M") if art.published_at else "unknown"
             )
+            # One line per article: a newline in a feed's title could forge another [N].
+            title, link = " ".join(art.title.split()), " ".join(art.link.split())
             lines.append(
                 f"[{idx}] source={art.source} | published={published} | "
-                f"title={art.title} | summary={summary} | link={art.link}"
+                f"title={title} | summary={summary} | link={link}"
             )
         return "\n".join(lines)
 

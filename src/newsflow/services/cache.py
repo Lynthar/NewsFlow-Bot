@@ -13,6 +13,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# A Redis that answers slower than this counts as a miss: without a bound, a
+# stalled server hangs every cache call and the dispatch round with it.
+REDIS_TIMEOUT_SECONDS = 2.0
+
 
 class CacheBackend(ABC):
     """Abstract base class for cache backends."""
@@ -51,6 +55,9 @@ class CacheBackend(ABC):
     async def clear(self) -> None:
         """Clear all cached values."""
         pass
+
+    async def close(self) -> None:
+        """Release the backend's connections; a no-op where there are none."""
 
 
 class MemoryCache(CacheBackend):
@@ -131,8 +138,9 @@ class RedisCache(CacheBackend):
     Suitable for multi-instance deployments.
     """
 
-    def __init__(self, redis_url: str) -> None:
+    def __init__(self, redis_url: str, timeout: float = REDIS_TIMEOUT_SECONDS) -> None:
         self.redis_url = redis_url
+        self.timeout = timeout
         self._client: Any = None
 
     async def _get_client(self) -> Any:
@@ -145,6 +153,8 @@ class RedisCache(CacheBackend):
                     self.redis_url,
                     encoding="utf-8",
                     decode_responses=True,
+                    socket_timeout=self.timeout,
+                    socket_connect_timeout=self.timeout,
                 )
             except ImportError:
                 raise ImportError(
@@ -211,10 +221,13 @@ class RedisCache(CacheBackend):
             logger.exception(f"Redis clear error: {e}")
 
     async def close(self) -> None:
-        """Close Redis connection."""
+        """Close the Redis connection. Never raises: shutdown closes the database after it."""
         if self._client:
-            await self._client.close()
-            self._client = None
+            client, self._client = self._client, None
+            try:
+                await client.aclose()
+            except Exception as e:
+                logger.warning(f"Redis close error: {e}")
 
 
 # Global cache instance
@@ -224,6 +237,14 @@ _cache: CacheBackend | None = None
 def get_cache() -> CacheBackend | None:
     """Get the global cache instance."""
     return _cache
+
+
+async def close_cache() -> None:
+    """Close the global cache."""
+    global _cache
+    if _cache is not None:
+        await _cache.close()
+        _cache = None
 
 
 def init_cache(backend: str = "memory", **kwargs: Any) -> CacheBackend:

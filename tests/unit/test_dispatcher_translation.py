@@ -11,6 +11,7 @@ subscription with translate=False (or a different target language) must never
 receive a translation another subscription cached.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from newsflow.models.feed import Feed, FeedEntry
@@ -63,6 +64,26 @@ async def test_partial_translation_is_not_cached(session):
     assert entry.translation_language is None
     assert not entry.title_translated
     assert not entry.summary_translated
+
+
+async def test_a_translation_that_fails_without_raising_is_logged(session, caplog):
+    # An empty LLM reply or an odd provider response raises nothing, yet the
+    # entry then goes out untranslated; only the log can say why.
+    entry = await _make_entry(session)
+    failed = TranslationResult(success=False, error="LLM returned empty translation")
+    fake_service = MagicMock()
+    fake_service.translate = AsyncMock(return_value=failed)
+
+    d = Dispatcher()
+    with (
+        caplog.at_level(logging.WARNING, logger="newsflow.services.dispatcher"),
+        patch("newsflow.services.dispatcher.get_translation_service", return_value=fake_service),
+    ):
+        assert await d._translate_entry(entry, "zh-CN", session, "World body text") == (None, None)
+
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    for field in ("title", "summary"):
+        assert any(field in m and "empty translation" in m for m in warned), warned
 
 
 async def test_summary_only_success_is_not_cached_either(session):

@@ -6,6 +6,7 @@ from newsflow.services.cache import (
     CacheBackend,
     MemoryCache,
     RedisCache,
+    close_cache,
     get_cache,
     init_cache,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "CacheBackend",
     "MemoryCache",
     "RedisCache",
+    "close_cache",
     "get_cache",
     "init_cache",
     # Translation

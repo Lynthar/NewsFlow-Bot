@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.api.deps import get_db, require_ingest_key
+from newsflow.models.feed import ENTRY_CONTENT_MAX_CHARS, ENTRY_SUMMARY_MAX_CHARS
 from newsflow.services.feed_service import FeedService
 
 router = APIRouter()
@@ -39,8 +40,8 @@ class IngestEntry(BaseModel):
     title: str | None = Field(None, max_length=1024)
     link: str | None = Field(None, max_length=2048)
     url: str | None = Field(None, max_length=2048)
-    summary: str | None = Field(None, max_length=65_536)
-    content: str | None = Field(None, max_length=262_144)
+    summary: str | None = Field(None, max_length=ENTRY_SUMMARY_MAX_CHARS)
+    content: str | None = Field(None, max_length=ENTRY_CONTENT_MAX_CHARS)
     author: str | None = Field(None, max_length=256)
     image: str | None = Field(None, max_length=2048)
     published_at: datetime | None = None

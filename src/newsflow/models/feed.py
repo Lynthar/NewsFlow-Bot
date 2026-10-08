@@ -112,6 +112,12 @@ class Feed(Base):
         self.next_retry_at = None
 
 
+# Ceilings for an entry's body text, in characters: every message parses it as HTML on
+# the event loop, so an uncapped feed body stalls the whole process for seconds.
+ENTRY_SUMMARY_MAX_CHARS = 65_536
+ENTRY_CONTENT_MAX_CHARS = 262_144
+
+
 class FeedEntry(Base):
     """
     Individual RSS entry/article.

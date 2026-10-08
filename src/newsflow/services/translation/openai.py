@@ -43,6 +43,10 @@ class OpenAIProvider(TranslationProvider):
     def name(self) -> str:
         return "openai"
 
+    @property
+    def cache_identity(self) -> str:
+        return "\0".join((self.base_url or "", self.model, self.system_prompt_template))
+
     def _get_client(self) -> Any:
         if self._client is None:
             # The SDK default waits 600 s and retries twice; a hung endpoint would stall

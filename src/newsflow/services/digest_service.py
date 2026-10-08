@@ -64,12 +64,17 @@ class DigestDeliveryResult:
     mark_failed: bool = False
 
 
-# Inline citation as taught by the digest prompt: [3] or [1][4].
-_CITATION_RE = re.compile(r"\[(\d+)\]")
-# A line of the OLD prompt's LLM-written source list: `[N] Title — <https://…>`.
-# Only used to strip a disobedient (or custom-prompted) model's own trailing
-# list so the code-built one below isn't duplicated.
-_SOURCE_LINE_RE = re.compile(r"^\s*\[\d+\]\s.*<https?://\S+>\s*$")
+# Inline citation as the prompt teaches it, [3] or [1][4], and the forms models drift
+# into: [1, 3], [1-3] and full-width ［1］ / 【1】.
+_CITATION_RE = re.compile(r"[\[［【](\d{1,5}(?:\s*[,，、\-–—~]\s*\d{1,5})*)[\]］】]")
+_CITED_SPAN_RE = re.compile(r"(\d+)(?:\s*[\-–—~]\s*(\d+))?")
+# A line of a model-written source list: a number or bullet, then somewhere a URL.
+# Only trailing ones are stripped, so the code-built list isn't duplicated.
+_NUMBER_MARK = r"(?:[\[［【(（]\d+[\]］】)）]|\d+[.)、:：])"
+_SOURCE_LINE_RE = re.compile(rf"^\s*(?:[-*•]\s*{_NUMBER_MARK}?|{_NUMBER_MARK}).*https?://")
+# A Markdown link; group 2 is everything inside the parentheses.
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\(([^)\n]*)\)")
+_URL_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 
 # Header for the appended source list, keyed by primary language subtag.
 _SOURCES_HEADERS = {"zh": "来源", "ja": "出典", "ko": "출처"}
@@ -82,14 +87,14 @@ def _sources_header(language: str) -> str:
 
 
 def strip_llm_source_list(text: str) -> str:
-    """Drop a trailing model-written source list (old-format lines only).
+    """Drop a trailing model-written source list.
 
-    The prompt says not to write one, but a custom `digest_system_prompt`
-    may still teach the old rule — appending ours on top would double the
-    list. Only trailing lines in the exact taught format are removed;
-    body text never ends with `<https://…>` so false positives are nil.
-    When such lines were removed, a short heading right above them
-    ("**Sources**", "来源:") goes too, so the code-built header isn't
+    The prompt says not to write one, but a model may anyway and a custom
+    `digest_system_prompt` may teach it — appending ours on top would double
+    the list. Only trailing lines that start with a number or bullet and carry
+    a URL are removed; the prompt forbids URLs in the body, so a body line
+    rarely qualifies. When such lines were removed, a short heading right above
+    them ("**Sources**", "来源:") goes too, so the code-built header isn't
     doubled either.
     """
     lines = text.rstrip().split("\n")
@@ -117,14 +122,16 @@ def build_source_list(text: str, articles: Sequence[DigestArticle]) -> str:
     cited nothing recognizable, fall back to listing every input article
     rather than delivering a digest with no sources at all.
     """
-    cited = sorted(
-        {n for n in (int(m) for m in _CITATION_RE.findall(text)) if 1 <= n <= len(articles)}
-    )
-    indices = cited or list(range(1, len(articles) + 1))
+    cited: set[int] = set()
+    for group in _CITATION_RE.findall(text):
+        for low, high in _CITED_SPAN_RE.findall(group):
+            cited.update(range(max(int(low), 1), min(int(high or low), len(articles)) + 1))
+    indices = sorted(cited) or list(range(1, len(articles) + 1))
+    links = {art.link for art in articles}
     lines = []
     for n in indices:
         art = articles[n - 1]
-        title = art.title
+        title = drop_foreign_links(" ".join(art.title.split()), links)
         if len(title) > _SOURCE_TITLE_MAX:
             title = title[: _SOURCE_TITLE_MAX - 1] + "…"
         # Angle brackets suppress Discord link previews; the Telegram
@@ -133,9 +140,23 @@ def build_source_list(text: str, articles: Sequence[DigestArticle]) -> str:
     return "\n".join(lines)
 
 
+def drop_foreign_links(text: str, links: set[str]) -> str:
+    """`text` with each Markdown link that points outside `links` reduced to its bracketed
+    label. Article text reaches the model, so a link it writes could dress any address up
+    as a citation; a visible URL stays, as it does in ordinary delivery."""
+
+    def keep_or_drop(match: re.Match[str]) -> str:
+        target = match[2].strip().split(" ", 1)[0].strip("<>")
+        if target in links or not _URL_SCHEME_RE.match(target):
+            return match[0]
+        return f"[{match[1]}]"
+
+    return _MARKDOWN_LINK_RE.sub(keep_or_drop, text)
+
+
 def append_source_list(text: str, articles: Sequence[DigestArticle], language: str) -> str:
     """Digest body + localized header + code-built source list."""
-    body = strip_llm_source_list(text)
+    body = drop_foreign_links(strip_llm_source_list(text), {art.link for art in articles})
     sources = build_source_list(body, articles)
     return f"{body}\n\n**{_sources_header(language)}**\n{sources}"
 

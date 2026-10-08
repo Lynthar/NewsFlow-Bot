@@ -36,6 +36,12 @@ class TranslationProvider(ABC):
         """Provider name for logging and identification."""
         pass
 
+    @property
+    def cache_identity(self) -> str:
+        """The configuration besides text and languages that shapes the output. It is
+        part of the cache key, so changing it stops serving earlier translations."""
+        return ""
+
     @abstractmethod
     async def translate(
         self,
@@ -82,10 +88,11 @@ class TranslationService:
         self.cache = cache
         self.cache_ttl = cache_ttl
 
-    def _cache_key(self, text: str, target_lang: str) -> str:
+    def _cache_key(self, text: str, target_lang: str, source_lang: str | None) -> str:
         """Generate a cache key for a translation request."""
-        text_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
-        return f"trans:{self.provider.name}:{target_lang}:{text_hash}"
+        material = "\0".join((self.provider.cache_identity, source_lang or "", text))
+        digest = hashlib.sha256(material.encode()).hexdigest()[:16]
+        return f"trans:{self.provider.name}:{target_lang}:{digest}"
 
     async def translate(
         self,
@@ -109,7 +116,7 @@ class TranslationService:
 
         # Check cache
         if self.cache:
-            cache_key = self._cache_key(text, target_lang)
+            cache_key = self._cache_key(text, target_lang, source_lang)
             cached = await self.cache.get(cache_key)
             if cached:
                 logger.debug(f"Translation cache hit: {cache_key}")
@@ -124,7 +131,7 @@ class TranslationService:
 
         # Cache successful translations
         if result.success and self.cache and result.translated_text:
-            cache_key = self._cache_key(text, target_lang)
+            cache_key = self._cache_key(text, target_lang, source_lang)
             await self.cache.set(cache_key, result.translated_text, ttl=self.cache_ttl)
             logger.debug(f"Translation cached: {cache_key}")
 

@@ -13,7 +13,12 @@ from sqlalchemy import ColumnElement, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from newsflow.models.digest import WEEKLY_WINDOW
-from newsflow.models.feed import Feed, FeedEntry
+from newsflow.models.feed import (
+    ENTRY_CONTENT_MAX_CHARS,
+    ENTRY_SUMMARY_MAX_CHARS,
+    Feed,
+    FeedEntry,
+)
 from newsflow.models.subscription import SentEntry
 from newsflow.repositories._result import rowcount
 
@@ -316,8 +321,8 @@ class FeedRepository:
                     guid=guid,
                     title=_storable(data["title"], _ENTRY_TITLE_CAP),
                     link=_storable(data["link"], _ENTRY_URL_CAP),
-                    summary=_storable(data.get("summary")),
-                    content=_storable(data.get("content")),
+                    summary=_storable(data.get("summary"), ENTRY_SUMMARY_MAX_CHARS),
+                    content=_storable(data.get("content"), ENTRY_CONTENT_MAX_CHARS),
                     author=_storable(data.get("author"), _ENTRY_AUTHOR_CAP),
                     published_at=_storable_date(data.get("published_at"), now),
                     image_url=_storable(data.get("image_url"), _ENTRY_URL_CAP),

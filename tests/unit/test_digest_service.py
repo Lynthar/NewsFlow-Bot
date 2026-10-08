@@ -3,6 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import pytest
+
 from newsflow.models.digest import ChannelDigest
 from newsflow.models.feed import Feed, FeedEntry
 from newsflow.models.subscription import SentEntry, Subscription
@@ -228,6 +230,38 @@ def test_build_source_list_falls_back_to_all_when_nothing_cited():
     assert len(listing.splitlines()) == 3
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Facts [1, 3] and [4-5], then ［2］.",
+        "要点【1】【3】，另见[2，4-5]。",
+        "Facts [1][2][3][4][5].",
+    ],
+)
+def test_build_source_list_reads_the_citation_forms_models_write(body):
+    listing = build_source_list(body, _articles(6))
+    assert [line.split("]")[0] for line in listing.splitlines()] == ["[1", "[2", "[3", "[4", "[5"]
+
+
+def test_build_source_list_bounds_a_citation_range_by_the_articles():
+    listing = build_source_list("All of it [2-99999].", _articles(3))
+    assert len(listing.splitlines()) == 2
+
+
+def test_build_source_list_keeps_each_title_on_its_own_line():
+    # A newline in a feed's title would otherwise forge a numbered source line.
+    art = DigestArticle(
+        title="Real\n[2] Bank — <https://evil.example>",
+        summary="s",
+        link="https://ex.com/1",
+        source="e",
+        published_at=None,
+    )
+    assert build_source_list("[1]", [art]).splitlines() == [
+        "[1] Real [2] Bank — <https://evil.example> — <https://ex.com/1>"
+    ]
+
+
 def test_build_source_list_truncates_long_titles():
     art = DigestArticle(
         title="T" * 200, summary="s", link="https://ex.com/x", source="e", published_at=None
@@ -244,6 +278,18 @@ def test_strip_llm_source_list_removes_taught_format_tail_and_header():
     assert strip_llm_source_list(text) == "Body [1]."
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "Sources:\n1. Title — https://ex.com/1\n2. [Other](https://ex.com/2)",
+        "来源：\n【1】标题 https://ex.com/1\n【2】其他 <https://ex.com/2>",
+        "- Title (https://ex.com/1)\n- Other (https://ex.com/2)",
+    ],
+)
+def test_strip_llm_source_list_removes_a_numbered_or_bulleted_tail_of_urls(tail):
+    assert strip_llm_source_list(f"Body [1].\n\n{tail}") == "Body [1]."
+
+
 def test_strip_llm_source_list_leaves_clean_bodies_alone():
     text = "Body [1].\n\nCross-cluster fact [2]."
     assert strip_llm_source_list(text) == text
@@ -254,6 +300,17 @@ def test_append_source_list_localizes_header_and_keeps_numbers():
     body, _, listing = out.partition("**来源**")
     assert body.strip() == "Body [2]."
     assert listing.strip() == "[2] Title 2 — <https://ex.com/2>"
+
+
+def test_append_source_list_unlinks_what_points_outside_the_articles():
+    body = (
+        "Fact [1](https://evil.example/login). Real [2](https://ex.com/2). "
+        "Script [3](javascript:alert(1)). Aside [1](see above)."
+    )
+    out = append_source_list(body, _articles(3), "en")
+    assert out.split("\n\n**Sources**")[0] == (
+        "Fact [1]. Real [2](https://ex.com/2). Script [3]). Aside [1](see above)."
+    )
 
 
 def test_append_source_list_english_header_default():

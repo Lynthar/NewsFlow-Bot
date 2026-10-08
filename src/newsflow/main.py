@@ -18,6 +18,7 @@ from newsflow.config import Settings, get_settings
 from newsflow.core import close_fetcher
 from newsflow.models import close_db
 from newsflow.models.migrate import upgrade_to_head
+from newsflow.services.cache import close_cache, init_cache
 from newsflow.services.dispatcher import get_dispatcher
 
 
@@ -200,6 +201,7 @@ async def shutdown(services: list[asyncio.Task[None]]) -> None:
 
     # Close shared clients only after nothing can be using them.
     await close_fetcher()
+    await close_cache()
     await close_db()
     logging.info("Shutdown complete")
 
@@ -309,13 +311,9 @@ async def prepare_state(settings: Settings) -> None:
 
     # Initialize cache if configured
     if settings.cache_backend == "redis" and settings.redis_url:
-        from newsflow.services.cache import init_cache
-
         init_cache("redis", redis_url=settings.redis_url)
         logger.info("Redis cache initialized")
     else:
-        from newsflow.services.cache import init_cache
-
         init_cache("memory")
         logger.info("Memory cache initialized")
 

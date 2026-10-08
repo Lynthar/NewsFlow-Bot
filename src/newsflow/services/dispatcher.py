@@ -7,7 +7,7 @@ Handles fetching feeds and dispatching new entries to subscribed channels.
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -144,6 +144,9 @@ class Dispatcher:
         # Digest config id → the slot its last scheduled run served, whether or not the
         # database recorded it: a failed record must not make the next tick resend.
         self._digest_slots: dict[int, datetime] = {}
+        # Digest config id → (consecutive failed scheduled runs, no retry before): a failing
+        # LLM would otherwise be asked for the whole window again every tick.
+        self._digest_failures: dict[int, tuple[int, datetime]] = {}
         # subscription id → guid → consecutive rounds that entry failed to send.
         self._send_strikes: dict[int, dict[str, int]] = {}
         self.totals = DispatcherTotals()
@@ -160,6 +163,14 @@ class Dispatcher:
 
     def digest_slot_served(self, config_id: int, slot: datetime | None) -> bool:
         return slot is not None and self._digest_slots.get(config_id) == slot
+
+    def _digest_failed(self, config_id: int, now: datetime) -> int:
+        """Count a failed scheduled run and hold the next one back by the check interval
+        times 2^min(failures, 5), the curve failing feeds follow. Returns the minutes."""
+        failures = self._digest_failures.get(config_id, (0, now))[0] + 1
+        minutes = self.settings.digest_check_interval_minutes << min(failures, 5)
+        self._digest_failures[config_id] = (failures, now + timedelta(minutes=minutes))
+        return minutes
 
     def spawn(self, coro: Any, *, name: str | None = None) -> asyncio.Task[Any]:
         """Schedule `coro` as a fire-and-forget task, held by a strong ref
@@ -629,6 +640,11 @@ class Dispatcher:
                         )
                         return None, None
                     title_translated = result.translated_text
+                else:
+                    logger.warning(
+                        f"Entry {entry.id} title not translated to {target_language}: "
+                        f"{result.error}"
+                    )
 
             # Translate summary (cap length to keep token usage bounded)
             if plain_summary:
@@ -636,6 +652,11 @@ class Dispatcher:
                 result = await translation_service.translate(summary_text, target_language)
                 if result.success:
                     summary_translated = result.translated_text
+                else:
+                    logger.warning(
+                        f"Entry {entry.id} summary not translated to {target_language}: "
+                        f"{result.error}"
+                    )
 
             # Cache in the DB only when every attempted field came back. A partial result
             # would freeze the gap in: the early-cache check would short-circuit future
@@ -1057,7 +1078,7 @@ class Dispatcher:
             self._write_heartbeat("digest")
             await asyncio.sleep(interval)
 
-    async def _tick_digests(self) -> None:
+    async def _tick_digests(self, now: datetime | None = None) -> None:
         from newsflow.services.digest_service import DigestService, is_due
         from newsflow.services.summarization import get_summarizer
 
@@ -1066,7 +1087,7 @@ class Dispatcher:
             # No LLM configured — not an error, just nothing to do.
             return
 
-        now = datetime.now(UTC)
+        now = now or datetime.now(UTC)
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -1078,7 +1099,8 @@ class Dispatcher:
             configs = await repo.list_enabled()
 
         for config in configs:
-            if not is_due(config, now):
+            failure = self._digest_failures.get(config.id)
+            if not is_due(config, now) or (failure is not None and now < failure[1]):
                 continue
             channel = f"{config.platform}/{config.platform_channel_id}"
 
@@ -1091,12 +1113,22 @@ class Dispatcher:
                     now,
                     scheduled=True,
                 )
+                if outcome.status in ("delivered", "no_articles"):
+                    self._digest_failures.pop(config.id, None)
                 if outcome.status == "no_adapter":
                     logger.debug(f"Digest due for {channel} but adapter not registered; deferring")
                 elif outcome.status == "generation_failed":
-                    logger.warning(f"Digest generation failed for {channel}: {outcome.error}")
+                    minutes = self._digest_failed(config.id, now)
+                    logger.warning(
+                        f"Digest generation failed for {channel}: {outcome.error}; "
+                        f"next attempt in {minutes} min"
+                    )
                 elif outcome.status == "delivery_failed":
-                    logger.warning(f"Digest generated but send failed for {channel}")
+                    minutes = self._digest_failed(config.id, now)
+                    logger.warning(
+                        f"Digest generated but send failed for {channel}; "
+                        f"next attempt in {minutes} min"
+                    )
                 elif outcome.status == "delivered" and outcome.mark_failed:
                     logger.warning(
                         f"Delivered digest to {channel} ({outcome.chunks} chunks) but could "
@@ -1145,8 +1177,9 @@ class Dispatcher:
                         f"{config.platform}/{config.platform_channel_id}"
                     )
             except Exception:
+                minutes = self._digest_failed(config.id, now)
                 logger.exception(
-                    f"Digest delivery failed for {config.platform}/{config.platform_channel_id}"
+                    f"Digest delivery failed for {channel}; next attempt in {minutes} min"
                 )
 
     async def cleanup_once(self) -> None:

@@ -3964,4 +3964,4 @@ translation-openai = ["openai"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "bd500668adfcd7201f0c48c14ce902b76412a3fc652ee8e9ec4957d100e4618e"
+content-hash = "c52790d334b7ef2119749ad1987b094bd91a855f3b260f99f40c40a57823fd26"

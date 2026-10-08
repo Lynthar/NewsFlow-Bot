@@ -378,7 +378,7 @@ Discord 端无需配置：`/feed`、`/settings`、`/digest` 三个命令组自�
 检查 DB 缓存（FeedEntry.title_translated，按条目 + 语言）
    │ 命中 → 返回
    ▼ miss
-检查服务缓存（memory 或 Redis，按文本 hash + 语言，TTL 7 天）
+检查服务缓存（memory 或 Redis，按文本 hash + 语言 + 模型 / 端点 / prompt，TTL 7 天）
    │ 命中 → 返回，并回填到 DB 缓存
    ▼ miss
 调用 Provider API → 两层缓存都写 → 返回
@@ -407,6 +407,7 @@ SELECT * FROM channel_digests WHERE enabled=True
          补发记的仍是那个 slot，下一期回到原来的整点
      - 只有定时投递写 last_slot_at；/digest now 是预览，什么都不写；
        /digest enable（含改时间、停用后重新启用）把当前 slot 记为已服务，从下一个开始
+     - 上一次定时生成或发送失败 → 退避中的跳过（见 §11.11）
    │
    ▼ 命中的 config：
    │
@@ -427,7 +428,7 @@ SELECT * FROM channel_digests WHERE enabled=True
 
 **成本估算**（以 gpt-5.4-mini 为例）：50 篇文章 × 300 chars ≈ 25k input + 2k output = **约 $0.028 / 次**；每日跑 = $0.84/月，每周跑 = $0.12/月。
 
-**默认 prompt 产出**：3-5 个主题聚合、每主题 2-4 句、内联 `[N]` 引用、Markdown 格式。**来源列表不再由 LLM 书写**——投递前由代码按正文实际引用的编号从真实文章数组拼接（标题截 80 字符、`<link>` 角括号压 Discord 预览），自定义 `DIGEST_SYSTEM_PROMPT` 若仍教模型写来源列表，尾部符合旧格式的行会被剥掉避免重复。若需不同风格（技术向、学院派、段子手等）见下节。
+**默认 prompt 产出**：3-5 个主题聚合、每主题 2-4 句、内联 `[N]` 引用、Markdown 格式。**来源列表不再由 LLM 书写**——投递前由代码按正文实际引用的编号从真实文章数组拼接（标题压成一行、截 80 字符、`<link>` 角括号压 Discord 预览）。编号认 `[1][3]`，也认模型常写偏的 `[1, 3]`、`[1-3]` 与全角 `［1］`、`【1】`。模型（或教它这么做的自定义 `DIGEST_SYSTEM_PROMPT`）若自己写了来源列表，正文末尾以编号或列表符号开头、带 URL 的行会被剥掉避免重复。正文里模型写的 Markdown 链接若不指向输入文章之一，只留 `[文字]`、去掉链接——文章原文会进 prompt，不能让它借模型之手把任意地址包装成引用；直接写出的 URL 照常显示，与普通投递一致。若需不同风格（技术向、学院派、段子手等）见下节。
 
 ### 3.3 自定义 AI 提示词
 
@@ -450,7 +451,8 @@ Only output the translated text, nothing else.
 | `{source_desc}` | 源语言的英文名（如 `English`）；source 未指定时填 `the source language (auto-detect)` |
 | `{target_name}` | 目标语言的英文名（如 `Simplified Chinese`） |
 
-**覆盖方式**：`.env` 里设 `TRANSLATION_SYSTEM_PROMPT`。
+**覆盖方式**：`.env` 里设 `TRANSLATION_SYSTEM_PROMPT`。改 prompt 或 `OPENAI_MODEL` 之后，
+已经翻译过的条目沿用旧译文（译文存在条目上，见 §11.7），之后翻译的条目才用新配置。
 
 **示例 —— 科技评论风**：
 
@@ -1417,9 +1419,12 @@ alembic 发现啥都没做，但会把当前 revision 记录到 `alembic_version
 字段，是"这条 entry 在目标语言的永久结果"。Dispatcher 的 `_translate_entry`
 优先读这个字段，miss 才走 `TranslationService`。
 
-- 服务缓存（内存/Redis）：**短 TTL，按文本哈希**。减少 API 调用。
+- 服务缓存（内存/Redis）：**短 TTL，按文本哈希**。减少 API 调用。键里含 provider 的
+  模型、端点与 prompt，换了就不再命中旧译文。Redis 2 秒内不应答就按 miss 处理、照常调
+  provider——停顿的 Redis 只让翻译变慢，不会挂住整轮投递。
 - DB 缓存（FeedEntry 字段）：**永久，按 entry+语言**。同一条 entry 推给
-  多个同语言订阅只翻一次。
+  多个同语言订阅只翻一次。换模型或 prompt 不让它失效：受影响的只有已翻译、还没送完的积压条目，
+  为这个窗口给条目加列、写迁移不值。
 
 加翻译相关代码时，保持这个"DB → 服务 → provider"的查询顺序。
 
@@ -1475,6 +1480,9 @@ Prompt 里对输出语言直接下命令（`"...in {language}..."`），LLM 按 
   digest 照常到达（它会把预览里总结过的文章再总结一遍——预览本来就是看看效果）
 - `/digest enable`（首次启用、改时间、停用后重新启用都走它）把当前 slot 记为已服务，
   第一期从下一个 slot 开始，启用命令不会立刻炸出一期
+- 定时生成或发送失败时 slot 仍未服务，但不会每个 tick 都把整个窗口再交给 LLM 一次：连续失败 n 次
+  后等检查间隔 × 2^min(n, 5)（默认 10、20、40、80，之后每 160 分钟），曲线与抓取失败的源相同；
+  一次成功就清零。计数只在内存里，重启后立刻重试。`/digest now` 不受退避限制，也不计数
 
 选 5 分钟而不是 1 小时：loop 自己开销几乎为零（一次 `SELECT WHERE enabled=True`），
 但 5min 粒度让配置改动能较快生效（比如用户刚 `/digest enable hour:9`，

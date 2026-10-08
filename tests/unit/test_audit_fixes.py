@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from newsflow.adapters.base import Message
 from newsflow.config import Settings
-from newsflow.models.feed import Feed
+from newsflow.models.feed import ENTRY_CONTENT_MAX_CHARS, ENTRY_SUMMARY_MAX_CHARS, Feed
 from newsflow.repositories.feed_repository import FeedRepository
 
 
@@ -50,8 +50,8 @@ async def test_create_entries_bulk_truncates_overlong_fields(session):
                 "link": "https://x.test/" + "a" * 5000,
                 "author": "A" * 500,
                 "image_url": "https://img.test/" + "i" * 5000,
-                "summary": None,
-                "content": None,
+                "summary": "S" * (ENTRY_SUMMARY_MAX_CHARS + 1),
+                "content": "C" * (ENTRY_CONTENT_MAX_CHARS + 1),
                 "published_at": None,
             }
         ],
@@ -63,6 +63,9 @@ async def test_create_entries_bulk_truncates_overlong_fields(session):
     assert len(e.link) == 2048
     assert e.author is not None and len(e.author) == 256
     assert e.image_url is not None and len(e.image_url) == 2048
+    # Every message parses the body as HTML on the event loop; an uncapped one stalls it.
+    assert e.summary is not None and len(e.summary) == ENTRY_SUMMARY_MAX_CHARS
+    assert e.content is not None and len(e.content) == ENTRY_CONTENT_MAX_CHARS
 
 
 async def test_overlong_guid_dedupes_consistently(session):

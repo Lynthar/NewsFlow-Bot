@@ -265,6 +265,30 @@ async def test_tick_warns_when_a_delivered_digest_could_not_be_recorded(db, monk
     )
 
 
+async def test_a_failing_digest_backs_off_instead_of_retrying_every_tick(db, monkeypatch):
+    async with db() as session:
+        await ChannelDigestRepository(session).upsert(
+            "discord", CHANNEL, None, language="en", last_slot_at=NOW - timedelta(days=2)
+        )
+        await session.commit()
+    await _delivered_article(db)
+    failed = DigestResult(success=False, error="RateLimitError")
+    ok = DigestResult(success=True, text="body")
+    summarizer = MagicMock()
+    summarizer.generate_digest = AsyncMock(side_effect=[failed, failed, ok])
+    monkeypatch.setattr("newsflow.services.summarization.get_summarizer", lambda: summarizer)
+    adapter = _adapter()
+    dispatcher = _dispatcher(adapter)
+
+    # The default 5-minute check interval: the first failure holds the next run 10 minutes,
+    # the second 20.
+    for minutes, calls in [(0, 1), (5, 1), (10, 2), (25, 2), (30, 3)]:
+        await dispatcher._tick_digests(NOW + timedelta(minutes=minutes))
+        assert summarizer.generate_digest.await_count == calls, minutes
+
+    adapter.send_digest_text_pinned.assert_awaited_once()
+
+
 async def test_enabling_counts_the_current_slot_as_served(db):
     # Enabled inside its own delivery hour: without a served slot it would fire at once.
     now = datetime.now(UTC)

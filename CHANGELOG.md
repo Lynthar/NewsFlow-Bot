@@ -9,6 +9,24 @@ between minor releases. [docs/compatibility.md](docs/compatibility.md) states
 what is covered, what never will be, and what 1.0 is going to freeze — read it
 before you pin a version.
 
+## [Unreleased]
+
+### Before you upgrade
+
+- **The default models are now `gpt-6-luna` (translation) and `gpt-6.1-sol`
+  (digests).** Both default to reasoning, where OpenAI accepts only the default
+  temperature, so requests now carry `reasoning_effort`: `none` for translation
+  and `low` for digests, set by the new `OPENAI_REASONING_EFFORT` and
+  `DIGEST_REASONING_EFFORT`. Any effort other than `none` stops sending
+  `temperature` and raises the output cap to leave room for the reasoning.
+  A value that is not an OpenAI effort stops startup.
+- **Endpoints that reject `reasoning_effort` need both keys set empty.** This
+  covers most local servers and older models behind `OPENAI_BASE_URL`; without
+  it every translation is delivered untranslated and no digest is generated.
+  If you set `OPENAI_MODEL` or `DIGEST_MODEL` yourself, check that the model
+  accepts the effort it is now sent: `gpt-6.1-sol` and `gpt-6-astra` refuse
+  `none`.
+
 ## [0.9.9] - 2026-10-08
 
 The version moves only in its last field, but this release changes behaviour.

@@ -70,6 +70,24 @@ def fill_prompt(template: str, default: str, setting: str, **values: str) -> str
         return default.format(**values)
 
 
+# Reasoning tokens count against max_completion_tokens and are spent before the answer.
+REASONING_HEADROOM_TOKENS = 16000
+
+
+def generation_params(effort: str, *, temperature: float, max_output: int) -> dict[str, Any]:
+    """Request kwargs for a reasoning `effort`: "" sends none, and any effort but "none" drops
+    `temperature` (OpenAI then takes only the default) and widens the token cap, else the
+    reasoning can use up `max_output` and leave an empty answer."""
+    params: dict[str, Any] = {"max_completion_tokens": max_output}
+    if effort:
+        params["reasoning_effort"] = effort
+    if effort in ("", "none"):
+        params["temperature"] = temperature
+    else:
+        params["max_completion_tokens"] = max_output + REASONING_HEADROOM_TOKENS
+    return params
+
+
 # Newer models (gpt-5, o-series) reject max_tokens and older ones reject
 # max_completion_tokens; compatible endpoints fall on either side by version.
 async def chat_completions_create(client: Any, **kwargs: Any) -> Any:

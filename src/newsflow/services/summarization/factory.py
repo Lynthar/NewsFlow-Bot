@@ -29,6 +29,7 @@ def _build_provider() -> SummarizationProvider | None:
             base_url=settings.openai_base_url,
             system_prompt_template=settings.digest_system_prompt,
             max_input_chars=settings.digest_max_input_chars_per_article,
+            reasoning_effort=settings.digest_reasoning_effort,
         )
     logger.warning(f"Unknown digest provider: {settings.digest_provider!r}")
     return None

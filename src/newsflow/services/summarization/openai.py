@@ -10,7 +10,13 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from newsflow.services.llm import chat_completions_create, fill_prompt, language_name, make_client
+from newsflow.services.llm import (
+    chat_completions_create,
+    fill_prompt,
+    generation_params,
+    language_name,
+    make_client,
+)
 from newsflow.services.summarization.base import (
     DigestArticle,
     DigestResult,
@@ -51,10 +57,12 @@ class OpenAIDigestProvider(SummarizationProvider):
         base_url: str | None = None,
         system_prompt_template: str | None = None,
         max_input_chars: int = 300,
+        reasoning_effort: str = "",
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        self.reasoning_effort = reasoning_effort
         self.system_prompt_template = system_prompt_template or SYSTEM_PROMPT_TEMPLATE
         self.max_input_chars = max_input_chars
         self._client: Any = None
@@ -118,10 +126,9 @@ class OpenAIDigestProvider(SummarizationProvider):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
                 # Body-only budget: the 50-entry source list is appended in code (DigestService),
                 # and 3500 chars of CJK body alone can exceed 2000 tokens.
-                max_completion_tokens=4000,
+                **generation_params(self.reasoning_effort, temperature=0.3, max_output=4000),
             )
             text = (response.choices[0].message.content or "").strip()
             if not text:

@@ -15,6 +15,9 @@ from dotenv import dotenv_values
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+# OpenAI's reasoning_effort values, plus "" for "don't send the parameter".
+REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
+
 
 class Settings(BaseSettings):
     """
@@ -56,7 +59,10 @@ class Settings(BaseSettings):
     google_project_id: str | None = None
     deepl_api_key: str | None = None
     openai_api_key: str | None = None
-    openai_model: str = "gpt-5.4-nano"
+    openai_model: str = "gpt-6-luna"
+    # Sent as `reasoning_effort`; empty = not sent, for endpoints that reject the parameter.
+    # gpt-6-luna defaults to "medium", where a non-default temperature is refused.
+    openai_reasoning_effort: str = "none"
     openai_base_url: str | None = None  # For compatible APIs
     # Override the built-in OpenAI translation system prompt. Supports
     # {source_desc} and {target_name} placeholders. None → use default.
@@ -89,7 +95,9 @@ class Settings(BaseSettings):
 
     # Digest (LLM-generated daily / weekly summaries)
     digest_provider: Literal["openai"] = "openai"
-    digest_model: str = "gpt-5.4-mini"
+    digest_model: str = "gpt-6.1-sol"
+    # As OPENAI_REASONING_EFFORT, for digests; gpt-6.1-sol refuses "none".
+    digest_reasoning_effort: str = "low"
     # Per-article summary truncation length fed to the digest LLM prompt.
     # (The article *count* cap is per-channel: ChannelDigest.max_articles.)
     digest_max_input_chars_per_article: int = 300
@@ -253,6 +261,16 @@ class Settings(BaseSettings):
         # TTL/char budget silently disables the feature it configures.
         if v < 1:
             raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("openai_reasoning_effort", "digest_reasoning_effort")
+    @classmethod
+    def validate_reasoning_effort(cls, v: str, info: ValidationInfo) -> str:
+        # A typo would be sent as is and refused on every call, translation or digest alike.
+        v = v.strip().lower()
+        if v not in REASONING_EFFORTS:
+            allowed = ", ".join(repr(e) for e in REASONING_EFFORTS)
+            raise ValueError(f"{info.field_name} must be one of {allowed}")
         return v
 
     @field_validator("api_port")

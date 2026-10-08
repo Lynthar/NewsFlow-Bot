@@ -278,7 +278,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | `TRANSLATION_PROVIDER` | `deepl` | `deepl` / `openai` / `google` |
 | `DEEPL_API_KEY` | 空 | DeepL key |
 | `OPENAI_API_KEY` | 空 | OpenAI 或兼容 API 的 key |
-| `OPENAI_MODEL` | `gpt-5.4-nano` | OpenAI 模型名（翻译） |
+| `OPENAI_MODEL` | `gpt-6-luna` | OpenAI 模型名（翻译） |
+| `OPENAI_REASONING_EFFORT` | `none` | 翻译请求的 `reasoning_effort`：`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`，其他值启动即报错。**留空 = 不发这个参数**，给不认它的兼容端点和老模型用。`none` 以外的值不再发 `temperature`（OpenAI 在推理开启时只接受默认温度），并给输出上限加推理余量 |
 | `OPENAI_BASE_URL` | 空 | OpenAI-compatible 端点（DeepSeek / Qwen / Kimi / 本地 Ollama 等） |
 | `TRANSLATION_SYSTEM_PROMPT` | 空 | 翻译 prompt 覆盖（见 §3.3） |
 | `GOOGLE_CREDENTIALS_PATH` | 空 | Google Cloud 服务账号 JSON 路径 |
@@ -308,7 +309,8 @@ README 是"能跑起来"的最小路径；本文档是**部署运维 + 二次开
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DIGEST_PROVIDER` | `openai` | 目前只支持 openai-compatible |
-| `DIGEST_MODEL` | `gpt-5.4-mini` | 生成 digest 用的模型 |
+| `DIGEST_MODEL` | `gpt-6.1-sol` | 生成 digest 用的模型 |
+| `DIGEST_REASONING_EFFORT` | `low` | digest 请求的 `reasoning_effort`，取值与留空的含义同 `OPENAI_REASONING_EFFORT`。`gpt-6.1-sol` 不接受 `none`；换成接受 `none` 的模型时可以设回 `none` |
 | `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` | `300` | 单篇文章喂给 LLM 时的字符上限 |
 | `DIGEST_CHECK_INTERVAL_MINUTES` | `5` | 调度循环的检查间隔 |
 | `DIGEST_SYSTEM_PROMPT` | 空 | 日报 prompt 覆盖（见 §3.3） |
@@ -426,7 +428,7 @@ SELECT * FROM channel_digests WHERE enabled=True
   实体解析被拒时降级纯文本；Discord 原生渲染 Markdown）→ mark_delivered
 ```
 
-**成本估算**（以 gpt-5.4-mini 为例）：50 篇文章 × 300 chars ≈ 25k input + 2k output = **约 $0.028 / 次**；每日跑 = $0.84/月，每周跑 = $0.12/月。
+**成本估算**（以默认的 gpt-6.1-sol、effort `low` 为例）：50 篇文章 × 300 chars ≈ 7k input + 2k 正文 + 1–2k 推理 output = **约 $0.05 / 次**；每日跑 ≈ $1.5/月，每周跑 ≈ $0.2/月。换 gpt-6-luna（effort `none`）约为其 1/30。
 
 **默认 prompt 产出**：3-5 个主题聚合、每主题 2-4 句、内联 `[N]` 引用、Markdown 格式。**来源列表不再由 LLM 书写**——投递前由代码按正文实际引用的编号从真实文章数组拼接（标题压成一行、截 80 字符、`<link>` 角括号压 Discord 预览）。编号认 `[1][3]`，也认模型常写偏的 `[1, 3]`、`[1-3]` 与全角 `［1］`、`【1】`。模型（或教它这么做的自定义 `DIGEST_SYSTEM_PROMPT`）若自己写了来源列表，正文末尾以编号或列表符号开头、带 URL 的行会被剥掉避免重复。正文里模型写的 Markdown 链接若不指向输入文章之一，只留 `[文字]`、去掉链接——文章原文会进 prompt，不能让它借模型之手把任意地址包装成引用；直接写出的 URL 照常显示，与普通投递一致。若需不同风格（技术向、学院派、段子手等）见下节。
 
@@ -451,7 +453,7 @@ Only output the translated text, nothing else.
 | `{source_desc}` | 源语言的英文名（如 `English`）；source 未指定时填 `the source language (auto-detect)` |
 | `{target_name}` | 目标语言的英文名（如 `Simplified Chinese`） |
 
-**覆盖方式**：`.env` 里设 `TRANSLATION_SYSTEM_PROMPT`。改 prompt 或 `OPENAI_MODEL` 之后，
+**覆盖方式**：`.env` 里设 `TRANSLATION_SYSTEM_PROMPT`。改 prompt、`OPENAI_MODEL` 或 `OPENAI_REASONING_EFFORT` 之后，
 已经翻译过的条目沿用旧译文（译文存在条目上，见 §11.7），之后翻译的条目才用新配置。
 
 **示例 —— 科技评论风**：
@@ -518,12 +520,15 @@ OPENAI_BASE_URL=http://localhost:11434/v1
 OPENAI_MODEL=qwen2.5:14b
 OPENAI_API_KEY=any-non-empty-string
 DIGEST_MODEL=qwen2.5:14b
+OPENAI_REASONING_EFFORT=
+DIGEST_REASONING_EFFORT=
 ```
 
-三个容易踩的点：
+四个容易踩的点：
 
 - **`OPENAI_API_KEY` 必须非空，哪怕本地服务根本不校验它。** 翻译与 digest 两个工厂都拿它当「是否已配置」的开关，留空就把功能**静默关掉**（日志只有一行 `Digest disabled: ...`），看起来像功能坏了。填任意字符串即可。
 - **翻译与 digest 共用同一个 `OPENAI_BASE_URL` 和同一个 key，只有模型名分开**（`OPENAI_MODEL` / `DIGEST_MODEL`）。所以做不到「翻译走本地、digest 走云端」——要么都本地，要么都云端。
+- **两个 `*_REASONING_EFFORT` 要显式留空。** 默认值是给 OpenAI 的（翻译 `none`、digest `low`），不认 `reasoning_effort` 的端点会把每次请求都拒掉，翻译全部按原文投递、digest 一份也出不来。本地推理模型认这个参数的，按它的取值填。
 - **Docker 部署下 `localhost` 指的是容器自己。** 模型服务跑在宿主机就要写 `host.docker.internal`，或者把它接进同一个 compose 网络。
 
 **选型提示**：翻译对模型能力要求不高，本地小模型够用。digest 不一样——来源清单是代码从模型输出的 `[N]` 引文里拼出来的（见 §十一），模型若不稳定遵守这个约定，正文照出但来源清单会残缺。digest 建议用参数量大一些的模型。
@@ -1110,7 +1115,7 @@ docker compose -f docker/docker-compose.yml logs -f newsflow    # 观察新值�
 - `ENTRY_RETENTION_DAYS`：必须小于 `SENT_ENTRY_RETENTION_DAYS`，否则启动即报错退出；不大于 7 会告警（周报窗口里最早的文章会先被清掉）
 - `LOG_LEVEL=DEBUG`（临时排错）/ `LOG_FORMAT=json`
 - `TRANSLATION_SYSTEM_PROMPT` / `DIGEST_SYSTEM_PROMPT`（自定义 AI 提示词，见 §3.3）
-- `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` / `DIGEST_MODEL` / `OPENAI_MODEL`
+- `DIGEST_MAX_INPUT_CHARS_PER_ARTICLE` / `DIGEST_MODEL` / `OPENAI_MODEL` / 两个 `*_REASONING_EFFORT`（换模型时一起看它接不接受当前的 effort）
 - `CACHE_BACKEND` 在 memory ↔ redis 之间切换（需要先把 Redis 容器起起来：`--profile with-redis up -d`）
 
 **需要注意副作用**：

@@ -7,7 +7,13 @@ Uses OpenAI's GPT models for translation with context understanding.
 import logging
 from typing import Any
 
-from newsflow.services.llm import chat_completions_create, fill_prompt, language_name, make_client
+from newsflow.services.llm import (
+    chat_completions_create,
+    fill_prompt,
+    generation_params,
+    language_name,
+    make_client,
+)
 from newsflow.services.translation.base import TranslationProvider, TranslationResult
 
 logger = logging.getLogger(__name__)
@@ -29,13 +35,15 @@ class OpenAIProvider(TranslationProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-5.4-nano",
+        model: str = "gpt-6-luna",
         base_url: str | None = None,
         system_prompt_template: str | None = None,
+        reasoning_effort: str = "none",
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
+        self.reasoning_effort = reasoning_effort
         self.system_prompt_template = system_prompt_template or DEFAULT_TRANSLATION_PROMPT
         self._client: Any = None
 
@@ -45,7 +53,9 @@ class OpenAIProvider(TranslationProvider):
 
     @property
     def cache_identity(self) -> str:
-        return "\0".join((self.base_url or "", self.model, self.system_prompt_template))
+        return "\0".join(
+            (self.base_url or "", self.model, self.reasoning_effort, self.system_prompt_template)
+        )
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -80,8 +90,7 @@ class OpenAIProvider(TranslationProvider):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
-                temperature=0.3,
-                max_completion_tokens=2000,
+                **generation_params(self.reasoning_effort, temperature=0.3, max_output=2000),
             )
 
             # content can be None on OpenAI-compatible endpoints (refusals,

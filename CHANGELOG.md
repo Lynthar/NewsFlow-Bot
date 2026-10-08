@@ -9,6 +9,132 @@ between minor releases. [docs/compatibility.md](docs/compatibility.md) states
 what is covered, what never will be, and what 1.0 is going to freeze — read it
 before you pin a version.
 
+## [0.9.9] - 2026-10-08
+
+The version moves only in its last field, but this release changes behaviour.
+If you follow the `:0.9` image or pin `~=0.9.5`, read the next section first.
+
+### Before you upgrade
+
+- **Configuration mistakes now stop startup.** The bot refuses to start when
+  `SENT_ENTRY_RETENTION_DAYS` does not outlive `ENTRY_RETENTION_DAYS`, when a
+  `webhooks.yaml` URL is not http(s), when a `sources.yaml` webhook subscriber
+  names a destination `webhooks.yaml` does not declare (or there is no
+  `webhooks.yaml` at all), when a `language` in either file is not a language
+  code, or when a YAML value is wider than its database column. Run
+  `make checkconfig` (or `python -m newsflow.checkconfig`) before restarting.
+- **`webhooks.yaml` destinations default to `translate: false`.** A destination
+  that never set `translate` stops translating at the first sync after the
+  upgrade; add `translate: true` to keep it.
+- **The Docker health check requires the `dispatch` heartbeat**, which is now
+  written before the first round. If you override the health check, follow
+  section 7.5 of the user guide.
+- **Subscriptions declared in `webhooks.yaml` or `sources.yaml` are changed
+  only in that file.** Pausing, removing, or setting language, translation or
+  silent mode on one from a chat command, `/manage` or the REST API is refused
+  with a pointer to the file.
+- **Discord management commands are server-only** and no longer appear in
+  direct messages with the bot.
+- **`/digest now` is a preview.** It no longer pins, pings `@here`, or counts
+  as the scheduled delivery.
+- With the `api` extra, uvicorn 0.29 or newer is required. Older versions keep
+  SIGTERM for themselves, so the bot never shut down while the API was on.
+- Two database migrations run automatically at startup.
+
+### Security
+
+- Feed bodies reach feedparser as a byte stream. Given a string, feedparser
+  fetches it as a URL or opens it as a file, bypassing every check the fetcher
+  applies.
+- IP addresses written in non-canonical forms no longer pass the URL check.
+- URL userinfo, SQL bind parameters (which carried webhook secrets and auth
+  headers) and YAML error snippets are kept out of logs and error text.
+  `DB_ECHO` is the explicit opt-in to seeing bind parameters.
+- `webhooks.yaml` `url`, `secret` and `headers` accept `${VAR}`, stored as the
+  reference and resolved at send time, so credentials stay out of the
+  database and its backups.
+- `INGEST_API_KEY` opens `/api/ingest` alone. A key handed to an external
+  system no longer grants management access; without it, `API_KEY` still
+  works there.
+- Slack, WeCom and Lark payloads escape feed text. Lark digests and notices
+  are posted as rich text, where feed or model text can no longer mention
+  everyone. Discord embeds drop non-http(s) image URLs, and Telegram links
+  only http(s) entry URLs, since a `tg://` link can mention a user.
+- Locked dependencies with published advisories are updated: anyio,
+  multidict, PyJWT, soupsieve and urllib3.
+
+### Fixed
+
+- **Duplicate and lost deliveries.** Each delivery is recorded as soon as the
+  platform accepts it, and no database write stays open across a network
+  call. A crash now resends at most one entry, and a slow send no longer
+  holds SQLite's lock against webhook and digest work. Two digest runs for
+  one channel can no longer both send.
+- SQLite migrations run with foreign keys off. A table rebuild could
+  otherwise cascade and empty the delivery history.
+- An entry a platform keeps refusing no longer blocks its subscription. The
+  bot first retries it as a bare title and link, then gives it up after three
+  failed rounds, but only once a notice to the same channel goes through.
+  Webhook 400, 413 and 422 responses no longer trip the destination's breaker.
+- Filtered and silenced entries no longer use up a subscription's per-round
+  send budget, which starved keyword-filtered subscriptions on busy feeds.
+- **Weekly digests lost articles processed late.** Cleanup went by when an
+  entry was stored, while weekly digests select by when it was processed, so
+  an article processed days after it arrived could be deleted before its
+  first weekly digest. Cleanup now keeps anything processed within the
+  weekly window.
+- Scheduled digests no longer drift off their hour after an off-schedule
+  delivery, and a failed delivery record is retried without resending.
+- A subscription declared in either YAML file no longer receives entries
+  published before it existed, and a `webhooks.yaml` source whose first fetch
+  fails still gets its subscription.
+- A delivery record ages from the last full fetch that still listed its entry,
+  so an undated entry that a feed keeps listing is not sent again once the
+  record expires. Over-long guids no longer collide.
+- One malformed entry rolls back only its own feed. JSON Feed fields of the
+  wrong type are coerced, and oversized JSON Feed dates no longer fail the
+  feed. Publish dates with a UTC offset keep their instant. Feeds are parsed
+  off the event loop.
+- Undated entries are delivered oldest first.
+- 401, 403 and 410 responses retry at the normal interval instead of backing
+  off; they still count toward automatic deactivation.
+- Telegram runs on Python 3.13 (python-telegram-bot 22.8), waits 25 seconds
+  before treating a send as timed out, previews each entry's own link, and
+  handles up to eight commands at once, so one slow `/import` or `/add` no
+  longer stalls every chat. A group upgraded to a supergroup keeps its
+  channel defaults.
+- A Discord server that removed the bot has its subscriptions and digest
+  deactivated. Plain-text Discord messages stay within 2000 characters.
+- Platform heartbeats stop while Discord is reconnecting or after Telegram
+  polling has died, so the health check reports them.
+- Config reload reports database failures instead of answering 500, and says
+  when a newly created `webhooks.yaml` needs a restart. An unreadable `.env`
+  is skipped with a warning.
+- A failed `POST /api/feeds/{id}/refresh` now counts toward the feed's error
+  count and deactivation. `POST /api/feeds` and `POST /api/feeds/test` accept
+  the `gh:` and `pypi:` shortcuts, and `POST /api/subscriptions` rejects
+  unknown platforms.
+- Re-adding a paused feed says it was resumed. An OPML import leaves paused
+  subscriptions paused.
+- A message template must use at least one placeholder; `/template <url> show`
+  used to store the word "show" as the whole message.
+- IMAP connections time out. DeepL gets the regional target codes it expects
+  (EN-US, PT-BR, ZH-HANT).
+
+### Added
+
+- Telegram `/digest enable` accepts `max_articles=` and `include_filtered=`.
+- `newsflow_entries_undeliverable_total` and
+  `newsflow_entries_dropped_unsent_total` in `/metrics`; queued entries lost
+  to cleanup also show in `/feed status`.
+- Warnings for misspelled settings, `CACHE_BACKEND=redis` without
+  `REDIS_URL`, and `json_api` sources without a guid mapping.
+
+### Changed
+
+- The Docker image installs the exact versions in `poetry.lock`, the same set
+  CI tests.
+
 ## [0.9.5] - 2026-09-10
 
 ### Security
@@ -188,6 +314,7 @@ Tags `v0.1.0` through `v0.8.0` were added retroactively to mark development
 milestones that predate versioning. They have no changelog entries and no
 published Docker images.
 
+[0.9.9]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.5...v0.9.9
 [0.9.5]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.3...v0.9.4
 [0.10.1]: https://github.com/Lynthar/NewsFlow-Bot/compare/ca2a8db...5d8d43c

@@ -5,5 +5,5 @@ A flexible RSS feed aggregator that pushes news to Discord and Telegram
 with optional translation support.
 """
 
-__version__ = "0.9.5"
+__version__ = "0.9.9"
 __author__ = "NewsFlow Contributors"

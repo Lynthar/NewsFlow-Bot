@@ -109,18 +109,26 @@ def test_validate_rejects_unknown_word_shaped_tokens() -> None:
 
 
 def test_validate_ignores_literal_braces_and_non_word_tokens() -> None:
-    assert validate_template("{{anything}} {'-'} {123}") == []
+    assert validate_template("{title} {{anything}} {'-'} {123}") == []
+
+
+def test_validate_rejects_a_template_without_placeholders() -> None:
+    # "/template <url> show" stored the word "show", and every entry then read just that.
+    for template in ("show", "{{title}}"):
+        errors = validate_template(template)
+        assert len(errors) == 1
+        assert PLACEHOLDER_LIST in errors[0]
 
 
 def test_validate_rejects_overlong_template() -> None:
-    errors = validate_template("x" * (TEMPLATE_MAX_LENGTH + 1))
+    errors = validate_template("{title}".ljust(TEMPLATE_MAX_LENGTH + 1, "x"))
     assert len(errors) == 1
     assert "too long" in errors[0]
 
 
 def test_validate_accepts_template_exactly_at_the_cap() -> None:
     # The error reads "N > TEMPLATE_MAX_LENGTH", so a template of exactly that length is valid.
-    assert validate_template("x" * TEMPLATE_MAX_LENGTH) == []
+    assert validate_template("{title}".ljust(TEMPLATE_MAX_LENGTH, "x")) == []
 
 
 # ------------------------------------------------- Message value contract

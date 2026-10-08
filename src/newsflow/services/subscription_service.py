@@ -116,6 +116,7 @@ class SubscriptionService:
         feed_url: str,
         guild_id: str | None = None,
         message_thread_id: int | None = None,
+        resume_paused: bool = True,
     ) -> SubscribeResult:
         """
         Subscribe a channel to a feed.
@@ -133,6 +134,8 @@ class SubscriptionService:
             message_thread_id: Telegram forum topic the subscribe command
                 ran in — new entries deliver to that topic (None = default
                 view). Applied only when the subscription is created.
+            resume_paused: Whether an existing paused subscription is resumed;
+                when it is, everything queued while paused goes out.
 
         Returns:
             SubscribeResult with subscription object
@@ -191,7 +194,7 @@ class SubscriptionService:
 
         if not created:
             message = "Already subscribed to this feed"
-            if not subscription.is_active:
+            if not subscription.is_active and resume_paused:
                 # Adding a paused feed means "I want it": resume it, and say so, since what
                 # was queued while it was paused now goes out.
                 subscription.is_active = True
@@ -929,6 +932,8 @@ class SubscriptionService:
                 feed_url=entry.url,
                 guild_id=guild_id,
                 message_thread_id=message_thread_id,
+                # An export lists paused feeds too; importing it back must not undo the pause.
+                resume_paused=False,
             )
             # Each feed is committed before the next one is fetched: one write transaction
             # across up to 200 fetches would hold SQLite's lock for minutes, and a dispatch

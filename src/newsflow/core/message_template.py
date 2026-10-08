@@ -61,19 +61,25 @@ def normalize_template(raw: str) -> str:
 def validate_template(template: str) -> list[str]:
     """Return user-facing problems with a template; empty list = valid.
 
-    Checks length and unknown word-shaped placeholders. Run on the
-    normalized form at set time; render never validates (fail-open for
-    stored rows).
+    Checks length, unknown word-shaped placeholders, and that some placeholder is
+    used, since without one every entry renders the same text. Run on the normalized
+    form at set time; render never validates (fail-open for stored rows).
     """
     errors: list[str] = []
     if len(template) > TEMPLATE_MAX_LENGTH:
         errors.append(f"template is too long ({len(template)} > {TEMPLATE_MAX_LENGTH} characters)")
     # {{...}} is a literal-brace escape, not a placeholder.
     body = template.replace("{{", "").replace("}}", "")
-    unknown = sorted({m.group(1) for m in _TOKEN_RE.finditer(body)} - PLACEHOLDERS)
+    names = {m.group(1) for m in _TOKEN_RE.finditer(body)}
+    unknown = sorted(names - PLACEHOLDERS)
     if unknown:
         listed = ", ".join("{" + name + "}" for name in unknown)
         errors.append(f"unknown placeholder(s): {listed}. Valid placeholders: {PLACEHOLDER_LIST}")
+    elif not names:
+        errors.append(
+            "template uses no placeholder, so every entry would read the same. "
+            f"Valid placeholders: {PLACEHOLDER_LIST}"
+        )
     return errors
 
 

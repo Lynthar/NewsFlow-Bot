@@ -101,6 +101,23 @@ async def test_adding_an_active_feed_again_changes_nothing(session):
     assert result.message == "Already subscribed to this feed"
 
 
+async def test_importing_an_opml_leaves_a_paused_subscription_paused(session):
+    # An export lists paused feeds, so importing one back would otherwise resume them.
+    sub = await _seed_sub(session)
+    sub.is_active = False
+    await session.flush()
+
+    result = await SubscriptionService(session).import_opml(
+        platform="discord",
+        user_id="u1",
+        channel_id="c1",
+        opml_content=f'<opml><body><outline type="rss" xmlUrl="{FEED_URL}"/></body></opml>',
+    )
+
+    assert result.already_subscribed == [FEED_URL]
+    assert sub.is_active is False
+
+
 async def test_resume_revives_auto_disabled_feed(session):
     """The deactivation notice tells users resume re-enables the source —
     so resume must reset the Feed's error state, not just the subscription

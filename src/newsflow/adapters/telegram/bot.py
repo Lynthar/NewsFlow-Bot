@@ -240,7 +240,7 @@ WELCOME_TEXT = (
     "/setdisplay &lt;url&gt; &lt;summary|image&gt; &lt;on/off&gt; — Per-feed display (compact mode)\n"
     "/template &lt;url|all&gt; [text | reset] — Custom message layout ({title}, {url}, …)\n"
     "/settopic &lt;url|all&gt; [clear] — Deliver a feed to the current forum topic\n"
-    "/filter &lt;url&gt; [show | clear | include=a,b exclude=c] — Keyword filter\n\n"
+    "/filter &lt;url&gt; [clear | include=a,b exclude=c] — Keyword filter\n\n"
     "<b>AI Digest:</b>\n"
     "/digest show — Show current digest config\n"
     "/digest enable daily &lt;hour&gt; [lang] [tz] [options] — Daily digest\n"
@@ -1399,7 +1399,7 @@ async def template_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def filter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /filter <url> [show | clear | include=... exclude=...]
+    """Handle /filter <url> [clear | include=... exclude=...]
 
     Forms:
       /filter <url>                       → show current filter
@@ -2905,6 +2905,10 @@ class TelegramAdapter(BaseAdapter):
 # Telegram had accepted, and every such send is posted twice.
 _REQUEST_TIMEOUT_S = 25.0
 
+# Updates run concurrently so one slow /import can't stall every chat. Kept well under
+# the DB pool's 15 connections: a handler can hold one through a whole feed fetch.
+_CONCURRENT_UPDATES = 8
+
 
 def build_application(token: str) -> Application[Any, Any, Any, Any, Any, Any]:
     """The bot's Application. AIORateLimiter queues sends inside Telegram's 30/s global,
@@ -2917,6 +2921,7 @@ def build_application(token: str) -> Application[Any, Any, Any, Any, Any, Any]:
         .job_queue(None)
         .read_timeout(_REQUEST_TIMEOUT_S)
         .write_timeout(_REQUEST_TIMEOUT_S)
+        .concurrent_updates(_CONCURRENT_UPDATES)
         .build()
     )
 

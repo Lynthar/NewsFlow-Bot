@@ -1,29 +1,29 @@
 # Compatibility and versioning
 
-## Where the project is today
+## The promise
 
-NewsFlow-Bot is `0.x`. Under Semantic Versioning that means **the configuration
-surface can still change between minor releases** — a key can be renamed, a
-default can move, an endpoint can change shape. Upgrades are still meant to be
-undramatic, and anything needing action from you is called out in
-[CHANGELOG.md](../CHANGELOG.md), but there is no formal promise yet.
+Since 1.0, NewsFlow-Bot follows Semantic Versioning for everything under
+"What is covered" below: changing any of it in a way that breaks a working setup
+takes a new major version, and that release's entry in
+[CHANGELOG.md](../CHANGELOG.md) says what to change.
 
-This document says what that promise will be, so you can see now what 1.0 is
-going to freeze and plan around it.
+Two kinds of change can still reach you in a minor release: a change to one of
+the experimental surfaces, and a move of a default model. Both are named under
+**Before you upgrade** in the changelog.
 
-## What 1.0 will cover
+## What is covered
 
-After 1.0, a breaking change to any of the following requires a new major
-version.
+A breaking change to any of the following requires a new major version.
 
 **Declarative configuration** — the keys and value shapes of `webhooks.yaml` and
-`sources.yaml`. Unknown keys are a hard startup error, so a rename is never a
-silent change: it stops the bot. Adding an optional key is additive.
+`sources.yaml`, the experimental surfaces below excepted. Unknown keys are a hard
+startup error, so a rename is never a silent change: it stops the bot. Adding an
+optional key is additive.
 
 **Environment configuration** — the names and accepted values of the variables in
-`.env`, **and their defaults**. Moving a default silently changes behaviour for
-everyone who never set it, with no error to warn them, so a default change counts
-as breaking rather than as a tweak.
+`.env`, **and their defaults**, the default models excepted. Moving a default
+silently changes behaviour for everyone who never set it, with no error to warn
+them, so a default change counts as breaking rather than as a tweak.
 
 **The REST API** — paths, request and response shapes, status codes and
 authentication rules for everything under `/api`, as published in the OpenAPI
@@ -40,6 +40,20 @@ run automatically at startup.
 **Python support** — the supported interpreter range (3.11–3.13 today). Dropping
 a version is breaking. This mostly matters for bare-metal installs; the Docker
 image pins its own interpreter.
+
+## Experimental
+
+These have only run against local stand-ins, never against the services they are
+built for, so their configuration may still have to change when they do. Until
+then a minor release can change them.
+
+- **`email_imap` sources** — the `email_imap` type in `sources.yaml` and the keys
+  of its `config:`. Tested against a local mail server, not a real provider.
+- **The `matrix` webhook format** — tested by the shape of its payload, not
+  against a running matrix-hookshot.
+
+An experimental surface joins "What is covered" in a minor release, and the
+changelog says so.
 
 ## What is never covered
 
@@ -61,6 +75,13 @@ above is promised.
 
 **AI-generated output.** Digest wording depends on the model you point the bot at.
 
+**The default models.** `OPENAI_MODEL` and `DIGEST_MODEL` default to specific
+models, and providers retire models on their own schedule; a default that points
+at a retired model fails every call. So a minor release can move a default model,
+together with the `OPENAI_REASONING_EFFORT` or `DIGEST_REASONING_EFFORT` default
+paired with it, since a model can refuse an effort another one accepts. To keep a
+model across upgrades, set both its model and its effort variable.
+
 ## The one carve-out: security fixes
 
 A fix for a vulnerability may land in a minor or patch release **even when it
@@ -81,10 +102,6 @@ read the changelog before every upgrade.
 
 | Bump | What it means |
 |---|---|
-| Major | Something in "What 1.0 will cover" changed. Read the changelog before upgrading. |
-| Minor | New features and new optional configuration. Safe to upgrade unless there is a **Security** note. |
+| Major | Something under "What is covered" changed. Read the changelog before upgrading. |
+| Minor | New features and new optional configuration. Safe to upgrade unless the changelog has a **Before you upgrade** or **Security** section. |
 | Patch | Fixes only. |
-
-While the project is `0.x`, minor releases carry changes that would be major
-after 1.0 — which is exactly why the freeze waits until the configuration surface
-has been used by people other than its author.

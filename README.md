@@ -121,15 +121,16 @@ Editing `.env` needs `up -d` to take effect; `restart` won't re-read it.
   layer; running two copies against one database is out of scope by design.
 - **Webhooks are output only.** They can't manage subscriptions; changing them
   means editing `webhooks.yaml` and restarting.
-- **Configuration can shift between minor versions** while this is 0.x. What is
-  and isn't inside the compatibility promise is spelled out in the compatibility
-  document.
+- **Two surfaces are experimental.** `email_imap` sources and the `matrix`
+  format have only run against local stand-ins, so their configuration can still
+  change in a minor release. What else is and isn't inside the compatibility
+  promise is spelled out in the compatibility document.
 
 ## Documentation
 
 - [User guide](docs/user-guide.md) — every command, every setting, FAQ. Written
   in Chinese.
-- [Compatibility](docs/compatibility.md) — what 0.x guarantees and what it
+- [Compatibility](docs/compatibility.md) — what 1.x guarantees and what it
   doesn't.
 - [Changelog](CHANGELOG.md)
 

@@ -4,12 +4,16 @@ Notable changes to NewsFlow-Bot. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and version numbers
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**The project is still `0.x`**, so the configuration surface can still change
-between minor releases. [docs/compatibility.md](docs/compatibility.md) states
-what is covered, what never will be, and what 1.0 is going to freeze — read it
-before you pin a version.
+**Since 1.0, a breaking change to the covered configuration surface takes a
+major release.** [docs/compatibility.md](docs/compatibility.md) states what is
+covered, what is experimental, and what never will be — read it before you pin
+a version.
 
-## [Unreleased]
+## [1.0.0] - 2026-10-17
+
+This is the first release under the compatibility promise. `email_imap` sources
+and the `matrix` webhook format are experimental and can still change in a minor
+release, as can the default models.
 
 ### Before you upgrade
 
@@ -368,6 +372,7 @@ Tags `v0.1.0` through `v0.8.0` were added retroactively to mark development
 milestones that predate versioning. They have no changelog entries and no
 published Docker images.
 
+[1.0.0]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.9...v1.0.0
 [0.9.9]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.5...v0.9.9
 [0.9.5]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.3...v0.9.4

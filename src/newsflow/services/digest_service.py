@@ -65,9 +65,12 @@ class DigestDeliveryResult:
 
 
 # Inline citation as the prompt teaches it, [3] or [1][4], and the forms models drift
-# into: [1, 3], [1-3] and full-width ［1］ / 【1】.
-_CITATION_RE = re.compile(r"[\[［【](\d{1,5}(?:\s*[,，、\-–—~]\s*\d{1,5})*)[\]］】]")
+# into: [1, 3], [1-3] and full-width ［1］ / 【1】. One already written as a link's
+# label is left as the model wrote it.
+_CITATION_RE = re.compile(r"[\[［【](\d{1,5}(?:\s*[,，、\-–—~]\s*\d{1,5})*)[\]］】](?!\()")
 _CITED_SPAN_RE = re.compile(r"(\d+)(?:\s*[\-–—~]\s*(\d+))?")
+# Characters that would end a Markdown link target early, percent-encoded.
+_LINK_TARGET_ESCAPES = str.maketrans({c: f"%{ord(c):02X}" for c in ' ()<>"'})
 # A line of a model-written source list: a number or bullet, then somewhere a URL.
 # Only trailing ones are stripped, so the code-built list isn't duplicated.
 _NUMBER_MARK = r"(?:[\[［【(（]\d+[\]］】)）]|\d+[.)、:：])"
@@ -76,7 +79,7 @@ _SOURCE_LINE_RE = re.compile(rf"^\s*(?:[-*•]\s*{_NUMBER_MARK}?|{_NUMBER_MARK})
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]\n]*)\]\(([^)\n]*)\)")
 _URL_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 
-# Header for the appended source list, keyed by primary language subtag.
+# Header for the fallback source list, keyed by primary language subtag.
 _SOURCES_HEADERS = {"zh": "来源", "ja": "出典", "ko": "출처"}
 
 _SOURCE_TITLE_MAX = 80
@@ -112,25 +115,38 @@ def strip_llm_source_list(text: str) -> str:
     return "\n".join(lines)
 
 
-def build_source_list(text: str, articles: Sequence[DigestArticle]) -> str:
-    """Deterministic source list for the article numbers `text` cites.
+def _cited_numbers(group: str, count: int) -> list[int]:
+    """The article numbers one citation names, in order and within 1..`count`."""
+    numbers: dict[int, None] = {}
+    for low, high in _CITED_SPAN_RE.findall(group):
+        numbers.update(dict.fromkeys(range(max(int(low), 1), min(int(high or low), count) + 1)))
+    return list(numbers)
 
-    The LLM only emits inline `[N]` citations; reproducing 50 URLs
-    verbatim is exactly what models truncate and hallucinate, so the
-    list itself is built here from the real article array. Numbers keep
-    the prompt's enumeration so citations stay resolvable. If the model
-    cited nothing recognizable, fall back to listing every input article
-    rather than delivering a digest with no sources at all.
-    """
-    cited: set[int] = set()
-    for group in _CITATION_RE.findall(text):
-        for low, high in _CITED_SPAN_RE.findall(group):
-            cited.update(range(max(int(low), 1), min(int(high or low), len(articles)) + 1))
-    indices = sorted(cited) or list(range(1, len(articles) + 1))
+
+def link_citations(text: str, articles: Sequence[DigestArticle]) -> str:
+    """`text` with each citation turned into one link per article it names, so `[1-2]`
+    becomes `[[1]](<url1>)[[2]](<url2>)`. The URLs come from `articles`, never from the
+    model; a citation naming no article stays as written."""
+
+    def link(match: re.Match[str]) -> str:
+        numbers = _cited_numbers(match[1], len(articles))
+        if not numbers:
+            return match[0]
+        # Angle brackets suppress Discord link previews; the Telegram digest
+        # renderer unwraps them.
+        return "".join(
+            f"[[{n}]](<{articles[n - 1].link.translate(_LINK_TARGET_ESCAPES)}>)" for n in numbers
+        )
+
+    return _CITATION_RE.sub(link, text)
+
+
+def build_source_list(articles: Sequence[DigestArticle]) -> str:
+    """A numbered list of every input article, for a digest that cites none of them —
+    built from the article array, since models truncate and invent URLs they copy."""
     links = {art.link for art in articles}
     lines = []
-    for n in indices:
-        art = articles[n - 1]
+    for n, art in enumerate(articles, start=1):
         title = drop_foreign_links(" ".join(art.title.split()), links)
         if len(title) > _SOURCE_TITLE_MAX:
             title = title[: _SOURCE_TITLE_MAX - 1] + "…"
@@ -154,11 +170,14 @@ def drop_foreign_links(text: str, links: set[str]) -> str:
     return _MARKDOWN_LINK_RE.sub(keep_or_drop, text)
 
 
-def append_source_list(text: str, articles: Sequence[DigestArticle], language: str) -> str:
-    """Digest body + localized header + code-built source list."""
+def attach_sources(text: str, articles: Sequence[DigestArticle], language: str) -> str:
+    """The digest body with its citations linked to their articles. A body that cites
+    no article gets a localized list of all of them instead, so no digest goes out
+    without sources."""
     body = drop_foreign_links(strip_llm_source_list(text), {art.link for art in articles})
-    sources = build_source_list(body, articles)
-    return f"{body}\n\n**{_sources_header(language)}**\n{sources}"
+    if any(_cited_numbers(group, len(articles)) for group in _CITATION_RE.findall(body)):
+        return link_citations(body, articles)
+    return f"{body}\n\n**{_sources_header(language)}**\n{build_source_list(articles)}"
 
 
 def _most_recent_slot(config: ChannelDigest, now: datetime) -> datetime | None:
@@ -428,9 +447,8 @@ class DigestService:
             language=language,
             time_window_desc=material.window_desc,
         )
-        # The provider returns the digest body only; the source list is
-        # appended here in code so URLs are never left to the model to
-        # reproduce (they get truncated/hallucinated past a dozen links).
+        # The provider returns the digest body only; its citations are linked here in
+        # code so URLs are never left to the model to reproduce.
         if result.success and result.text:
-            result.text = append_source_list(result.text, material.articles, language)
+            result.text = attach_sources(result.text, material.articles, language)
         return result

@@ -398,7 +398,7 @@ async def test_scheduled_digest_that_meets_a_migration_repoints_the_channel(db, 
     summarizer.generate_digest = AsyncMock(return_value=DigestResult(success=True, text="body"))
     monkeypatch.setattr("newsflow.services.summarization.get_summarizer", lambda: summarizer)
     migrated = ChannelMigratedError("-100OLD", "-100NEW", reason="migrated")
-    adapter = MagicMock(digest_chunk_size=3800)
+    adapter = MagicMock(digest_chunk_size=3800, digest_length=len)
     adapter.send_digest_text_pinned = AsyncMock(side_effect=migrated)
     adapter.send_digest_text = AsyncMock(side_effect=migrated)
     adapter.unpin_message = AsyncMock(return_value=True)

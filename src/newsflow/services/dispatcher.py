@@ -6,6 +6,7 @@ Handles fetching feeds and dispatching new entries to subscribed channels.
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -81,6 +82,8 @@ class MessageSender(Protocol):
 
     # Per-message character budget for digest chunks.
     digest_chunk_size: int
+
+    def digest_length(self, text: str) -> int: ...
 
 
 @dataclass
@@ -922,8 +925,8 @@ class Dispatcher:
         return "📰 **Digest**\n\n" + text
 
     @staticmethod
-    def _chunk_text(text: str, chunk_size: int) -> list[str]:
-        """Split `text` so each chunk is ≤ chunk_size characters.
+    def _chunk_text(text: str, chunk_size: int, measure: Callable[[str], int] = len) -> list[str]:
+        """Split `text` so each chunk `measure`s ≤ chunk_size, as the platform counts.
 
         Tries paragraph (`\\n\\n`) boundaries first, then line (`\\n`)
         boundaries for any paragraph that still exceeds chunk_size, then
@@ -932,14 +935,14 @@ class Dispatcher:
         (error 50035) — a long LLM-generated paragraph without blank
         lines would otherwise fail the whole digest delivery.
         """
-        if len(text) <= chunk_size:
+        if measure(text) <= chunk_size:
             return [text]
 
         chunks: list[str] = []
         current = ""
         for paragraph in text.split("\n\n"):
             prospective = (current + "\n\n" + paragraph).strip()
-            if len(prospective) > chunk_size and current:
+            if measure(prospective) > chunk_size and current:
                 chunks.append(current)
                 current = paragraph
             else:
@@ -951,25 +954,25 @@ class Dispatcher:
         # paragraph without blank lines) gets broken further.
         final: list[str] = []
         for chunk in chunks:
-            if len(chunk) <= chunk_size:
+            if measure(chunk) <= chunk_size:
                 final.append(chunk)
             else:
-                final.extend(Dispatcher._hard_split(chunk, chunk_size))
+                final.extend(Dispatcher._hard_split(chunk, chunk_size, measure))
         return final
 
     @staticmethod
-    def _hard_split(text: str, chunk_size: int) -> list[str]:
+    def _hard_split(text: str, chunk_size: int, measure: Callable[[str], int] = len) -> list[str]:
         """Break an oversized chunk on single-newline boundaries, then
         by hard character count. Only called when paragraph splitting
         already failed to get below chunk_size."""
-        if len(text) <= chunk_size:
+        if measure(text) <= chunk_size:
             return [text]
 
         pieces: list[str] = []
         current = ""
         for line in text.split("\n"):
             prospective = (current + "\n" + line) if current else line
-            if len(prospective) > chunk_size and current:
+            if measure(prospective) > chunk_size and current:
                 pieces.append(current)
                 current = line
             else:
@@ -979,11 +982,11 @@ class Dispatcher:
 
         out: list[str] = []
         for piece in pieces:
-            if len(piece) <= chunk_size:
+            if measure(piece) <= chunk_size:
                 out.append(piece)
             else:
-                # Last resort: slice by characters. Rare — only when a
-                # single line (no \n, no \n\n) exceeds chunk_size.
+                # Last resort: slice by characters; no platform counts a slice as
+                # longer than that. Rare — one line over chunk_size.
                 for i in range(0, len(piece), chunk_size):
                     out.append(piece[i : i + chunk_size])
         return out
@@ -1021,7 +1024,7 @@ class Dispatcher:
         if not text:
             return 0, None
 
-        chunks = self._chunk_text(text, chunk_size)
+        chunks = self._chunk_text(text, chunk_size, adapter.digest_length)
         if not chunks:
             return 0, None
 

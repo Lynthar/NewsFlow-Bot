@@ -51,21 +51,21 @@ async def test_digest_falls_back_to_plain_text_on_entity_error():
     assert second["disable_web_page_preview"] is True
 
 
-async def test_digest_html_over_telegram_cap_sends_plain_directly():
-    """/digest now chunks at 3800 pre-escape; `&`-heavy chunks can exceed
-    4096 AFTER entity escaping. That would be a deterministic 'message is
-    too long' BadRequest (not an entity error, so no fallback) — the
-    adapter must pre-empt it by sending the raw chunk plain."""
+async def test_digest_html_longer_than_the_cap_still_goes_out_as_html():
+    """Escapes and citation links grow the HTML well past 4096, but Telegram caps the
+    text left after parsing, so a chunk that fits as Markdown keeps its links."""
     adapter = _adapter()
-    chunk = "A & B " * 640  # 3840 chars raw; escaping grows it past 4096
+    link = "[[1]](<https://ex.com/" + "a" * 120 + ">)"
+    chunk = "A & B " * 600 + link * 30
 
     ok = await adapter.send_digest_text("123", chunk)
 
     assert ok is True
     adapter.app.bot.send_message.assert_awaited_once()
     kwargs = adapter.app.bot.send_message.await_args.kwargs
-    assert kwargs["text"] == chunk  # raw, not HTML
-    assert "parse_mode" not in kwargs
+    assert kwargs["parse_mode"] == "HTML"
+    assert len(kwargs["text"]) > 4096
+    assert kwargs["text"].count('">[1]</a>') == 30
     assert kwargs["disable_web_page_preview"] is True
 
 

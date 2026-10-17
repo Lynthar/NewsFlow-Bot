@@ -207,6 +207,11 @@ class BaseAdapter(ABC):
     # adapter is what keeps a scheduled digest and a manual one chunked alike.
     digest_chunk_size: int = 1900
 
+    def digest_length(self, text: str) -> int:
+        """How much of the platform's message cap a digest chunk takes. Every character
+        counts by default, link targets and markup included, as on Discord."""
+        return len(text)
+
     @abstractmethod
     async def start(self) -> None:
         """

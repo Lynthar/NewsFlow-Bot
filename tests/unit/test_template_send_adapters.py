@@ -1,8 +1,8 @@
 """Adapter send paths for template-rendered messages.
 
 Telegram: Markdown → HTML conversion, entity-rejection fallback to plain
-text, and the oversized-HTML guard (a template send must never enter a
-permanent BadRequest retry loop). Discord: plain-content send, the
+text, and the Markdown truncation that keeps a template under the length
+cap. Discord: plain-content send, the
 image-only side embed, the 2000-char cap, and the default embed path
 staying untouched when no template is set.
 """
@@ -75,16 +75,16 @@ async def test_telegram_non_entity_bad_request_on_template_sends_title_and_link(
     assert bare["disable_web_page_preview"] is True
 
 
-async def test_telegram_oversized_html_sends_plain_text():
+async def test_telegram_escape_heavy_template_still_goes_out_as_html():
+    # 3400 ampersands escape to 17k chars of HTML. Telegram caps the text left after
+    # parsing, so the message fits and keeps its formatting.
     adapter = seed.tg_adapter()
-    # 3400 ampersands: fits as Markdown, but entity-escapes to 17k chars.
-    template = "&" * 3400
-    ok = await adapter.send_message("123", seed.message(template_text=template))
+    ok = await adapter.send_message("123", seed.message(template_text="**x** " + "&" * 3400))
 
     assert ok is True
     kwargs = adapter.app.bot.send_message.await_args.kwargs
-    assert "parse_mode" not in kwargs
-    assert kwargs["text"] == template
+    assert kwargs["parse_mode"] == "HTML"
+    assert kwargs["text"] == "<b>x</b> " + "&amp;" * 3400
 
 
 async def test_telegram_overlong_markdown_is_truncated():

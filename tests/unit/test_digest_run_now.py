@@ -29,6 +29,7 @@ CHANNEL = "chan-1"
 def _adapter(chunk_size: int = 1900, pinned=(True, "pin-new")) -> MagicMock:
     adapter = MagicMock()
     adapter.digest_chunk_size = chunk_size
+    adapter.digest_length = len
     adapter.send_digest_text_pinned = AsyncMock(return_value=pinned)
     adapter.send_digest_text = AsyncMock(return_value=True)
     adapter.unpin_message = AsyncMock(return_value=True)

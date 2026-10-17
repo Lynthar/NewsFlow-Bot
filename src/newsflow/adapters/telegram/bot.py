@@ -65,7 +65,7 @@ from newsflow.core.message_template import (
     validate_template,
 )
 from newsflow.core.opml import MAX_OPML_BYTES, MAX_OPML_MB
-from newsflow.core.telegram_markdown import markdown_to_telegram_html
+from newsflow.core.telegram_markdown import markdown_to_telegram_html, rendered_length
 from newsflow.core.timeutil import relative_time
 from newsflow.core.timezones import parse_timezone
 from newsflow.models.base import get_session_factory
@@ -2383,9 +2383,12 @@ _COMMANDS: list[tuple[str, _CommandCallback]] = [
 class TelegramAdapter(BaseAdapter):
     """Telegram adapter implementation."""
 
-    # Telegram caps a message at 4096; the headroom absorbs the growth
-    # send_digest_text adds when it re-renders Markdown as HTML.
+    # Telegram caps a message's parsed text at 4096; the headroom is margin only.
     digest_chunk_size = 3800
+
+    def digest_length(self, text: str) -> int:
+        # Citation links cost only their label: the cap counts the parsed text.
+        return rendered_length(text)
 
     def __init__(self, token: str) -> None:
         self.token = token
@@ -2731,17 +2734,9 @@ class TelegramAdapter(BaseAdapter):
         assert self.app is not None
         from telegram.error import BadRequest
 
+        # No length check: the cap counts the parsed text, which digest_length already
+        # held this chunk to, whatever the tags and escapes add to the HTML.
         html = markdown_to_telegram_html(text)
-        if len(html) > 4096:
-            # Escaping (& -> &amp;) can push a 3800-char pre-escape chunk past the hard cap.
-            # The raw chunk always fits — send it plain rather than let a deterministic
-            # "message is too long" drop it.
-            plain: TelegramMessage = await self.app.bot.send_message(
-                chat_id=int(channel_id),
-                text=text,
-                disable_web_page_preview=True,
-            )
-            return plain
         try:
             sent: TelegramMessage = await self.app.bot.send_message(
                 chat_id=int(channel_id),
@@ -2781,17 +2776,8 @@ class TelegramAdapter(BaseAdapter):
         text = template_text
         if len(text) > 3500:
             text = text[:3499] + "…"
+        # The cap counts parsed text, not markup: the trimmed Markdown bounds the HTML's.
         html = markdown_to_telegram_html(text)
-        if len(html) > 4096:
-            # Entity escaping can outgrow Telegram's hard cap even when the
-            # Markdown fits; the trimmed plain text always fits.
-            await self.app.bot.send_message(
-                chat_id=int(channel_id),
-                text=text,
-                link_preview_options=preview,
-                message_thread_id=thread_id,
-            )
-            return
         try:
             await self.app.bot.send_message(
                 chat_id=int(channel_id),

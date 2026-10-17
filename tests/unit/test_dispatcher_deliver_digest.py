@@ -14,6 +14,7 @@ Covered scenarios (matrix of chunk count × pin outcome × prior pin):
 from unittest.mock import AsyncMock, MagicMock
 
 from newsflow.adapters.base import BaseAdapter, Message
+from newsflow.adapters.telegram.bot import TelegramAdapter
 from newsflow.services.dispatcher import Dispatcher
 
 
@@ -28,6 +29,7 @@ def _mock_adapter(
     deliver_digest goes through the digest-specific send methods (so
     Telegram can re-render Markdown); the mocks pin that wiring."""
     adapter = MagicMock()
+    adapter.digest_length = len
     adapter.send_digest_text = AsyncMock(return_value=send_text_result)
     adapter.send_digest_text_pinned = AsyncMock(return_value=pin_result)
     adapter.unpin_message = AsyncMock(return_value=unpin_result)
@@ -274,3 +276,15 @@ def test_chunk_text_preserves_paragraph_splitting_when_fits():
 
     assert len(chunks) >= 2
     assert all(len(c) <= 80 for c in chunks)
+
+
+def test_telegram_chunks_by_the_text_it_shows_not_the_link_targets():
+    # 40 citation links put the Markdown far past 3800 characters; Telegram counts
+    # only their labels, so the digest still goes out as one message.
+    link = "[[1]](<https://ex.com/" + "a" * 150 + ">)"
+    text = "\n\n".join(["Paragraph " + "x" * 800 + link * 10] * 4)
+    assert len(text) > 3800
+
+    measure = TelegramAdapter(token="t").digest_length
+    assert Dispatcher._chunk_text(text, 3800, measure) == [text]
+    assert len(Dispatcher._chunk_text(text, 3800)) > 1

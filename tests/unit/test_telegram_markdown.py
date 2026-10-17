@@ -7,6 +7,7 @@ rejecting the message.
 """
 
 from newsflow.core.telegram_markdown import markdown_to_telegram_html as conv
+from newsflow.core.telegram_markdown import rendered_length
 
 
 def test_escapes_html_specials():
@@ -44,6 +45,17 @@ def test_markdown_link_becomes_anchor():
 
 def test_inline_citations_left_alone():
     assert conv("Fact [1][12].") == "Fact [1][12]."
+
+
+def test_rendered_length_counts_what_telegram_shows():
+    text = "**A & B** [[1]](<https://ex.com/" + "a" * 50 + ">) <https://ex.com/2>"
+    assert rendered_length(text) == len("A & B [1] https://ex.com/2")
+
+
+def test_a_linked_citation_keeps_its_brackets():
+    assert conv("Fact [[1]](<https://ex.com/1?a=1&b=2>)[[2]](<https://ex.com/2>).") == (
+        'Fact <a href="https://ex.com/1?a=1&amp;b=2">[1]</a><a href="https://ex.com/2">[2]</a>.'
+    )
 
 
 def test_full_digest_sample():

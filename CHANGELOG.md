@@ -27,6 +27,42 @@ before you pin a version.
   accepts the effort it is now sent: `gpt-6.1-sol` and `gpt-6-astra` refuse
   `none`.
 
+### Security
+
+- A Markdown link in a digest that points anywhere but one of its articles is
+  reduced to its text. Article text reaches the model, which could otherwise
+  dress any address up as a citation. A line break in a feed title can no
+  longer forge an extra numbered article in the digest prompt.
+
+### Fixed
+
+- A Redis cache that stops answering no longer stalls delivery: a call that
+  takes over 2 seconds counts as a miss. The connection is closed at shutdown.
+- Changing `OPENAI_MODEL`, `OPENAI_BASE_URL` or `TRANSLATION_SYSTEM_PROMPT` no
+  longer serves translations cached under the old setting. Entries already
+  translated keep the translation stored with them.
+- A translation the provider reports as failed is logged. The entry was already
+  delivered untranslated, but nothing said why.
+- A scheduled digest that fails to generate or send backs off instead of
+  handing the whole window to the model again at every check: 10, 20, 40 and
+  80 minutes, then every 160, with the default check interval. A success resets
+  it, and `/digest now` is never held back.
+- Digest citations written as `[1, 3]`, `[1-3]` or in full-width brackets are
+  recognized, and a source list the model writes itself is removed in more of
+  the forms it takes.
+- Feed entry bodies are cut to 65,536 characters of summary and 262,144 of
+  content when stored. Every message parses the body as HTML, so one oversized
+  feed could stall the whole process for seconds.
+- Telegram digests and templated entries whose HTML outgrew 4096 characters were
+  sent as plain text, losing their formatting. Telegram's cap counts the text
+  left after parsing, so they now keep it.
+
+### Changed
+
+- **Digest citations are links.** Each `[N]` in a digest opens its article, and
+  the source list at the end is gone. A digest that cites none of its articles
+  still ends with a list of all of them.
+
 ## [0.9.9] - 2026-10-08
 
 The version moves only in its last field, but this release changes behaviour.

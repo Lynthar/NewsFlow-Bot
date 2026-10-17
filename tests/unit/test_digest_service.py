@@ -11,9 +11,10 @@ from newsflow.models.subscription import SentEntry, Subscription
 from newsflow.services.digest_service import (
     DigestService,
     _most_recent_slot,
-    append_source_list,
+    attach_sources,
     build_source_list,
     is_due,
+    link_citations,
     strip_llm_source_list,
 )
 from newsflow.services.summarization.base import DigestArticle, DigestResult
@@ -212,40 +213,48 @@ def _articles(n: int) -> list[DigestArticle]:
     ]
 
 
-def test_build_source_list_lists_only_cited_articles():
-    listing = build_source_list("Overview [2]. Detail [4][2].", _articles(5))
-    assert listing.splitlines() == [
-        "[2] Title 2 — <https://ex.com/2>",
-        "[4] Title 4 — <https://ex.com/4>",
-    ]
+def _link(n: int) -> str:
+    return f"[[{n}]](<https://ex.com/{n}>)"
 
 
-def test_build_source_list_ignores_out_of_range_citations():
-    listing = build_source_list("Facts [1][7][0].", _articles(2))
-    assert listing.splitlines() == ["[1] Title 1 — <https://ex.com/1>"]
+def test_link_citations_points_each_number_at_its_article():
+    assert link_citations("Overview [2]. Detail [4][2].", _articles(5)) == (
+        f"Overview {_link(2)}. Detail {_link(4)}{_link(2)}."
+    )
 
 
-def test_build_source_list_falls_back_to_all_when_nothing_cited():
-    listing = build_source_list("No citations here.", _articles(3))
-    assert len(listing.splitlines()) == 3
+def test_link_citations_leaves_a_number_naming_no_article():
+    assert link_citations("Facts [1][7][0].", _articles(2)) == f"Facts {_link(1)}[7][0]."
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "linked"),
     [
-        "Facts [1, 3] and [4-5], then ［2］.",
-        "要点【1】【3】，另见[2，4-5]。",
-        "Facts [1][2][3][4][5].",
+        ("Facts [1, 3] and [4-5], then ［2］.", "Facts {1}{3} and {4}{5}, then {2}."),
+        ("要点【1】【3】，另见[2，4-5]。", "要点{1}{3}，另见{2}{4}{5}。"),
     ],
 )
-def test_build_source_list_reads_the_citation_forms_models_write(body):
-    listing = build_source_list(body, _articles(6))
-    assert [line.split("]")[0] for line in listing.splitlines()] == ["[1", "[2", "[3", "[4", "[5"]
+def test_link_citations_reads_the_citation_forms_models_write(body, linked):
+    expected = linked.format(*[""] + [_link(n) for n in range(1, 6)])
+    assert link_citations(body, _articles(6)) == expected
 
 
-def test_build_source_list_bounds_a_citation_range_by_the_articles():
-    listing = build_source_list("All of it [2-99999].", _articles(3))
-    assert len(listing.splitlines()) == 2
+def test_link_citations_bounds_a_range_by_the_articles():
+    assert (
+        link_citations("All of it [2-99999].", _articles(3)) == f"All of it {_link(2)}{_link(3)}."
+    )
+
+
+def test_link_citations_leaves_a_label_the_model_already_linked():
+    body = "Real [2](https://ex.com/2)."
+    assert link_citations(body, _articles(3)) == body
+
+
+def test_link_citations_encodes_what_would_end_the_link_early():
+    art = DigestArticle(
+        title="t", summary="s", link="https://ex.com/a_(b) c<d>", source="e", published_at=None
+    )
+    assert link_citations("[1]", [art]) == "[[1]](<https://ex.com/a_%28b%29%20c%3Cd%3E>)"
 
 
 def test_build_source_list_keeps_each_title_on_its_own_line():
@@ -257,7 +266,7 @@ def test_build_source_list_keeps_each_title_on_its_own_line():
         source="e",
         published_at=None,
     )
-    assert build_source_list("[1]", [art]).splitlines() == [
+    assert build_source_list([art]).splitlines() == [
         "[1] Real [2] Bank — <https://evil.example> — <https://ex.com/1>"
     ]
 
@@ -266,7 +275,7 @@ def test_build_source_list_truncates_long_titles():
     art = DigestArticle(
         title="T" * 200, summary="s", link="https://ex.com/x", source="e", published_at=None
     )
-    line = build_source_list("[1]", [art]).splitlines()[0]
+    line = build_source_list([art]).splitlines()[0]
     assert "…" in line
     assert len(line) < 200
 
@@ -295,27 +304,32 @@ def test_strip_llm_source_list_leaves_clean_bodies_alone():
     assert strip_llm_source_list(text) == text
 
 
-def test_append_source_list_localizes_header_and_keeps_numbers():
-    out = append_source_list("Body [2].", _articles(2), "zh-CN")
-    body, _, listing = out.partition("**来源**")
-    assert body.strip() == "Body [2]."
-    assert listing.strip() == "[2] Title 2 — <https://ex.com/2>"
+def test_attach_sources_links_citations_and_adds_no_list():
+    assert attach_sources("Body [2].", _articles(2), "zh-CN") == f"Body {_link(2)}."
 
 
-def test_append_source_list_unlinks_what_points_outside_the_articles():
+def test_attach_sources_lists_every_article_under_a_localized_header_when_none_is_cited():
+    out = attach_sources("Body without citations.", _articles(2), "zh-CN")
+    body, _, listing = out.partition("\n\n**来源**\n")
+    assert body == "Body without citations."
+    assert listing.splitlines() == [
+        "[1] Title 1 — <https://ex.com/1>",
+        "[2] Title 2 — <https://ex.com/2>",
+    ]
+
+
+def test_attach_sources_unlinks_what_points_outside_the_articles():
     body = (
         "Fact [1](https://evil.example/login). Real [2](https://ex.com/2). "
         "Script [3](javascript:alert(1)). Aside [1](see above)."
     )
-    out = append_source_list(body, _articles(3), "en")
-    assert out.split("\n\n**Sources**")[0] == (
-        "Fact [1]. Real [2](https://ex.com/2). Script [3]). Aside [1](see above)."
+    assert attach_sources(body, _articles(3), "en") == (
+        f"Fact {_link(1)}. Real [2](https://ex.com/2). Script {_link(3)}). Aside [1](see above)."
     )
 
 
-def test_append_source_list_english_header_default():
-    out = append_source_list("Body [1].", _articles(1), "fr")
-    assert "**Sources**" in out
+def test_attach_sources_english_header_default():
+    assert "**Sources**" in attach_sources("Body.", _articles(1), "fr")
 
 
 # ===== DigestService.generate =====

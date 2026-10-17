@@ -37,6 +37,8 @@ release, as can the default models.
   reduced to its text. Article text reaches the model, which could otherwise
   dress any address up as a citation. A line break in a feed title can no
   longer forge an extra numbered article in the digest prompt.
+- Mako, which Alembic uses to write new migration scripts, is updated to 1.4.3
+  for a path traversal advisory that affects Windows.
 
 ### Fixed
 

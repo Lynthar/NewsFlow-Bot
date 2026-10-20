@@ -9,6 +9,20 @@ major release.** [docs/compatibility.md](docs/compatibility.md) states what is
 covered, what is experimental, and what never will be — read it before you pin
 a version.
 
+## [Unreleased]
+
+### Changed
+
+- **The default digest is now a synthesis, not an event list.** The built-in
+  prompt asks for the big picture of the period, a few threads with why they
+  matter, and what to watch next, and lets the model give its own read as long
+  as it is marked as such and every fact still cites an article. The old
+  event-by-event style is kept in the user guide as a `DIGEST_SYSTEM_PROMPT`
+  example; a custom prompt is unaffected.
+- `max_articles` on `/digest enable` now goes up to 1000 (was 200), so a busy
+  channel's weekly digest can cover the whole week instead of its last days.
+  The default stays 50.
+
 ## [1.0.0] - 2026-10-17
 
 This is the first release under the compatibility promise. `email_imap` sources

@@ -19,7 +19,7 @@ from newsflow.models.base import Base
 WEEKLY_WINDOW = timedelta(days=7)
 
 # The most articles one digest may cover, as both /digest enable commands accept.
-MAX_DIGEST_ARTICLES = 200
+MAX_DIGEST_ARTICLES = 1000
 
 
 class ChannelDigest(Base):

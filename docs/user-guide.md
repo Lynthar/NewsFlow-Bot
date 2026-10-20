@@ -219,7 +219,7 @@ README 是"能跑起来"的最小路径；本文档是**部署与运维**的详�
 | 命令 | 说明 |
 |---|---|
 | `/digest show` | 显示当前配置 |
-| `/digest enable daily <hour> [lang] [tz] [options]` | 启用日报。`hour` 按 `tz` 解释；`tz` 收 `Asia/Shanghai` / `+8` / `utc`（缺省 UTC），两个尾参顺序随意。options 是 `max_articles=<1-200>`（缺省 50）与 `include_filtered=on\|off`（缺省 off），位置随意；不写的项保留当前值 |
+| `/digest enable daily <hour> [lang] [tz] [options]` | 启用日报。`hour` 按 `tz` 解释；`tz` 收 `Asia/Shanghai` / `+8` / `utc`（缺省 UTC），两个尾参顺序随意。options 是 `max_articles=<1-1000>`（缺省 50）与 `include_filtered=on\|off`（缺省 off），位置随意；不写的项保留当前值 |
 | `/digest enable weekly <weekday> <hour> [lang] [tz] [options]` | 启用周报（weekday 支持 `mon…sun` 或 `0…6`，同样按 `tz` 解释；options 同上） |
 | `/digest disable` | 关闭 |
 | `/digest now` | 立即生成一份预览（不置顶、不计入投递记录，定时 digest 照常到达） |
@@ -385,13 +385,13 @@ Digest 会按频道的配置周期性生成。**默认关闭**，需要通过命
 - `/digest now` 是预览：不置顶、不 `@here`、什么都不记录，当天的定时 digest 照常到达。
 - 定时生成或发送失败后按检查间隔 × 2^失败次数退避（默认 10、20、40、80 分钟，之后每 160 分钟），不会每 5 分钟把整个窗口再喂给 LLM 一次；一次成功清零。
 
-**总结哪些文章**：上一次定时投递之后、到现在为止，推送过的条目（第一次没有上一次，取过去 24 小时或 7 天）。默认只算真正推出去的；`include_filtered=True` 时连被关键词过滤掉的也算。窗口为空就只推进游标，不生成。
+**总结哪些文章**：上一次定时投递之后、到现在为止，推送过的条目（第一次没有上一次，取过去 24 小时或 7 天）。默认只算真正推出去的；`include_filtered=True` 时连被关键词过滤掉的也算。超过频道的 `max_articles`（缺省 50，上限 1000）时只取最近推送的那些篇——量大的频道开周报时上限设小了，就只覆盖窗口末尾那一段，按频道的周流量调高它；输入 token 与费用随篇数线性增长。窗口为空就只推进游标，不生成。
 
 **怎么生成和发送**：LLM 只写正文和内联 `[N]` 引用，代码再把每个 `[N]` 换成指向该篇文章的链接（杜绝模型复述 URL 时截断或幻觉）；按平台分片（Discord 1900 字符；Telegram 3800，只算显示出来的文字）发送。Telegram 端逐片 Markdown→HTML、`parse_mode=HTML`、关闭链接预览，实体解析被拒时降级纯文本；Discord 原生渲染 Markdown。
 
 **成本估算**（以默认的 gpt-6.1-sol、effort `low` 为例）：50 篇文章 × 300 chars ≈ 7k input + 2k 正文 + 1–2k 推理 output = **约 $0.05 / 次**；每日跑 ≈ $1.5/月，每周跑 ≈ $0.2/月。换 gpt-6-luna（effort `none`）约为其 1/30。
 
-**默认 prompt 产出**：按具体话题聚合（分几组由素材决定）、每组 2-4 句、内联 `[N]` 引用、纯 Markdown、总长 1500-3500 字符。**链接不由 LLM 书写**——投递前由代码把正文里每个 `[N]` 换成可点击的 `[N]`，指向真实文章数组里的第 N 篇，点标号直达原文，末尾不再附来源列表（链接用 `<…>` 角括号包住，压掉 Discord 的预览）。编号认 `[1][3]`，也认模型常写偏的 `[1, 3]`、`[1-3]` 与全角 `［1］`、`【1】`，一律展开成单独可点的标号；不对应任何文章的编号原样留着。模型一个编号都没引用时，兜底在末尾列出全部输入文章（标题压成一行、截 80 字符）。模型（或教它这么做的自定义 `DIGEST_SYSTEM_PROMPT`）若自己写了来源列表，正文末尾以编号或列表符号开头、带 URL 的行会被剥掉。正文里模型写的 Markdown 链接若不指向输入文章之一，只留 `[文字]`、去掉链接——文章原文会进 prompt，不能让它借模型之手把任意地址包装成引用；直接写出的 URL 照常显示，与普通投递一致。若需不同风格（技术向、学院派、段子手等）见下节。
+**默认 prompt 产出**：综合而非覆盖——读者收到了频道里的每一篇，只是没空细看。开头 2-3 句说这段时间在讲什么、最要紧的是哪一两件；接 3-5 条线索（一条是一个发展或走势，不是一篇文章），每条先说发生了什么、再说为什么重要，引 1-2 篇值得细读的 `[N]`；结尾列 2-4 个接下来值得关注的点。不改变全局判断的文章直接略过。事实只来自文章并带引用，判断明标为编辑看法、必须具体到改变了什么对谁，证据薄或来源打架时直说。纯 Markdown、总长 1500-3500 字符。**链接不由 LLM 书写**——投递前由代码把正文里每个 `[N]` 换成可点击的 `[N]`，指向真实文章数组里的第 N 篇，点标号直达原文，末尾不再附来源列表（链接用 `<…>` 角括号包住，压掉 Discord 的预览）。编号认 `[1][3]`，也认模型常写偏的 `[1, 3]`、`[1-3]` 与全角 `［1］`、`【1】`，一律展开成单独可点的标号；不对应任何文章的编号原样留着。模型一个编号都没引用时，兜底在末尾列出全部输入文章（标题压成一行、截 80 字符）。模型（或教它这么做的自定义 `DIGEST_SYSTEM_PROMPT`）若自己写了来源列表，正文末尾以编号或列表符号开头、带 URL 的行会被剥掉。正文里模型写的 Markdown 链接若不指向输入文章之一，只留 `[文字]`、去掉链接——文章原文会进 prompt，不能让它借模型之手把任意地址包装成引用；直接写出的 URL 照常显示，与普通投递一致。若需不同风格（逐条摘录、极简速览、段子手等）见下节。
 
 ### 3.3 自定义 AI 提示词
 
@@ -425,7 +425,7 @@ TRANSLATION_SYSTEM_PROMPT="You are translating a tech blog from {source_desc} to
 
 #### Digest prompt
 
-**默认值**（见 `src/newsflow/services/summarization/openai.py::SYSTEM_PROMPT_TEMPLATE`）：一段 "you are a news editor" 模板，要求按话题聚合、不虚构事实、每条事实带 `[N]` 引用、纯 Markdown、总长 1500-3500 字符。
+**默认值**（见 `src/newsflow/services/summarization/openai.py::SYSTEM_PROMPT_TEMPLATE`）：一段 "senior editor" 模板——读者收到了频道里的每篇文章但没空细看，digest 做全局综合，`[N]` 链接是深入细读的入口；产出形状见 §3.2。
 
 **可用占位符**：
 
@@ -436,17 +436,19 @@ TRANSLATION_SYSTEM_PROMPT="You are translating a tech blog from {source_desc} to
 
 **覆盖方式**：`.env` 里设 `DIGEST_SYSTEM_PROMPT`。多行字符串在 `.env` 中建议用单行 + `\n` 或者避开多行。
 
-**示例 —— 学院派分析风**：
+**示例 —— 逐条摘录风**（旧版的默认：按事件逐条列事实，不做综合）：
 
 ```bash
-DIGEST_SYSTEM_PROMPT="You are a senior analyst writing an executive briefing in {lang}. Review articles from {window} and produce: (1) a two-sentence executive summary; (2) 3-5 themed sections with causal analysis; (3) an outlook paragraph identifying what to watch next. Cite each source with [N]. Avoid clickbait tone."
+DIGEST_SYSTEM_PROMPT="You are a news editor preparing a periodic briefing in {lang}. Articles from {window} are provided, numbered [N]. Cluster by specific event or subject, as many clusters as the material needs. Per cluster 2-4 sentences of key facts, each claim cited like [1][3]; the same event across several articles is one fact with combined citations. No speculation, no opinion, no facts beyond the articles. Open with one overview sentence. Plain Markdown, no source list, no URLs, 1500-3500 characters."
 ```
 
 **示例 —— 极简速览风**：
 
 ```bash
-DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering the past {window}. Format: a single bulleted list, max 10 bullets, each under 30 words. End with numbered citations [N] → title."
+DIGEST_SYSTEM_PROMPT="Produce a one-screen brief in {lang} covering {window}. Format: a single bulleted list, max 10 bullets, each under 30 words, each citing its article like [N]. No source list, no URLs."
 ```
+
+`{window}` 填进去的值自带 "the past"（`the past 24 hours`、`the past week`），前面别再写一遍。模型一个 `[N]` 都没引时，代码会在末尾列出全部输入文章（见 §3.2），所以自定义 prompt 要保留内联引用；让模型自己写一份来源列表则是多余的——带 URL 的会被剥掉，不带 URL 的会原样留下。
 
 #### 测试提示词
 

@@ -12,6 +12,7 @@ import pytest
 from newsflow.adapters.discord.bot import DigestCommands
 from newsflow.adapters.telegram.bot import _parse_digest_enable_args
 from newsflow.core.timezones import local_schedule_to_utc, parse_timezone
+from newsflow.models.digest import MAX_DIGEST_ARTICLES
 
 # ===== parse_timezone =====
 
@@ -111,7 +112,13 @@ def test_tg_enable_takes_the_options_discord_has_anywhere_in_the_tail():
 
 
 @pytest.mark.parametrize(
-    "token", ["max_articles=0", "max_articles=201", "include_filtered=maybe", "size=3"]
+    "token",
+    [
+        "max_articles=0",
+        f"max_articles={MAX_DIGEST_ARTICLES + 1}",
+        "include_filtered=maybe",
+        "size=3",
+    ],
 )
 def test_tg_enable_rejects_a_bad_option(token):
     with pytest.raises(ValueError):

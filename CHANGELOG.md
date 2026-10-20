@@ -9,7 +9,7 @@ major release.** [docs/compatibility.md](docs/compatibility.md) states what is
 covered, what is experimental, and what never will be — read it before you pin
 a version.
 
-## [Unreleased]
+## [1.0.1] - 2026-10-20
 
 ### Changed
 
@@ -388,6 +388,7 @@ Tags `v0.1.0` through `v0.8.0` were added retroactively to mark development
 milestones that predate versioning. They have no changelog entries and no
 published Docker images.
 
+[1.0.1]: https://github.com/Lynthar/NewsFlow-Bot/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.9...v1.0.0
 [0.9.9]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.5...v0.9.9
 [0.9.5]: https://github.com/Lynthar/NewsFlow-Bot/compare/v0.9.4...v0.9.5
